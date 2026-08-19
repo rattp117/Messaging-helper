@@ -21,18 +21,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, streaks
+from habit_assistant.core import charts, garmin, i18n, streaks
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
 from habit_assistant.storage.db import Database
 
 logger = logging.getLogger(__name__)
-
-# TODO(garmin): future work — import a Garmin hydration CSV export and join
-# it (by date) against `water` category logs, to cross-check/augment
-# self-reported intake in the weekly review. Not implemented for MVP
-# (SPEC.md §12 non-goals; ROADMAP.md v1.0.0).
 
 
 @dataclass(slots=True)
@@ -221,7 +216,13 @@ async def run_weekly_review(
     factual stats block instead of being English inside a Thai message;
     the "no medical advice" constraint (SPEC.md/ROADMAP.md AC6.4) stays in
     the (English, LLM-facing, not user-facing) instruction text itself and
-    is unaffected by which language the narrative comes back in."""
+    is unaffected by which language the narrative comes back in.
+
+    ROADMAP.md v1.0.0: a Garmin hydration cross-check section is appended
+    when `[garmin] csv_path` is configured (`core/garmin.py`); with the
+    default empty `csv_path` (feature off), `format_garmin_section`
+    returns `""` and this function's output is byte-identical to v0.10.0
+    (zero regression for every pre-v1.0 review test)."""
     end_date = today or date.today()
     stats = compute_weekly_stats(db, config, registry, end_date)
     lang = i18n.resolve_unprompted_language(config)
@@ -235,4 +236,43 @@ async def run_weekly_review(
         narrative = i18n.t("weekly_review_fallback_narrative", lang)
 
     header = i18n.t("weekly_review_header", lang)
-    return f"{header}\n\n{summary}\n\n{narrative}"
+    text = f"{header}\n\n{summary}\n\n{narrative}"
+
+    garmin_section = garmin.format_garmin_section(garmin.build_garmin_report(db, config, end_date), lang)
+    if garmin_section:
+        text += f"\n\n{garmin_section}"
+    return text
+
+
+def _chart_caption(hs: HabitStats, lang: i18n.Language) -> str:
+    habit = hs.habit
+    label = habit.label(lang)
+    if habit.type == "numeric":
+        return i18n.t("chart_caption_numeric", lang, label=label, total=hs.total, unit=habit.unit(lang) or "", avg=hs.avg)
+    if habit.type == "duration":
+        return i18n.t("chart_caption_duration", lang, label=label, total=hs.total, streak=hs.streak)
+    return i18n.t("chart_caption_boolean", lang, label=label, total=hs.total)  # boolean
+
+
+def render_weekly_review_charts(
+    db: Database, config: Config, registry: HabitRegistry, today: date | None = None
+) -> list[tuple[bytes, str]]:
+    """ROADMAP.md v1.0.0 AC1.0.1: `(png_bytes, caption)` pairs to attach to
+    the weekly review. `[]` whenever there's nothing to attach --
+    `[charts] enabled = false`, matplotlib not installed
+    (`core/charts.py` logs once and returns no images), or every
+    configured habit is type `text` -- so `main.py`'s call site never
+    needs its own enabled/failure branching: a text-only review is simply
+    "attach zero images"."""
+    if not config.charts.enabled:
+        return []
+    end_date = today or date.today()
+    lang = i18n.resolve_unprompted_language(config)
+    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats_by_habit_id = {hs.habit.id: hs for hs in stats.habits}
+
+    pairs: list[tuple[bytes, str]] = []
+    for habit, image in charts.render_weekly_charts(db, config, registry, end_date, lang):
+        hs = stats_by_habit_id[habit.id]
+        pairs.append((image, _chart_caption(hs, lang)))
+    return pairs

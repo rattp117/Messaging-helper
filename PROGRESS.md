@@ -1,8 +1,8 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 0.10.0
+- **Current version:** 1.0.0
 - **Repo:** local-only (user not asked yet — autonomous session; change on request)
-- **Status:** Roadmap program — v0.10.0 (Streaks/Gamification/Daily Summary) released; next: v1.0.0 capstone — Charts + Garmin import (Garmin column map defaults to Date,Hydration(ml) — no sample CSV from user yet)
+- **Status:** ✅ Roadmap COMPLETE — v1.0.0 released (charts + Garmin import); all 10 versions shipped 2026-08-19. Config format + DB schema declared stable. Garmin: off until user sets `[garmin] csv_path` (column map defaults to Date/Hydration(ml) — sample CSV from user would confirm).
 - **Last updated:** 2026-08-19 · **Last commit:** (initial)
 
 ## Stack
@@ -30,6 +30,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 0.8.0 | 2026-08-19 | NL queries: bilingual interrogative routing, LLM intent classification (fail-closed), read-only answers via registry-generic aggregations; ACs 8.1–8.5 PASS (534 tests) | core/query.py, core/commands.py, llm/prompts.py, core/i18n.py, main.py, tests/test_query.py, tests/test_v08_query_gaps.py | v0.8.0 |
 | 0.9.0 | 2026-08-19 | Adaptive reminders: goal-met skip (fail-open), quiet hours (opt-in, midnight-crossing), bilingual snooze one-shots; ACs 9.1–9.5 PASS (611 tests) | core/reminders.py, core/commands.py, core/habits.py, core/i18n.py, main.py, config.py, config.toml, tests/test_adaptive_reminders.py, tests/test_v09_gaps.py | v0.9.0 |
 | 0.10.0 | 2026-08-19 | Streaks (shared engine w/ review), gentle milestones 3/7/30 once-per-crossing, nightly 21:45 summary; ACs 10.1–10.5 PASS (650 tests) | core/streaks.py, core/review.py, core/reminders.py, core/i18n.py, main.py, config.py, config.toml, tests/test_streaks.py | v0.10.0 |
+| 1.0.0 | 2026-08-19 | Capstone: weekly-review chart PNGs (optional matplotlib, graceful fallback), Channel.send_image (sendPhoto), Garmin CSV import (off by default); ACs 1.0.1–1.0.5 PASS (701 tests); stability declared | channels/{base,telegram}.py, core/{charts,garmin,review,i18n}.py, main.py, config.py, config.toml, pyproject.toml, README.md, tests/test_charts.py, tests/test_garmin.py | v1.0.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.
@@ -40,6 +41,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 - 2026-08-19 — Use `uv` for venv + deps (available; system Python absent).
 
 ## Open questions / Next steps
+- Known issue (non-blocking, from v1.0.0 TEST.md): Thai text inside chart PNGs renders as tofu boxes (matplotlib default font lacks Thai glyphs). Follow-up: bundle a Thai-capable font (e.g. Noto Sans Thai). Captions/text unaffected.
 - Vera: TEST.md for ACs 1–11 (in flight).
 - On Vera PASS: write real creds to `.env` (token from user; chat ID 1574572064 captured from /start), release v0.1.0 (commit + tag), start the bot on this box (Task Scheduler / start-assistant.ps1).
 - Sophia (in flight): `ROADMAP.md` — next 10 versions of improvements. User has pre-approved implementing all 10 sequentially (Luna↔Vera per version, one release each); pause only for versions Sophia flags as needing user decisions.

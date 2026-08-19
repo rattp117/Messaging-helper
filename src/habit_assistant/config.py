@@ -190,6 +190,35 @@ class GamificationConfig(BaseModel):
         return v
 
 
+class ChartsConfig(BaseModel):
+    """ROADMAP.md v1.0.0 "Insights: Charts-as-Images". `enabled = true` by
+    default -- the weekly review renders a chart PNG per chartable habit
+    when `matplotlib` (the one optional dependency, `pip install -e
+    ".[charts]"`) is importable. Missing matplotlib with `enabled = true`
+    is NOT an error -- `core/charts.py` logs once and the review falls
+    back to text-only, never crashing (AC1.0.1). Set `enabled = false` to
+    skip chart rendering entirely regardless of what's installed."""
+
+    enabled: bool = True
+
+
+class GarminConfig(BaseModel):
+    """ROADMAP.md v1.0.0 Garmin hydration import (closes SPEC.md §12's
+    TODO). `csv_path = ""` (default) means the feature is off -- the
+    weekly review appends no Garmin section at all. `column_map` maps the
+    app's own field names to the CSV's header names, since export column
+    naming varies by locale/device (ROADMAP's own risk note); default
+    assumes a `Date, Hydration(ml)`-style export. `discrepancy_threshold_ml`
+    is how far self-reported vs. Garmin can differ for a day before the
+    review flags it."""
+
+    csv_path: str = ""
+    column_map: dict[str, str] = Field(
+        default_factory=lambda: {"date": "Date", "hydration_ml": "Hydration(ml)"}
+    )
+    discrepancy_threshold_ml: float = 300
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -298,6 +327,8 @@ class Config(BaseModel):
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
     snooze: SnoozeConfig = SnoozeConfig()
     gamification: GamificationConfig = GamificationConfig()
+    charts: ChartsConfig = ChartsConfig()
+    garmin: GarminConfig = GarminConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

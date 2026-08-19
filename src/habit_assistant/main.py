@@ -14,7 +14,7 @@ import logging
 import random
 import sys
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -32,7 +32,7 @@ from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_e
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
 from habit_assistant.core.reminders import ReminderState, is_quiet_hours_now, schedule_reminders, send_reminder
-from habit_assistant.core.review import run_weekly_review
+from habit_assistant.core.review import render_weekly_review_charts, run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
 from habit_assistant.llm.prompts import (
     DIARY_REFLECTION_SYSTEM_PROMPT,
@@ -848,8 +848,26 @@ async def async_main(args: argparse.Namespace) -> None:
     review_hour, review_minute = (int(x) for x in config.weekly_review.time.split(":"))
 
     async def weekly_review_job() -> None:
-        text = await run_weekly_review(db, config, registry, llm)
+        today = date.today()
+        text = await run_weekly_review(db, config, registry, llm, today=today)
         await channel.send(text)
+
+        # ROADMAP.md v1.0.0 AC1.0.1: attach chart images when
+        # `[charts] enabled` and matplotlib is present; `[]` (disabled,
+        # matplotlib missing, or nothing chartable) leaves the review
+        # exactly as sent above -- text-only, no crash. `today` is shared
+        # with the text review call above so both cover the same 7-day
+        # window even if this job happens to straddle midnight.
+        try:
+            image_captions = render_weekly_review_charts(db, config, registry, today=today)
+        except Exception:
+            logger.exception("Failed to render weekly review charts; continuing with text-only review")
+            image_captions = []
+        for image, caption in image_captions:
+            try:
+                await channel.send_image(image, caption)
+            except Exception:
+                logger.exception("Failed to send a weekly review chart image; continuing")
 
     scheduler.add_job(
         weekly_review_job,

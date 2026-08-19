@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "0.10.0"
+version = "1.0.0"
 description = "Local-first Telegram habit-tracking assistant backed by a local Qwen model via Ollama"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+]
+# ROADMAP.md v1.0.0 "Insights: Charts-as-Images": the one new dependency in
+# the whole roadmap, optional and gated behind [charts] enabled in
+# config.toml. Install with: pip install -e ".[charts]"
+charts = [
+    "matplotlib>=3.8",
 ]
 
 [project.scripts]

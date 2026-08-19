@@ -55,6 +55,24 @@ class TelegramChannel(Channel):
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
+    def build_send_image_request(
+        self, image: bytes, caption: str
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Exposed for testing: returns (url, data, files) without sending.
+        ROADMAP.md v1.0.0 AC1.0.2: `sendPhoto` is a multipart upload (not
+        JSON like `sendMessage`), so `caption`/`chat_id` are form fields
+        and the image bytes are a file part."""
+        return (
+            f"{self._base_url}/sendPhoto",
+            {"chat_id": self._chat_id, "caption": caption},
+            {"photo": ("chart.png", image, "image/png")},
+        )
+
+    async def send_image(self, image: bytes, caption: str) -> None:
+        url, data, files = self.build_send_image_request(image, caption)
+        resp = await self._client.post(url, data=data, files=files)
+        resp.raise_for_status()
+
     async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
         backoff = self._backoff_initial
         while True:

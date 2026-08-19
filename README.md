@@ -26,6 +26,11 @@ outside the two setup paths below).
 uv venv --python 3.12
 uv pip install -e ".[dev]"
 
+# optional: weekly-review chart images (ROADMAP.md v1.0.0). Skip this and
+# leave [charts] enabled = true in config.toml -- the review just falls
+# back to text-only until this extra is installed.
+uv pip install -e ".[charts]"
+
 # config.toml is checked in (non-secret: schedule, goals, model tag, Ollama URL).
 # Edit it if your Ollama host, reminder times, or hydration goal differ from
 # the defaults.
@@ -153,6 +158,43 @@ against a real Ollama server once one became reachable.
 - `data/` (gitignored) — `habits.db` (SQLite, WAL mode), created on first
   run.
 
+### `[charts]` — weekly review images (v1.0.0)
+
+```toml
+[charts]
+enabled = true   # renders a PNG per chartable habit and attaches it to the
+                  # weekly review, IF matplotlib is installed (see below).
+```
+
+Chart rendering needs the optional `matplotlib` dependency
+(`uv pip install -e ".[charts]"`). Numeric habits with a goal get daily bars
+plus a goal line; other numeric/duration/boolean habits get daily count/total
+bars; `text` habits (e.g. `diary`) have nothing numeric to chart and are
+skipped. If `enabled = true` but matplotlib isn't installed, the app logs a
+one-time warning and the review is sent as plain text, exactly like
+`enabled = false` — chart rendering never blocks or crashes the review.
+
+### `[garmin]` — hydration cross-check (v1.0.0)
+
+```toml
+[garmin]
+csv_path = ""                     # empty = feature off (default)
+discrepancy_threshold_ml = 300    # flag a day if |self-reported - Garmin| exceeds this
+[garmin.column_map]
+date = "Date"
+hydration_ml = "Hydration(ml)"
+```
+
+Point `csv_path` at a local Garmin hydration CSV export to turn this on. Each
+weekly review then joins that file (by date) against your own logged `water`
+entries and appends a per-day self-reported-vs-Garmin comparison, flagging
+days whose difference exceeds `discrepancy_threshold_ml`. `column_map` maps
+this app's field names to the CSV's header names — export column naming
+varies by device/locale, so adjust it to match your file. The CSV is read
+locally only; it is never uploaded anywhere. A missing or malformed file at
+review time doesn't fail the review — it appends a bilingual "Garmin data
+unavailable" note instead.
+
 ## CLI flags
 
 ```
@@ -181,5 +223,15 @@ unlike Telegram's long-poll).
 
 ## Non-goals (MVP)
 
-No web UI, no auth, no multi-user, no cloud deployment. No Garmin
-integration yet — see the `TODO` in `core/review.py`.
+No web UI, no auth, no multi-user, no cloud deployment.
+
+## 1.0 stability
+
+As of `v1.0.0`, `config.toml`'s format and the SQLite schema (`storage/
+migrations.py`) are considered **stable**: existing keys keep their meaning
+and existing DB rows keep their shape across future releases. New optional
+keys/sections may be added (with safe defaults, so an old `config.toml`
+keeps working unchanged) and schema changes will keep going through the
+`user_version` migration runner (`storage/migrations.py`) rather than ever
+requiring a manual DB edit. `--backup`/`--restore` (ROADMAP.md v0.3.0) remain
+the supported path for moving data across a schema upgrade.

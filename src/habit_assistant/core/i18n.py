@@ -454,4 +454,46 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "  {label}: {total} entry(ies) today · streak {streak}d",
         "th": "  {label}: บันทึกแล้ว {total} ครั้งวันนี้ · ต่อเนื่อง {streak} วัน",
     },
+    # -----------------------------------------------------------------
+    # ROADMAP.md v1.0.0 "Insights: Charts-as-Images + Garmin Import"
+    # (core/charts.py, core/garmin.py, core/review.py).
+    # -----------------------------------------------------------------
+    "chart_ylabel_count": {
+        "en": "count",
+        "th": "ครั้ง",
+    },
+    "chart_caption_numeric": {
+        "en": "{label}: {total:g} {unit} this week (avg {avg:g} {unit}/day)",
+        "th": "{label}: {total:g} {unit} สัปดาห์นี้ (เฉลี่ย {avg:g} {unit}/วัน)",
+    },
+    "chart_caption_duration": {
+        "en": "{label}: {total:g} sessions this week — {streak}-day streak",
+        "th": "{label}: {total:g} ครั้งสัปดาห์นี้ — ต่อเนื่อง {streak} วัน",
+    },
+    "chart_caption_boolean": {
+        "en": "{label}: done {total:g} day(s) this week",
+        "th": "{label}: ทำแล้ว {total:g} วันสัปดาห์นี้",
+    },
+    "garmin_section_header": {
+        "en": "💧 Garmin Hydration Cross-Check",
+        "th": "💧 เปรียบเทียบข้อมูลน้ำจาก Garmin",
+    },
+    "garmin_unavailable": {
+        "en": (
+            "⚠️ Garmin data unavailable this week (file missing or unreadable) — "
+            "showing self-reported totals only."
+        ),
+        "th": (
+            "⚠️ ไม่มีข้อมูลจาก Garmin ในสัปดาห์นี้ (ไฟล์หายหรืออ่านไม่ได้) — "
+            "แสดงเฉพาะข้อมูลที่บันทึกเองเท่านั้น"
+        ),
+    },
+    "garmin_day_line": {
+        "en": "  {day}: you {self_reported} ml vs. Garmin {garmin} ml",
+        "th": "  {day}: บันทึกเอง {self_reported} มล. เทียบกับ Garmin {garmin} มล.",
+    },
+    "garmin_day_line_flagged": {
+        "en": "  {day}: you {self_reported} ml vs. Garmin {garmin} ml ⚠️ diff {diff} ml",
+        "th": "  {day}: บันทึกเอง {self_reported} มล. เทียบกับ Garmin {garmin} มล. ⚠️ ต่างกัน {diff} มล.",
+    },
 }
