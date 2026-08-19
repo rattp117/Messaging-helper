@@ -38,7 +38,10 @@ def test_logs_table_created_with_expected_columns(tmp_path):
 
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)").fetchall()}
 
-    assert cols == {"id", "ts", "category", "value_num", "value_text", "raw_message", "source", "created_at"}
+    assert cols == {
+        "id", "ts", "category", "value_num", "value_text", "raw_message", "source", "created_at",
+        "deleted_at",  # ROADMAP.md v0.5.0 migration 003: soft-delete for undo
+    }
     db.close()
 
 

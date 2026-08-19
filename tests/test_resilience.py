@@ -646,14 +646,16 @@ def _has_index(conn: sqlite3.Connection, name: str) -> bool:
 def test_migration_002_creates_category_index_on_a_fresh_db(tmp_path):
     database = Database(tmp_path / "fresh.db")
 
-    assert database.schema_version == len(MIGRATIONS) == 2
+    assert database.schema_version == len(MIGRATIONS)  # ROADMAP.md v0.5.0 added migration 003
     assert _has_index(database._conn, "idx_logs_category")
     database.close()
 
 
 def test_migration_002_applies_forward_from_a_v1_db():
     """A DB that already has migration 001 applied (user_version=1, no
-    category index yet) must pick up migration 002 on the next open."""
+    category index yet) must pick up migration 002 on the next open.
+    Runs only migrations 001-002 (not the full, possibly-longer MIGRATIONS
+    list) since this test is specifically about the 001->002 transition."""
     conn = sqlite3.connect(":memory:")
     try:
         from_version, to_version = run_migrations(conn, migrations=MIGRATIONS[:1])
@@ -661,7 +663,7 @@ def test_migration_002_applies_forward_from_a_v1_db():
         assert current_version(conn) == 1
         assert not _has_index(conn, "idx_logs_category")
 
-        from_version2, to_version2 = run_migrations(conn, migrations=MIGRATIONS)
+        from_version2, to_version2 = run_migrations(conn, migrations=MIGRATIONS[:2])
         assert (from_version2, to_version2) == (1, 2)
         assert current_version(conn) == 2
         assert _has_index(conn, "idx_logs_category")
@@ -673,11 +675,11 @@ def test_migration_002_is_idempotent(tmp_path):
     db_path = tmp_path / "idem.db"
 
     first = Database(db_path)
-    assert first.schema_version == 2
+    assert first.schema_version == len(MIGRATIONS)  # ROADMAP.md v0.5.0 added migration 003
     first.close()
 
     second = Database(db_path)
-    assert second.schema_version_before == 2  # nothing pending
-    assert second.schema_version == 2
+    assert second.schema_version_before == len(MIGRATIONS)  # nothing pending
+    assert second.schema_version == len(MIGRATIONS)
     assert _has_index(second._conn, "idx_logs_category")
     second.close()

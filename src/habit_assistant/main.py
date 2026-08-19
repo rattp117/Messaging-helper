@@ -23,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
+from habit_assistant.core import commands
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
@@ -50,6 +51,13 @@ DEFERRED_ACK_MESSAGE = (
     "⏳ Got it — I'll process this once the connection to the assistant is back."
 )
 
+# ROADMAP.md v0.5.0 AC5.2 / edit-with-nothing-to-edit: friendly, no-write
+# responses when a command has nothing to act on. Bilingual-aware copy for
+# every reply is v0.6.0's message catalog (ROADMAP.md §2) -- these stay
+# English for now, per this version's explicit scope note.
+NOTHING_TO_UNDO_MESSAGE = "🤷 Nothing to undo — you don't have any logged entries yet."
+NOTHING_TO_EDIT_MESSAGE = "🤷 Nothing to edit — I couldn't find a matching entry to update."
+
 
 def ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
@@ -76,6 +84,71 @@ def setup_logging(level: str) -> None:
     )
 
 
+def _describe_log(row) -> str:
+    """Human-readable one-line summary of a log row, for undo's "confirm
+    what was removed" (AC5.1)."""
+    category = row["category"]
+    if category == "water":
+        return f"{row['value_num']:g} ml water"
+    if category == "stretch":
+        return f"{row['value_num']:g} min stretch"
+    if category == "diary":
+        text = row["value_text"] or ""
+        snippet = text if len(text) <= 40 else text[:37] + "..."
+        return f'diary entry: "{snippet}"'
+    return f"{category} entry"
+
+
+async def _execute_undo(db: Database, channel: Channel, config: Config, clock) -> None:
+    """ROADMAP.md v0.5.0 AC5.1/AC5.2: soft-delete the most recent
+    non-deleted log and confirm what was removed, with today's running
+    total reflecting the removal. Nothing logged -> friendly message, no
+    write (AC5.2)."""
+    row = db.last_log()
+    if row is None:
+        await channel.send(NOTHING_TO_UNDO_MESSAGE)
+        return
+
+    db.soft_delete(row["id"])
+    description = _describe_log(row)
+    today_str = clock().date().isoformat()
+
+    if row["category"] == "water":
+        total = db.water_total_ml(today_str)
+        goal = config.reminders.water.goal_ml
+        pct = round(100 * total / goal) if goal else 0
+        await channel.send(f"↩️ Undone — removed {description}. Today: {int(total)} / {goal} ml ({pct}%)")
+    elif row["category"] == "stretch":
+        count = db.stretch_count(today_str)
+        await channel.send(f"↩️ Undone — removed {description}. {count} stretch session(s) today")
+    else:
+        await channel.send(f"↩️ Undone — removed {description}")
+
+
+async def _execute_edit(
+    db: Database, channel: Channel, config: Config, clock, command: commands.Command
+) -> None:
+    """ROADMAP.md v0.5.0 AC5.3: update the last matching (same-category)
+    entry's value and re-confirm the new daily total. No matching entry ->
+    friendly message, no write (mirrors AC5.2's undo-with-nothing shape)."""
+    row = db.last_log(category=command.category)
+    if row is None:
+        await channel.send(NOTHING_TO_EDIT_MESSAGE)
+        return
+
+    db.update_value(row["id"], value_num=command.value_num)
+    today_str = clock().date().isoformat()
+
+    if command.category == "water":
+        total = db.water_total_ml(today_str)
+        goal = config.reminders.water.goal_ml
+        pct = round(100 * total / goal) if goal else 0
+        await channel.send(f"✏️ Updated to {command.value_num:g} ml — today {int(total)} / {goal} ml ({pct}%)")
+    elif command.category == "stretch":
+        count = db.stretch_count(today_str)
+        await channel.send(f"✏️ Updated to {command.value_num:g} min stretch — {ordinal(count)} today")
+
+
 async def handle_inbound_message(
     text: str,
     *,
@@ -88,8 +161,17 @@ async def handle_inbound_message(
     dry_run: bool = False,
     health_monitor: HealthMonitor | None = None,
 ) -> None:
-    """Parse -> validate -> (write row + confirm) OR (clarifying question).
-    Confirmation formats are verbatim per SPEC.md §6.
+    """Command dispatch -> (act + confirm) OR Parse -> validate -> (write
+    row + confirm) OR (clarifying question). Confirmation formats are
+    verbatim per SPEC.md §6.
+
+    ROADMAP.md v0.5.0: every inbound message is checked against
+    `core/commands.dispatch()` first -- a conservative, LLM-free router for
+    explicit undo/edit commands (AC5.1, AC5.3). It never needs the LLM and
+    is unaffected by Ollama's up/down state, so it runs even while the
+    deferral path below would otherwise kick in. A message that isn't a
+    recognized command (AC5.5: normal habit messages like "500ml") falls
+    through to the parser exactly as before.
 
     ROADMAP.md v0.4.0 AC3.3: if `health_monitor` says Ollama is currently
     DOWN, skip calling the LLM entirely -- acknowledge the message and
@@ -98,6 +180,18 @@ async def handle_inbound_message(
     `reparse_pending_unparsed`, wired as `health_monitor`'s
     `on_ollama_recovered` callback in `async_main`, and also run once at
     startup to catch up on anything deferred by a previous process run)."""
+    command = commands.dispatch(text, config.units.glass_ml, config.units.bottle_ml)
+    if command is not None:
+        if dry_run:
+            print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
+            return
+        assert channel is not None, "channel is required outside dry-run"
+        if command.kind == "undo":
+            await _execute_undo(db, channel, config, clock)
+        else:
+            await _execute_edit(db, channel, config, clock, command)
+        return
+
     if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
         assert channel is not None, "channel is required outside dry-run"
         now = clock()

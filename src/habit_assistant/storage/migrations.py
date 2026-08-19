@@ -59,12 +59,25 @@ def _migration_002_category_index(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category)")
 
 
+def _migration_003_soft_delete(conn: sqlite3.Connection) -> None:
+    """ROADMAP.md v0.5.0 "Command Layer & Edit/Undo": undo is soft-delete
+    (Sophia's default, confirmed by Archi) so a mistaken "undo"/"ยกเลิก" is
+    reversible and every log stays auditable (AC5.1, AC5.4). Additive-only:
+    a new nullable column, default NULL for every existing row (nothing is
+    retroactively marked deleted), plus an index so the `deleted_at IS
+    NULL` filter added to every aggregation query in storage/db.py doesn't
+    table-scan as `logs` grows."""
+    conn.execute("ALTER TABLE logs ADD COLUMN deleted_at TEXT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON logs(deleted_at)")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
 MIGRATIONS: list[Migration] = [
     _migration_001_baseline,
     _migration_002_category_index,
+    _migration_003_soft_delete,
 ]
 
 
