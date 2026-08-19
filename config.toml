@@ -46,6 +46,17 @@ interval_seconds = 60
 language = "auto"
 primary_language = "th"
 
+# ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours": empty by
+# default (opt-in -- AC9.2's own resolution: no silent behavior change).
+# Each window is [start, end] "HH:MM" (24h, [app].timezone); an end before
+# start crosses midnight, e.g. ["23:00", "07:00"]. Example (commented out):
+# windows = [["13:00", "14:00"], ["23:00", "07:00"]]
+[quiet_hours]
+windows = []
+
+[snooze]
+default_minutes = 30
+
 # ROADMAP.md v0.7.0 "Multi-Habit Extensibility": `[[habits]]` is now the
 # source of truth for water/stretch/diary (config.py's `Config.habits`
 # default reproduces this exact shape when this file/section is absent).
@@ -58,6 +69,9 @@ goal = 2500
 reminder_times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
 label = { en = "water", th = "น้ำ" }
 unit  = { en = "ml",    th = "มล." }
+# ROADMAP.md v0.9.0: default true (skip this habit's reminder once the
+# day's goal is met); set false to always send it regardless of goal state.
+skip_if_goal_met = true
 [habits.unit_aliases]
 glass = 250
 "แก้ว" = 250

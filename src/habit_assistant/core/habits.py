@@ -46,6 +46,9 @@ class Habit:
     reminder_text_en: str | None
     reminder_text_th: str | None
     unit_aliases: dict[str, float]
+    # ROADMAP.md v0.9.0 AC9.1/AC9.4: defaults True so every pre-v0.9 direct
+    # `Habit(...)` construction (test helpers, etc.) keeps working unchanged.
+    skip_if_goal_met: bool = True
 
     def label(self, lang: i18n.Language) -> str:
         return self.label_th if lang == "th" else self.label_en
@@ -82,6 +85,7 @@ class HabitRegistry:
                 reminder_text_en=h.reminder_text.en if h.reminder_text is not None else None,
                 reminder_text_th=h.reminder_text.th if h.reminder_text is not None else None,
                 unit_aliases=dict(h.unit_aliases),
+                skip_if_goal_met=h.skip_if_goal_met,
             )
             for h in config.habits
         ]

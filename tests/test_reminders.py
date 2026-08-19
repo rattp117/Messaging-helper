@@ -161,7 +161,14 @@ def test_schedule_reminders_job_args_bind_correct_habit_and_language():
     `config.i18n.primary_language` (default Thai) -- job.args is
     `(channel, habit, "th")` under the default `Config()` used here, with
     `habit` the actual `Habit` object from the registry (not a bare
-    category string, per SPEC-v0.7.md §5)."""
+    category string, per SPEC-v0.7.md §5).
+
+    CHANGED (ROADMAP.md v0.9.0 AC9.1/AC9.2/AC9.3): `schedule_reminders`
+    now also binds `db`/`config`/`state` into every job's args so the
+    adaptive quiet-hours/goal-met checks and the snooze `ReminderState`
+    tracker work at fire time -- `send_reminder`'s 6-arg contract, not the
+    old 3-arg one. `db`/`state` default `None` when `schedule_reminders`
+    isn't given them (as here), `config` is always the real object."""
     config = Config()
     registry = HabitRegistry.from_config(config)
     scheduler = AsyncIOScheduler()
@@ -170,7 +177,7 @@ def test_schedule_reminders_job_args_bind_correct_habit_and_language():
     schedule_reminders(scheduler, channel, config, registry)
 
     job = scheduler.get_job("reminder_water_08:00")
-    assert job.args == (channel, registry.get("water"), "th")
+    assert job.args == (channel, registry.get("water"), "th", None, config, None)
 
 
 def test_schedule_reminders_uses_configured_timezone():
@@ -256,7 +263,9 @@ def test_schedule_reminders_adds_one_job_for_a_new_habit_with_reminder_times():
     jobs = scheduler.get_jobs()
     assert len(jobs) == 1
     assert jobs[0].id == "reminder_sleep_07:00"
-    assert jobs[0].args == (channel, sleep, "th")
+    # CHANGED (ROADMAP.md v0.9.0): see the args-shape note on
+    # test_schedule_reminders_job_args_bind_correct_habit_and_language above.
+    assert jobs[0].args == (channel, sleep, "th", None, config, None)
 
 
 async def test_send_reminder_new_habit_with_reminder_text_sends_it_in_resolved_language():

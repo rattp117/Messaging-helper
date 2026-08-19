@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
@@ -30,7 +31,7 @@ from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
-from habit_assistant.core.reminders import schedule_reminders, send_reminder
+from habit_assistant.core.reminders import ReminderState, schedule_reminders, send_reminder
 from habit_assistant.core.review import run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
 from habit_assistant.llm.prompts import (
@@ -270,6 +271,56 @@ async def _execute_edit(
     # other than water/stretch (which could never occur pre-v0.7).
 
 
+async def _execute_snooze(
+    db: Database,
+    channel: Channel | None,
+    config: Config,
+    clock,
+    command: commands.Command,
+    registry: HabitRegistry,
+    lang: i18n.Language,
+    scheduler: AsyncIOScheduler | None,
+    reminder_state: ReminderState | None,
+    dry_run: bool,
+) -> None:
+    """ROADMAP.md v0.9.0 AC9.3: reschedule a single one-off reminder for the
+    most recently reminded habit (`reminder_state.last_habit_id`), N minutes
+    from now (N = the command's explicit `minutes`, else `config.snooze.
+    default_minutes`). No habit has fired a reminder yet this process ->
+    a friendly fallback, no job scheduled (mirrors AC5.2's undo-with-nothing
+    shape). The scheduled job is `send_reminder` itself, so it still
+    respects quiet hours/goal-met at fire time (fail-open, same as every
+    other reminder) and fires exactly once -- a `DateTrigger`, not a
+    recurring `CronTrigger`; APScheduler drops a date-triggered job from the
+    scheduler once it has fired, so it never recurs."""
+    minutes = command.minutes if command.minutes is not None else config.snooze.default_minutes
+    habit_id = reminder_state.last_habit_id if reminder_state is not None else None
+    habit = registry.get(habit_id) if habit_id is not None else None
+
+    if dry_run:
+        print({"kind": "snooze", "minutes": minutes, "habit": habit.id if habit is not None else None})
+        return
+
+    assert channel is not None, "channel is required outside dry-run"
+
+    if habit is None:
+        await channel.send(i18n.t("snooze_no_recent_reminder", lang))
+        return
+
+    if scheduler is not None:
+        run_time = clock() + timedelta(minutes=minutes)
+        reminder_language = i18n.resolve_unprompted_language(config)
+        scheduler.add_job(
+            send_reminder,
+            trigger=DateTrigger(run_date=run_time, timezone=config.app.timezone),
+            args=[channel, habit, reminder_language, db, config, reminder_state],
+            id=f"snooze_{habit.id}_{run_time.strftime('%Y%m%dT%H%M%S%f')}",
+            replace_existing=True,
+        )
+
+    await channel.send(i18n.t("snooze_confirmed", lang, minutes=minutes, label=habit.label(lang)))
+
+
 async def _generic_confirmation(
     db: Database, llm: OllamaClient, habit: Habit, value, today_str: str, lang: i18n.Language
 ) -> str:
@@ -351,6 +402,8 @@ async def handle_inbound_message(
     dry_run: bool = False,
     health_monitor: HealthMonitor | None = None,
     registry: HabitRegistry | None = None,
+    scheduler: AsyncIOScheduler | None = None,
+    reminder_state: ReminderState | None = None,
 ) -> None:
     """Command dispatch -> (act + confirm) OR Parse -> validate -> (write
     row + confirm) OR (clarifying question). Confirmation formats are
@@ -399,7 +452,15 @@ async def handle_inbound_message(
     patterns, e.g. "how much water this week?" / "อาทิตย์นี้ยืดกี่ครั้ง")
     is answered by `core/query.answer_question` and returned immediately --
     before the health-monitor deferral check and the extractor below, and
-    without ever writing a `logs` row (AC8.5)."""
+    without ever writing a `logs` row (AC8.5).
+
+    ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours": a
+    `command.kind == "snooze"` (e.g. "snooze 30" / "เลื่อน 30 นาที") is
+    handled by `_execute_snooze`, which schedules a single one-off
+    `send_reminder` job `minutes` from now on `scheduler` for the habit
+    whose reminder most recently actually fired (`reminder_state`, AC9.3)
+    -- both new, optional, default-`None` params so every pre-v0.9 caller
+    that doesn't care about snooze (tests, `--dry-run`) is unaffected."""
     registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config)
     command = commands.dispatch(text, registry)
@@ -417,6 +478,9 @@ async def handle_inbound_message(
                 return
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(answer)
+            return
+        if command.kind == "snooze":
+            await _execute_snooze(db, channel, config, clock, command, registry, lang, scheduler, reminder_state, dry_run)
             return
         if dry_run:
             print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
@@ -661,6 +725,12 @@ async def async_main(args: argparse.Namespace) -> None:
         backoff_max_seconds=config.telegram.backoff_max_seconds,
     )
 
+    # ROADMAP.md v0.9.0: one `ReminderState` for the process lifetime,
+    # updated by every `send_reminder` that actually fires (not suppressed
+    # by quiet hours/goal-met) and read by `_execute_snooze` to resolve a
+    # bare "snooze"/"เลื่อน" command to a habit (AC9.3).
+    reminder_state = ReminderState()
+
     if args.test_reminder:
         # ROADMAP.md v0.7.0 integration: `send_reminder` takes a real
         # `Habit`, not a bare category string (SPEC-v0.7.md §5, module M2's
@@ -678,7 +748,13 @@ async def async_main(args: argparse.Namespace) -> None:
             db.close()
             sys.exit(1)
         try:
-            await send_reminder(channel, habit, i18n.resolve_unprompted_language(config))
+            # ROADMAP.md v0.9.0: `--test-reminder` also honors quiet hours/
+            # goal-met (db/config passed through) so a manual test reflects
+            # real scheduled behavior; `state` lets a follow-up manual
+            # "snooze" also work against a `--test-reminder`-fired habit.
+            await send_reminder(
+                channel, habit, i18n.resolve_unprompted_language(config), db, config, reminder_state
+            )
         except httpx.HTTPError as exc:
             print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
             await channel.aclose()
@@ -736,7 +812,7 @@ async def async_main(args: argparse.Namespace) -> None:
     # during the shared-surface build; see `IMPL.md`'s v0.7.0 "Known
     # limitations").
     scheduler = AsyncIOScheduler()
-    schedule_reminders(scheduler, channel, config, registry)
+    schedule_reminders(scheduler, channel, config, registry, db, state=reminder_state)
 
     review_hour, review_minute = (int(x) for x in config.weekly_review.time.split(":"))
 
@@ -761,7 +837,15 @@ async def async_main(args: argparse.Namespace) -> None:
 
     async def on_message(text: str) -> None:
         await handle_inbound_message(
-            text, db=db, llm=llm, channel=channel, config=config, health_monitor=health_monitor, registry=registry
+            text,
+            db=db,
+            llm=llm,
+            channel=channel,
+            config=config,
+            health_monitor=health_monitor,
+            registry=registry,
+            scheduler=scheduler,
+            reminder_state=reminder_state,
         )
 
     # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own

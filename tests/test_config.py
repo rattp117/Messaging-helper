@@ -5,7 +5,16 @@ from __future__ import annotations
 
 import pytest
 
-from habit_assistant.config import Config, ConfigError, HabitConfig, HabitLabel, load_config, load_secrets
+from habit_assistant.config import (
+    Config,
+    ConfigError,
+    HabitConfig,
+    HabitLabel,
+    QuietHoursConfig,
+    SnoozeConfig,
+    load_config,
+    load_secrets,
+)
 
 
 def test_load_config_reads_values_from_toml(tmp_path):
@@ -231,3 +240,67 @@ def test_load_config_toml_with_invalid_habit_raises_config_error(tmp_path):
 
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+# ===========================================================================
+# ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours" -- config
+# surface: QuietHoursConfig (AC9.2), SnoozeConfig (AC9.3), and
+# HabitConfig.skip_if_goal_met (AC9.1/AC9.4).
+# ===========================================================================
+
+
+def test_quiet_hours_defaults_to_empty_windows():
+    """AC9.2's own opt-in resolution: an unconfigured install must not
+    change reminder behavior silently."""
+    assert Config().quiet_hours.windows == []
+
+
+def test_quiet_hours_accepts_a_midnight_crossing_window():
+    config = Config(quiet_hours=QuietHoursConfig(windows=[("23:00", "07:00"), ("13:00", "14:00")]))
+    assert config.quiet_hours.windows == [("23:00", "07:00"), ("13:00", "14:00")]
+
+
+def test_quiet_hours_bad_hhmm_raises():
+    with pytest.raises(ValueError):
+        QuietHoursConfig(windows=[("11pm", "07:00")])
+
+
+def test_snooze_default_minutes_defaults_to_30():
+    assert Config().snooze.default_minutes == 30
+
+
+def test_snooze_default_minutes_zero_or_negative_raises():
+    with pytest.raises(ValueError):
+        SnoozeConfig(default_minutes=0)
+    with pytest.raises(ValueError):
+        SnoozeConfig(default_minutes=-5)
+
+
+def test_habit_config_skip_if_goal_met_defaults_true():
+    water = HabitConfig(
+        id="water", type="numeric", goal=2500, label=HabitLabel(en="water", th="น้ำ"), unit=HabitLabel(en="ml", th="มล.")
+    )
+    assert water.skip_if_goal_met is True
+
+
+def test_habit_config_skip_if_goal_met_overridable_per_habit():
+    water = HabitConfig(
+        id="water",
+        type="numeric",
+        goal=2500,
+        label=HabitLabel(en="water", th="น้ำ"),
+        unit=HabitLabel(en="ml", th="มล."),
+        skip_if_goal_met=False,
+    )
+    assert water.skip_if_goal_met is False
+
+
+def test_load_config_toml_with_quiet_hours_and_snooze(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[quiet_hours]\nwindows = [["23:00", "07:00"]]\n\n[snooze]\ndefault_minutes = 45\n',
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.quiet_hours.windows == [("23:00", "07:00")]
+    assert config.snooze.default_minutes == 45

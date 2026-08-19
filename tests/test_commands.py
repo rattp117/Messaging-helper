@@ -42,14 +42,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
+
+from apscheduler.triggers.date import DateTrigger
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
 from habit_assistant.core import commands, i18n
 from habit_assistant.core.habits import HabitRegistry
+from habit_assistant.core.reminders import ReminderState
 from habit_assistant.core.review import compute_weekly_stats
 from habit_assistant.llm.ollama_client import ExtractionResult
 from habit_assistant.main import (
@@ -848,3 +851,195 @@ def test_migration_003_is_idempotent(tmp_path):
     rows = second.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1  # row from the first open survived
     second.close()
+
+
+# ===========================================================================
+# ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours" AC9.3 --
+# snooze command detection (LLM-free, core/commands.py) and end-to-end
+# scheduling of a one-off follow-up reminder (main.py).
+# ===========================================================================
+
+SNOOZE_MESSAGES_WITH_EXPECTED_MINUTES = [
+    ("snooze", None),
+    ("Snooze", None),
+    ("/snooze", None),
+    ("snooze 30", 30),
+    ("snooze for 30", 30),
+    ("snooze 15 min", 15),
+    ("snooze 15 minutes", 15),
+    ("/snooze 45", 45),
+    ("เลื่อน", None),
+    ("เลื่อนก่อน", None),
+    ("เลื่อน 30 นาที", 30),
+]
+
+
+@pytest.mark.parametrize("message,expected_minutes", SNOOZE_MESSAGES_WITH_EXPECTED_MINUTES)
+def test_dispatch_classifies_snooze_phrases_with_correct_minutes(message, expected_minutes):
+    command = commands.dispatch(message, DEFAULT_REGISTRY)
+    assert command is not None
+    assert command.kind == "snooze"
+    assert command.minutes == expected_minutes
+    assert command.category is None
+    assert command.value_num is None
+
+
+@pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)
+def test_snooze_matcher_never_fires_on_the_ac55_adversarial_corpus(message):
+    """Same normal-log guard as undo/edit/query -- none of the adversarial
+    corpus messages contain "snooze" or "เลื่อน" as a whole-message trigger."""
+    command = commands.dispatch(message, DEFAULT_REGISTRY)
+    assert command is None
+
+
+class _FakeSnoozeScheduler:
+    """Records `add_job` calls -- a minimal stand-in for AsyncIOScheduler so
+    `_execute_snooze` can be exercised without a real scheduler running."""
+
+    def __init__(self) -> None:
+        self.jobs: list[dict] = []
+
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+        self.jobs.append({"func": func, "trigger": trigger, "args": args, "id": id})
+
+
+async def test_snooze_with_no_prior_reminder_sends_friendly_fallback_and_schedules_nothing(db, fixed_clock):
+    channel = FakeChannel()
+    scheduler = _FakeSnoozeScheduler()
+    reminder_state = ReminderState()  # last_habit_id is None -- nothing ever fired this process
+
+    await handle_inbound_message(
+        "snooze 30",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=Config(),
+        clock=fixed_clock,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    assert channel.sent == [i18n.t("snooze_no_recent_reminder", "en")]
+    assert scheduler.jobs == []
+
+
+async def test_snooze_with_explicit_minutes_schedules_a_one_off_job_for_last_reminded_habit(db, fixed_clock):
+    channel = FakeChannel()
+    scheduler = _FakeSnoozeScheduler()
+    reminder_state = ReminderState()
+    reminder_state.last_habit_id = "water"
+
+    await handle_inbound_message(
+        "snooze 30",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=Config(),
+        clock=fixed_clock,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    assert len(channel.sent) == 1
+    assert "30" in channel.sent[0]
+    assert "water" in channel.sent[0]
+
+    assert len(scheduler.jobs) == 1
+    job = scheduler.jobs[0]
+    assert isinstance(job["trigger"], DateTrigger)
+    scheduled_channel, scheduled_habit, scheduled_lang, scheduled_db, scheduled_config, scheduled_state = job["args"]
+    assert scheduled_channel is channel
+    assert scheduled_habit.id == "water"
+    assert scheduled_db is db
+    assert scheduled_state is reminder_state
+
+
+async def test_snooze_without_explicit_minutes_uses_configured_default(db, fixed_clock):
+    channel = FakeChannel()
+    scheduler = _FakeSnoozeScheduler()
+    reminder_state = ReminderState()
+    reminder_state.last_habit_id = "stretch"
+    config = Config.model_validate({"snooze": {"default_minutes": 45}})
+
+    await handle_inbound_message(
+        "snooze",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=config,
+        clock=fixed_clock,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    assert "45" in channel.sent[0]
+    assert len(scheduler.jobs) == 1
+
+
+async def test_snooze_thai_phrase_gets_thai_confirmation_and_correct_run_time(db, fixed_clock):
+    channel = FakeChannel()
+    scheduler = _FakeSnoozeScheduler()
+    reminder_state = ReminderState()
+    reminder_state.last_habit_id = "water"
+
+    await handle_inbound_message(
+        "เลื่อน 20 นาที",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=Config(),
+        clock=fixed_clock,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    assert i18n.t("snooze_confirmed", "th", minutes=20, label="น้ำ") in channel.sent
+    run_date = scheduler.jobs[0]["trigger"].run_date
+    assert run_date.replace(tzinfo=None) == fixed_clock() + timedelta(minutes=20)
+
+
+async def test_snooze_command_in_dry_run_prints_and_schedules_nothing(db, fixed_clock, capsys):
+    reminder_state = ReminderState()
+    reminder_state.last_habit_id = "water"
+    scheduler = _FakeSnoozeScheduler()
+
+    await handle_inbound_message(
+        "snooze 10",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=None,
+        config=Config(),
+        clock=fixed_clock,
+        dry_run=True,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    captured = capsys.readouterr()
+    assert "snooze" in captured.out
+    assert "10" in captured.out
+    assert scheduler.jobs == []
+
+
+async def test_snooze_never_reaches_the_llm(db, fixed_clock):
+    reminder_state = ReminderState()
+    reminder_state.last_habit_id = "water"
+    scheduler = _FakeSnoozeScheduler()
+    channel = FakeChannel()
+
+    # _NeverCalledLLM raises AssertionError if either method is touched --
+    # not raising here proves snooze is LLM-free, same guarantee undo/edit
+    # already have (module docstring: "no LLM call ... for the patterns
+    # matched here").
+    await handle_inbound_message(
+        "snooze",
+        db=db,
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=Config(),
+        clock=fixed_clock,
+        scheduler=scheduler,
+        reminder_state=reminder_state,
+    )
+
+    assert channel.sent  # got a confirmation, no exception raised

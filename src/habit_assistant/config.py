@@ -96,6 +96,45 @@ class HealthConfig(BaseModel):
     interval_seconds: float = 60.0
 
 
+class QuietHoursConfig(BaseModel):
+    """ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours": do-not-
+    disturb windows during which no reminder fires (regardless of goal
+    state) -- e.g. a nap or a sleep window. `windows` is a list of
+    `[start, end]` "HH:MM" (24h, `config.app.timezone` wall-clock) pairs.
+    `start <= end` is a normal same-day window; `start > end` crosses
+    midnight (e.g. `["23:00", "07:00"]` spans the night) -- see
+    `core/reminders.py:_in_quiet_hours`. Deliberately EMPTY by default
+    (AC9.2's own risk note / ROADMAP's "⚑ NEEDS USER INPUT" resolution:
+    opt-in, so an unconfigured install's reminder behavior never changes
+    silently)."""
+
+    windows: list[tuple[str, str]] = Field(default_factory=list)
+
+    @field_validator("windows")
+    @classmethod
+    def _windows_are_hhmm_pairs(cls, v: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        for start, end in v:
+            if not _HHMM_RE.match(start) or not _HHMM_RE.match(end):
+                raise ValueError(f"quiet_hours window {(start, end)!r} entries must match HH:MM")
+        return v
+
+
+class SnoozeConfig(BaseModel):
+    """ROADMAP.md v0.9.0: default snooze duration when a "snooze"/"เลื่อน"
+    command doesn't itself carry an explicit minute count (e.g. "snooze",
+    "เลื่อนก่อน") -- `core/commands.py`'s `Command.minutes` is `None` in that
+    case and the caller (`main.py`) falls back to this value."""
+
+    default_minutes: int = 30
+
+    @field_validator("default_minutes")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("snooze.default_minutes must be a positive integer")
+        return v
+
+
 class I18nConfig(BaseModel):
     """ROADMAP.md v0.6.0: `language` forces every reply to Thai/English
     regardless of input; "auto" (default) matches the detected language
@@ -143,6 +182,11 @@ class HabitConfig(BaseModel):
     reminder_times: list[str] = Field(default_factory=list)
     reminder_text: HabitLabel | None = None
     unit_aliases: dict[str, float] = Field(default_factory=dict)
+    # ROADMAP.md v0.9.0 AC9.1/AC9.4: when this habit's daily goal is already
+    # met, core/reminders.py skips (logs, doesn't send) its reminder instead
+    # of nagging. Per-habit, default True; set False to disable adaptive
+    # skipping for just this habit. No-op for a habit with no `goal`.
+    skip_if_goal_met: bool = True
 
     @field_validator("id")
     @classmethod
@@ -220,6 +264,8 @@ class Config(BaseModel):
     backup: BackupConfig = BackupConfig()
     health: HealthConfig = HealthConfig()
     i18n: I18nConfig = I18nConfig()
+    quiet_hours: QuietHoursConfig = QuietHoursConfig()
+    snooze: SnoozeConfig = SnoozeConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

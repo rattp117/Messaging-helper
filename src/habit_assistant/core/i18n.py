@@ -408,4 +408,16 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "📊 {label}: {count} entry(ies) {timeframe}",
         "th": "📊 บันทึก{label} {count} ครั้ง {timeframe}",
     },
+    # -----------------------------------------------------------------
+    # ROADMAP.md v0.9.0 "Adaptive Reminders, Snooze & Quiet Hours"
+    # (core/commands.py's "snooze" kind, main.py's handler): AC9.3.
+    # -----------------------------------------------------------------
+    "snooze_confirmed": {
+        "en": "⏰ Okay — I'll remind you about {label} again in {minutes} min.",
+        "th": "⏰ ได้เลย เดี๋ยวเตือนเรื่อง{label}อีกครั้งใน {minutes} นาที",
+    },
+    "snooze_no_recent_reminder": {
+        "en": "🤷 There's no recent reminder to snooze yet.",
+        "th": "🤷 ยังไม่มีการเตือนล่าสุดให้เลื่อนนะ",
+    },
 }

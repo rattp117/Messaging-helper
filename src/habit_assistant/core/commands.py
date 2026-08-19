@@ -32,10 +32,26 @@ classification is `core/query.py`'s job, which `main.py` invokes only after
 conservative "no false positives on a real log" contract for THIS layer:
 none of the anchors above can appear in a plain log like "500ml" or "10 min
 stretch" (see `tests/test_commands.py`'s adversarial corpus, unchanged and
-still green). Checked last, after undo/edit, so an edit-trigger phrase that
-fails to parse as NUMBER [+ UNIT] still falls through to the parser exactly
-as it did pre-v0.8 (it never reaches the query check) -- only a message that
-matched *neither* undo nor an edit trigger gets a chance to match query.
+still green). Checked after undo/edit and after snooze, so an edit-trigger
+phrase that fails to parse as NUMBER [+ UNIT] still falls through to the
+parser exactly as it did pre-v0.8 (it never reaches the query check) --
+only a message that matched *neither* undo nor an edit trigger gets a
+chance to match query.
+
+v0.9.0 (ROADMAP.md "Adaptive Reminders, Snooze & Quiet Hours", AC9.3): a
+fourth, LLM-free `"snooze"` kind -- an explicit, conservative bilingual
+trigger ("snooze"/"snooze 30"/"/snooze 30", "เลื่อน"/"เลื่อนก่อน"/"เลื่อน 30
+นาที") optionally carrying an explicit minute count in `Command.minutes`
+(`None` means "use the configured default", `core/reminders.py`/`main.py`'s
+job, not this module's -- this module never reads `Config.snooze`). Checked
+*between* edit and query (SPEC-v0.7.md's own routing brief: "undo/edit ->
+snooze -> query -> extractor") because "snooze" and "เลื่อน" don't overlap
+either the undo/edit triggers or any query anchor, so ordering relative to
+undo/edit doesn't matter in practice -- it's placed there to match the
+brief's exact stated precedence. Resolving *which* habit to snooze is not
+this module's job either (it has no DB/registry-state access beyond the
+static `registry` argument) -- `main.py` resolves that from
+`core/reminders.ReminderState.last_habit_id` at dispatch time.
 """
 
 from __future__ import annotations
@@ -47,7 +63,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from habit_assistant.core.habits import HabitRegistry
 
-CommandKind = Literal["undo", "edit", "query"]
+CommandKind = Literal["undo", "edit", "query", "snooze"]
 
 
 @dataclass(slots=True)
@@ -55,6 +71,7 @@ class Command:
     kind: CommandKind
     category: str | None = None  # a configured habit id -- only set for "edit"
     value_num: float | None = None  # new value -- only set for "edit"
+    minutes: int | None = None  # explicit snooze minutes -- only set for "snooze"; None = use the configured default
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +103,36 @@ _EDIT_TRIGGER = re.compile(
 # (any run of non-whitespace characters -- Thai and Latin unit strings both
 # come through as a single such run, e.g. "ml", "มล.", "min", "glass").
 _VALUE_RE = re.compile(r"^(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>\S+)?\s*$")
+
+# ---------------------------------------------------------------------------
+# snooze -- ROADMAP.md v0.9.0 (AC9.3). English "snooze"/"snooze 30"/
+# "/snooze 30" (an optional trailing minute count, with or without a
+# "min(s)"/"minutes" unit word); Thai "เลื่อน"/"เลื่อนก่อน" (bare postpone)
+# or "เลื่อน 30 นาที" (an explicit minute count). Anchored to the whole
+# stripped message, same conservative "explicit trigger only" philosophy
+# as undo/edit -- a message that merely mentions "snooze"/"เลื่อน" mid-
+# sentence must not be swallowed (verified against the adversarial corpus
+# in tests/test_commands.py).
+# ---------------------------------------------------------------------------
+
+_SNOOZE_EN_RE = re.compile(
+    r"^/?snooze(?:\s+(?:for\s+)?(?P<minutes>\d+)\s*(?:min(?:ute)?s?)?)?$", re.IGNORECASE
+)
+_SNOOZE_TH_RE = re.compile(r"^เลื่อน(?:ก่อน)?(?:\s*(?P<minutes>\d+)\s*นาที)?$")
+
+
+def _match_snooze(stripped: str) -> tuple[bool, int | None]:
+    """Returns `(matched, minutes)`. `minutes` is the explicit count parsed
+    out of the phrase (e.g. "snooze 30" -> 30), or `None` when the phrase
+    carried no number (e.g. bare "snooze"/"เลื่อนก่อน") -- the caller falls
+    back to `Config.snooze.default_minutes` for `None`."""
+    for pattern in (_SNOOZE_EN_RE, _SNOOZE_TH_RE):
+        match = pattern.match(stripped)
+        if match is not None:
+            minutes_str = match.group("minutes")
+            return True, (int(minutes_str) if minutes_str else None)
+    return False, None
+
 
 # ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
@@ -203,13 +250,13 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     `registry` (its configured `unit`/`unit_aliases`), not a hardcoded
     water/stretch check.
 
-    ROADMAP.md v0.8.0: checked in order undo -> edit -> query -> (fall
-    through to the parser), matching the ROADMAP's own required routing
-    ("explicit commands -> query intent -> extractor"). An edit-trigger
+    ROADMAP.md v0.9.0: checked in order undo -> edit -> snooze -> query ->
+    (fall through to the parser), matching this version's own required
+    routing ("undo/edit -> snooze -> query -> extractor"). An edit-trigger
     phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
     immediately (pre-v0.8 behavior, unchanged) rather than also being
-    offered to the query matcher -- it already committed to "edit" shape,
-    not a question."""
+    offered to the snooze/query matchers -- it already committed to "edit"
+    shape, not a snooze or a question."""
     stripped = text.strip()
     if not stripped:
         return None
@@ -224,6 +271,10 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
             return None
         category, value_num = parsed
         return Command(kind="edit", category=category, value_num=value_num)
+
+    snoozed, minutes = _match_snooze(stripped)
+    if snoozed:
+        return Command(kind="snooze", minutes=minutes)
 
     if _match_query(stripped):
         return Command(kind="query")
