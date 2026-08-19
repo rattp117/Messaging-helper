@@ -1,9 +1,14 @@
 # SPEC — Local Habit-Tracking Assistant
 
-> Provided verbatim by the user (2026-08-19). This is the authoritative spec.
-> Dev/build machine: Windows Server (this box) — no Ollama, no system Python (use `uv`).
-> Deploy target: Mac Mini M2 Pro, macOS, always-on. launchd plist + README instructions target macOS.
-> Tests must mock Ollama and Telegram; live integration is verified on the Mac Mini by the user.
+> Provided verbatim by the user (2026-08-19). This is the authoritative spec, with one
+> user-directed amendment (2026-08-19, same day): **the runtime host is the Windows box this
+> repo lives on, not the Mac Mini.** The Mac Mini serves Ollama remotely at
+> `http://mac-mini:11434` (default model `qwen3.5:9b-mlx`); outbound calls are therefore
+> `api.telegram.org` + `mac-mini:11434`. Windows keep-alive = Task Scheduler +
+> `start-assistant.ps1` (primary); the launchd plist remains as an alternative macOS deploy.
+> Python via `uv` (no system Python). Unit tests mock Ollama and Telegram; live extraction is
+> verified against the mac-mini Ollama when reachable. References to "Mac Mini as host" in the
+> original text below are superseded by this note.
 
 ---
 

@@ -1,0 +1,30 @@
+[app]
+timezone = "Asia/Bangkok"
+db_path = "data/habits.db"
+log_level = "INFO"
+
+[telegram]
+poll_timeout = 30
+
+[ollama]
+base_url = "http://mac-mini:11434"
+model = "qwen3.5:9b-mlx"
+timeout_seconds = 30
+
+[reminders.water]
+times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
+goal_ml = 2500
+
+[reminders.stretch]
+times = ["11:00", "16:00"]
+
+[reminders.diary]
+times = ["21:30"]
+
+[units]
+glass_ml = 250
+bottle_ml = 600
+
+[weekly_review]
+day_of_week = "sun"
+time = "20:00"

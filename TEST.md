@@ -1,0 +1,107 @@
+# Test Report — Local Habit-Tracking Assistant (MVP)
+
+## Summary
+- Total: 133 tests
+- Passed: 132
+- Failed: 0
+- Skipped: 1 (intentional — a parametrized sanity-check variant that only applies to `core/`, see below)
+- Status: **PASS**
+
+Full suite run: `uv run pytest -q` → `132 passed, 1 skipped in ~3s`, on Windows, fully offline/mocked (no network required to pass the suite). Supplementary live checks against the reachable `mac-mini:11434` Ollama server and `api.telegram.org` were run separately (not pytest dependencies) — see "Live spot-checks" below.
+
+**Iteration note:** the first pass found one gap (AC9 — `--test-reminder` crashed with a raw traceback on a Telegram HTTP error instead of failing cleanly). Luna fixed it in `src/habit_assistant/main.py`; the fix was independently re-verified — see "Verification of Luna's fix" below. All 11 ACs are now green.
+
+## Test files
+
+| Path | Tests added | Covers |
+|---|---|---|
+| `tests/test_parser.py` | 33 | AC4, AC5, AC11 |
+| `tests/test_db.py` | 22 | AC2, AC8 (aggregation math) |
+| `tests/test_config.py` | 8 | AC1 |
+| `tests/test_channels.py` | 12 | AC3 |
+| `tests/test_confirmations.py` | 26 | AC6 |
+| `tests/test_reminders.py` | 8 | AC7 |
+| `tests/test_review.py` | 7 | AC8 (narrative + delivery) |
+| `tests/test_cli.py` | 9 | AC9 |
+| `tests/test_deliverables.py` | 8 | AC10 |
+| `tests/conftest.py` | — | shared fixture: restores root-logger state after tests that call `main.async_main` (it calls `logging.basicConfig(force=True)`, which otherwise leaks a stale stdout-bound handler into later tests) |
+
+## AC coverage
+
+| AC | Description | Tests | Result |
+|---|---|---|---|
+| AC1 | Typed config from `config.toml` + `.env`; missing token → clear error | `tests/test_config.py` (8 tests: toml load, defaults on missing file, malformed toml, invalid values, missing/partial secrets, error message content, `ConfigError` is `RuntimeError`) | **PASS** |
+| AC2 | SQLite schema + index on first run, WAL mode; insert/query round-trip | `tests/test_db.py` (schema columns, index existence, WAL mode, idempotent reopen, insert/query round-trips for water/diary, `NOT NULL raw_message` constraint, day-boundary correctness for `water_total_ml`/`stretch_count`/`diary_count`, `logs_between` inclusive bounds + ordering) | **PASS** |
+| AC3 | `Channel` ABC; `TelegramChannel` send/run; no `core/`/`storage/` imports a concrete channel | `tests/test_channels.py` (ABC is abstract, `TelegramChannel` isa `Channel`, `build_send_request` shape, `send` via mocked transport + HTTP-error propagation, `run` long-poll: on_message per update + offset advance, skips textless updates, on_message exceptions don't crash the loop; AST-based seam scan of every `.py` in `core/` and `storage/`) | **PASS** |
+| AC4 | Parser: `POST /api/chat`, `stream:false`, JSON-schema `format`; validates §7 schema; strips `<think>`/prose; fails closed to `unknown`, never crashes | `tests/test_parser.py` (request shape assertion incl. `format==EXTRACTION_JSON_SCHEMA`/`think:false`; think-block + prose stripping incl. end-to-end; malformed JSON, connection error, HTTP 500, invalid category enum, missing keys, extra keys, non-numeric/zero/negative `water_ml`/`stretch_min`, empty `diary_text`, non-numeric confidence — all fail closed without raising) | **PASS** |
+| AC5 | Bilingual normalization: Thai glass/bottle + English + explicit ml, constants configurable | `tests/test_parser.py` (mocked: water/glass-Thai/bottle/explicit-ml/stretch/diary cases; a request-inspection test proving custom `glass_ml`/`bottle_ml` values reach the system prompt) **+ live spot-check** (see below) | **PASS** |
+| AC6 | Confirmations verbatim per §6 (running water total/%, stretch ordinal, diary reflection); `unknown` → clarifying question, no DB row | `tests/test_confirmations.py` (exact string match for water/stretch/diary/unknown incl. running-total accumulation, configurable goal, ordinal helper parametrized 1st/2nd/3rd/4th/11th–13th/21st–23rd/101st/111th, diary reflection fallback, DB-write correctness per category, unknown writes zero rows even interleaved with valid logs, `--dry-run` writes nothing, one true end-to-end test through the real parser with a mocked Ollama transport) | **PASS** |
+| AC7 | Reminders fire at configured times via `AsyncIOScheduler`; weekly review Sunday 20:00; all times from `config.toml` | `tests/test_reminders.py` (`send_reminder` text-per-category + invalid-category `ValueError`; job count/ids from default + custom config; cron hour/minute/timezone fields match config; job `args` bind the right channel+category; `replace_existing` doesn't duplicate once the scheduler is started; **one integration test drives the real `async_main`** with `AsyncIOScheduler`/`TelegramChannel` mocked out, confirming the weekly-review cron job is registered with `day_of_week`/`hour`/`minute` taken from `config.toml`, alongside the per-category reminder jobs) | **PASS** |
+| AC8 | Weekly review aggregates 7 days (adherence %, totals/avg, stretch streak, diary count) and sends a narrative via the channel | `tests/test_db.py` (`compute_weekly_stats`/`format_stats_summary` against a deterministic 7-day seed: per-day %, weekly total/avg, stretch total, **trailing streak correctness** — including a day that breaks the streak mid-week — diary count, empty-week all-zero case, custom goal) + `tests/test_review.py` (`run_weekly_review` composes stats+narrative, falls back to a plain stats block when the LLM returns `None`/`""`, passes the stats summary into the LLM prompt, system prompt encodes the "no medical advice" constraint, the returned text is exactly what a `Channel.send` call would push) | **PASS** |
+| AC9 | CLI flags `--test-reminder <cat>`, `--seed`, `--dry-run` work | `tests/test_cli.py` (argparse shape/defaults/choices; `--seed` run as a real offline subprocess with `cwd=tmp_path` — inserts rows, only water/stretch/diary categories; `--dry-run` driven through `async_main` with a mocked Ollama client — prints structured output, writes zero DB rows; `--test-reminder` driven through `async_main` with a mocked `TelegramChannel` — sends the right reminder text; `--test-reminder` on an HTTP failure now exits(1) cleanly (fixed, re-verified — see below); missing-secrets path exits(1) with a clear stderr message) **+ live spot-checks** (see below) | **PASS** (fixed; was FAIL in the first pass) |
+| AC10 | `.env.example`, `.gitignore` (excludes `.env`, `data/`), README (macOS setup), `.plist` exist | `tests/test_deliverables.py` (file existence + content checks for all of the above, plus `pyproject.toml` pytest wiring and the `LineChannel` stub's webhook documentation) | **PASS** |
+| AC11 | Parser tests (mocked Ollama) + DB tests pass on Windows dev box | Full suite run via `uv run pytest -q` on this Windows box, `.venv` created with `uv venv --python 3.12` per the environment brief | **PASS** (132/133, 1 intentional skip) |
+
+## Failures (if any)
+
+None currently. One was found and fixed during this test round — see "Verification of Luna's fix" below for the full before/after detail (kept for the record rather than deleted).
+
+## Regressions detected
+
+None. Re-running the full suite after Luna's fix shows the same 132 tests passing as before (131 that were already green, plus the 1 that was failing), with the same 1 intentional skip — no previously-passing test broke.
+
+## Verification of Luna's fix
+
+**Original finding (first pass):** `test_test_reminder_flag_fails_cleanly_on_401_not_crash` (`tests/test_cli.py`) — `--test-reminder` on a Telegram HTTP failure (e.g. 401 from a bad token) raised an unhandled `httpx.HTTPStatusError` out of `async_main` instead of failing cleanly, unlike the existing `ConfigError` pattern.
+
+**Luna's fix, independently reviewed** (`src/habit_assistant/main.py`):
+- `import httpx` added at module level (line 16).
+- The `args.test_reminder` branch (lines 177–189) now wraps `await send_reminder(channel, args.test_reminder)` in:
+  ```python
+  try:
+      await send_reminder(channel, args.test_reminder)
+  except httpx.HTTPError as exc:
+      print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
+      await channel.aclose()
+      await llm.aclose()
+      db.close()
+      sys.exit(1)
+  await channel.aclose()
+  await llm.aclose()
+  db.close()
+  return
+  ```
+- This matches the pattern recommended in the prior version of this report: mirrors the `except ConfigError as exc: print(...); sys.exit(1)` handling already used for the two `load_config()`/`load_secrets()` branches, catches the broader `httpx.HTTPError` (covers connection failures too, not just 4xx/5xx status), and correctly still tears down `channel`/`llm`/`db` before exiting on the error path.
+- Everything else in `main.py` is byte-identical to what was reviewed in the first pass — confirmed via file mtimes (`main.py` last modified 17:32:24, after every file under `tests/`, so nothing in `tests/` was touched by this change) and a full re-read of the file end to end. No test file was modified to make this pass.
+
+**Independent re-verification performed:**
+1. Read the full diff area of `main.py` (imports + the `--test-reminder` branch) and confirmed no other code paths changed.
+2. Ran the full suite fresh: `uv run pytest -q` → `132 passed, 1 skipped in 3.03s`, 0 failed.
+3. Ran the specific previously-failing test in isolation: `uv run pytest -q tests/test_cli.py::test_test_reminder_flag_fails_cleanly_on_401_not_crash -v` → `1 passed`.
+4. Confirmed no stray `.env` or `data/` was left in the repo (`git status --short` shows only the expected untracked deliverable files; `.env` does not exist).
+
+No live re-test against the real `api.telegram.org` 401 was repeated for this verification round (the mocked regression test added in the first pass exercises the exact same `httpx.HTTPError` → clean-exit path deterministically and offline; the original live 401 round-trip from the first pass, quoted in the prior version of this report, already established that Telegram really does return 401 for a bad token — that fact hasn't changed).
+
+## Live spot-checks (supplementary evidence, not pytest dependencies)
+
+Ollama reachable at `http://mac-mini:11434` (confirmed via `/api/version` → `0.32.6`) during the first test pass. Telegram credentials remain absent from `.env` per Luna's intentional handoff state — no real Telegram sends were made in this verification round.
+
+**AC5 — live bilingual/unit extraction** (via the real `parse_message` → real `OllamaClient` → live `qwen3.5:9b-mlx`):
+
+| Message | Result |
+|---|---|
+| `ดื่มน้ำ 2 แก้ว` | `water`, `water_ml=500` (2 × 250ml glass) |
+| `did 10 min stretch` | `stretch`, `stretch_min=10` |
+| `500ml` | `water`, `water_ml=500` (explicit ml) |
+| `1 ขวดน้ำ` | `water`, `water_ml=600` (1 × 600ml bottle) |
+| `purple elephants dance sideways` | `unknown` (fail-closed for gibberish) |
+
+All 5 match spec/AC5 exactly.
+
+**AC9 — live `--dry-run`** (`--dry-run "500ml"`, run from an isolated scratch directory so no repo files were touched): real Ollama call returned `{'category': 'water', 'water_ml': 500, 'stretch_min': None, 'diary_text': None, 'confidence': 0.95}`, printed to stdout, no DB write attempted (dry-run path). Confirms the live wiring works end-to-end; the mocked suite covers the same contract offline.
+
+**AC9 — live `--test-reminder` 401 path (first pass only):** reproduced the original crash against the real `api.telegram.org` with a temporary, immediately-deleted `.env` (copied from `.env.example`'s placeholder values, never committed) — this is what surfaced the AC9 gap in the first place. Not repeated in this verification round since the offline regression test covers the same code path deterministically.
+
+## Recommendation
+
+**Ready to ship.** All 11 acceptance criteria (AC1–AC11) pass. 132/133 tests green, 1 intentional skip, 0 failures, 0 regressions. The one gap found in the first pass (AC9 `--test-reminder` error handling) was fixed by Luna and independently re-verified against the exact test that caught it, plus a full clean suite run.

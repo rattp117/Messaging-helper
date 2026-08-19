@@ -1,0 +1,251 @@
+"""Wiring: load config, start the scheduler + Telegram inbound loop.
+
+Also the CLI entry point: --test-reminder, --seed, --dry-run (SPEC.md §10).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import random
+import sys
+from dataclasses import asdict
+from datetime import datetime, timedelta
+
+import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from habit_assistant.channels.base import Channel
+from habit_assistant.channels.telegram import TelegramChannel
+from habit_assistant.config import Config, ConfigError, load_config, load_secrets
+from habit_assistant.core.parser import parse_message
+from habit_assistant.core.reminders import REMINDER_TEXTS, schedule_reminders, send_reminder
+from habit_assistant.core.review import run_weekly_review
+from habit_assistant.llm.ollama_client import OllamaClient
+from habit_assistant.llm.prompts import DIARY_REFLECTION_SYSTEM_PROMPT, DIARY_REFLECTION_USER_TEMPLATE
+from habit_assistant.storage.db import Database
+from habit_assistant.storage.models import LogEntry
+
+logger = logging.getLogger("habit_assistant")
+
+CLARIFYING_QUESTION = (
+    "🤔 I couldn't quite tell what you meant — was that about water, a stretch "
+    "break, or today's diary? Try something like '500ml water' or '10 min stretch'."
+)
+
+
+def ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def setup_logging(level: str) -> None:
+    # Windows consoles / redirected files default to cp1252, which can't
+    # encode the emoji used in reminders/confirmations. Force UTF-8 so
+    # logging (and print()) never crashes on them, on any platform.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+
+
+async def handle_inbound_message(
+    text: str,
+    *,
+    db: Database,
+    llm: OllamaClient,
+    channel: Channel | None,
+    config: Config,
+    source: str = "reply",
+    clock=datetime.now,
+    dry_run: bool = False,
+) -> None:
+    """Parse -> validate -> (write row + confirm) OR (clarifying question).
+    Confirmation formats are verbatim per SPEC.md §6."""
+    result = await parse_message(text, llm, config.units.glass_ml, config.units.bottle_ml)
+
+    if dry_run:
+        print(asdict(result))
+        return
+
+    assert channel is not None, "channel is required outside dry-run"
+
+    now = clock()
+    ts = now.isoformat(timespec="seconds")
+    today_str = now.date().isoformat()
+
+    if result.category == "unknown":
+        await channel.send(CLARIFYING_QUESTION)
+        return
+
+    if result.category == "water":
+        entry = LogEntry(None, ts, "water", float(result.water_ml), None, text, source)
+        db.insert_log(entry)
+        total = db.water_total_ml(today_str)
+        goal = config.reminders.water.goal_ml
+        pct = round(100 * total / goal) if goal else 0
+        await channel.send(f"✅ {result.water_ml} ml logged — today {int(total)} / {goal} ml ({pct}%)")
+        return
+
+    if result.category == "stretch":
+        entry = LogEntry(None, ts, "stretch", float(result.stretch_min), None, text, source)
+        db.insert_log(entry)
+        count = db.stretch_count(today_str)
+        await channel.send(f"✅ {result.stretch_min} min stretch logged — {ordinal(count)} today")
+        return
+
+    if result.category == "diary":
+        entry = LogEntry(None, ts, "diary", None, result.diary_text, text, source)
+        db.insert_log(entry)
+        reflection = await llm.chat_text(
+            DIARY_REFLECTION_SYSTEM_PROMPT,
+            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=result.diary_text),
+        )
+        if not reflection:
+            reflection = "Thanks for sharing — noted."
+        await channel.send(f"✅ Saved. {reflection}")
+        return
+
+
+def seed_fake_data(db: Database, config: Config) -> None:
+    """Insert a few days of plausible fake logs so --seed lets the weekly
+    review be exercised fully offline."""
+    now = datetime.now()
+    rng = random.Random(42)
+    for offset in range(6, -1, -1):
+        day = now - timedelta(days=offset)
+        for _ in range(rng.randint(2, 6)):
+            ml = rng.choice([250, 300, 500, 600])
+            ts = day.replace(hour=rng.randint(8, 20), minute=rng.randint(0, 59), second=0, microsecond=0)
+            db.insert_log(LogEntry(None, ts.isoformat(timespec="seconds"), "water", float(ml), None, f"seed {ml}ml water", "reply"))
+        if rng.random() > 0.3:
+            minutes = rng.choice([5, 10, 15])
+            ts = day.replace(hour=rng.randint(11, 17), minute=rng.randint(0, 59), second=0, microsecond=0)
+            db.insert_log(LogEntry(None, ts.isoformat(timespec="seconds"), "stretch", float(minutes), None, f"seed {minutes} min stretch", "reply"))
+        if rng.random() > 0.4:
+            ts = day.replace(hour=21, minute=30, second=0, microsecond=0)
+            db.insert_log(LogEntry(None, ts.isoformat(timespec="seconds"), "diary", None, "seed diary entry", "seed diary entry", "reply"))
+    logger.info("Seeded fake data for the last 7 days into %s", db.db_path)
+
+
+async def async_main(args: argparse.Namespace) -> None:
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    setup_logging(config.app.log_level)
+
+    # --seed and --dry-run don't need Telegram credentials.
+    if args.seed:
+        db = Database(config.app.db_path)
+        seed_fake_data(db, config)
+        db.close()
+        return
+
+    if args.dry_run is not None:
+        db = Database(config.app.db_path)
+        llm = OllamaClient(config.ollama.base_url, config.ollama.model, config.ollama.timeout_seconds)
+        await handle_inbound_message(args.dry_run, db=db, llm=llm, channel=None, config=config, dry_run=True)
+        await llm.aclose()
+        db.close()
+        return
+
+    try:
+        secrets = load_secrets()
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    db = Database(config.app.db_path)
+    llm = OllamaClient(config.ollama.base_url, config.ollama.model, config.ollama.timeout_seconds)
+    channel = TelegramChannel(secrets.telegram_bot_token, secrets.telegram_chat_id, config.telegram.poll_timeout)
+
+    if args.test_reminder:
+        try:
+            await send_reminder(channel, args.test_reminder)
+        except httpx.HTTPError as exc:
+            print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
+            await channel.aclose()
+            await llm.aclose()
+            db.close()
+            sys.exit(1)
+        await channel.aclose()
+        await llm.aclose()
+        db.close()
+        return
+
+    scheduler = AsyncIOScheduler()
+    schedule_reminders(scheduler, channel, config)
+
+    review_hour, review_minute = (int(x) for x in config.weekly_review.time.split(":"))
+
+    async def weekly_review_job() -> None:
+        text = await run_weekly_review(db, config, llm)
+        await channel.send(text)
+
+    scheduler.add_job(
+        weekly_review_job,
+        trigger=CronTrigger(
+            day_of_week=config.weekly_review.day_of_week,
+            hour=review_hour,
+            minute=review_minute,
+            timezone=config.app.timezone,
+        ),
+        id="weekly_review",
+        replace_existing=True,
+    )
+
+    scheduler.start()
+    logger.info("Scheduler started; entering Telegram long-poll loop")
+
+    async def on_message(text: str) -> None:
+        await handle_inbound_message(text, db=db, llm=llm, channel=channel, config=config)
+
+    try:
+        await channel.run(on_message)
+    finally:
+        scheduler.shutdown(wait=False)
+        await channel.aclose()
+        await llm.aclose()
+        db.close()
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="habit_assistant", description="Local habit-tracking assistant")
+    parser.add_argument(
+        "--test-reminder",
+        metavar="CATEGORY",
+        choices=sorted(REMINDER_TEXTS),
+        help="Fire one reminder immediately and exit",
+    )
+    parser.add_argument("--seed", action="store_true", help="Insert a few days of fake logs for weekly-review testing")
+    parser.add_argument(
+        "--dry-run",
+        metavar="MESSAGE",
+        default=None,
+        help="Parse MESSAGE and print structured output without writing DB or sending a confirmation",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    asyncio.run(async_main(args))
+
+
+if __name__ == "__main__":
+    main()
