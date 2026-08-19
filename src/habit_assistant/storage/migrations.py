@@ -48,11 +48,23 @@ def _migration_001_baseline(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ts_cat ON logs(ts, category)")
 
 
+def _migration_002_category_index(conn: sqlite3.Connection) -> None:
+    """ROADMAP.md v0.4.0 "Runtime Resilience & Self-Monitoring": deferred
+    messages (received while the LLM was unavailable) are persisted as
+    ordinary `logs` rows with category='unparsed'. That's a data-level
+    change only -- `category` has never had a CHECK constraint restricting
+    its values, so no column change is needed to store it. This migration
+    is purely additive: an index so `Database.pending_unparsed()` (the
+    startup/recovery re-parse scan) doesn't table-scan as `logs` grows."""
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category)")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
 MIGRATIONS: list[Migration] = [
     _migration_001_baseline,
+    _migration_002_category_index,
 ]
 
 

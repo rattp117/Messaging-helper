@@ -54,6 +54,8 @@ class OllamaConfig(BaseModel):
     models: list[str] | None = None
     timeout_seconds: float = 30.0
     confidence_threshold: float = 0.55
+    retry_attempts: int = 2
+    retry_backoff_seconds: float = 1.0
 
     @property
     def model_chain(self) -> list[str]:
@@ -66,6 +68,8 @@ class OllamaConfig(BaseModel):
 
 class TelegramConfig(BaseModel):
     poll_timeout: int = 30
+    backoff_initial_seconds: float = 1.0
+    backoff_max_seconds: float = 60.0
 
 
 class WeeklyReviewConfig(BaseModel):
@@ -76,6 +80,10 @@ class WeeklyReviewConfig(BaseModel):
 class BackupConfig(BaseModel):
     dir: str = "data/backups"
     retain: int = 14
+
+
+class HealthConfig(BaseModel):
+    interval_seconds: float = 60.0
 
 
 class AppConfig(BaseModel):
@@ -92,6 +100,7 @@ class Config(BaseModel):
     units: UnitsConfig = UnitsConfig()
     weekly_review: WeeklyReviewConfig = WeeklyReviewConfig()
     backup: BackupConfig = BackupConfig()
+    health: HealthConfig = HealthConfig()
 
 
 class Secrets(BaseSettings):

@@ -5,6 +5,8 @@ log_level = "INFO"
 
 [telegram]
 poll_timeout = 30
+backoff_initial_seconds = 1
+backoff_max_seconds = 60
 
 [ollama]
 base_url = "http://mac-mini:11434"
@@ -12,6 +14,8 @@ model = "qwen3.5:9b-mlx"
 models = ["qwen3.5:9b-mlx", "qwen3:8b"]
 timeout_seconds = 30
 confidence_threshold = 0.55
+retry_attempts = 2
+retry_backoff_seconds = 1.5
 
 [reminders.water]
 times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
@@ -34,3 +38,6 @@ time = "20:00"
 [backup]
 dir = "data/backups"
 retain = 14
+
+[health]
+interval_seconds = 60

@@ -68,3 +68,25 @@ class Database:
             "SELECT * FROM logs WHERE ts >= ? AND ts <= ? ORDER BY ts",
             (start_ts, end_ts),
         ).fetchall()
+
+    def pending_unparsed(self) -> list[sqlite3.Row]:
+        """ROADMAP.md v0.4.0 AC3.3: rows deferred while the LLM was
+        unavailable, still waiting to be re-parsed. A plain query against
+        persisted state, not an in-memory queue -- so this also finds rows
+        deferred by a *previous* process run (survives a restart)."""
+        return self._conn.execute(
+            "SELECT * FROM logs WHERE category = 'unparsed' ORDER BY ts"
+        ).fetchall()
+
+    def reclassify_log(
+        self, log_id: int, category: str, value_num: float | None, value_text: str | None
+    ) -> None:
+        """Convert a deferred 'unparsed' row to its real category once it
+        has been successfully re-parsed (ROADMAP.md v0.4.0 AC3.3).
+        `ts`/`raw_message`/`source` are left untouched -- only the
+        parsed-out fields change."""
+        self._conn.execute(
+            "UPDATE logs SET category = ?, value_num = ?, value_text = ? WHERE id = ?",
+            (category, value_num, value_text, log_id),
+        )
+        self._conn.commit()

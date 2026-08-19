@@ -11,10 +11,22 @@ backend for qwen3.5:9b-mlx was found, live, to ignore the JSON-schema
 logs whether it honors `format`, purely for operator visibility; it never
 gates behavior and never raises. The runtime safety net is unchanged:
 core/parser.py._validate still fails closed on anything malformed.
+
+v0.4.0 (ROADMAP.md "Runtime Resilience", scope item 2): `_post` now retries
+a *transport*-level failure (connection refused/timeout -- the host is
+unreachable) a bounded number of times with backoff before giving up on
+that model, and `self.available` tracks whether the most recent request
+actually reached the host, as a signal distinguishable from "reached the
+host but got an off-schema/low-confidence response" (which is a parser
+concern, handled in core/parser.py, not an availability concern). An
+application-level HTTP error status (host responded, just badly) is NOT
+retried here and still counts as "available" -- only a transport error
+means the host itself is unreachable.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -99,6 +111,8 @@ class OllamaClient:
         models: str | Sequence[str],
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        retry_attempts: int = 1,
+        retry_backoff_seconds: float = 0.3,
     ):
         self._base_url = base_url.rstrip("/")
         self._models: list[str] = [models] if isinstance(models, str) else list(models)
@@ -106,6 +120,13 @@ class OllamaClient:
             raise ValueError("OllamaClient requires at least one model")
         self._timeout = timeout_seconds
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
+        self._retry_attempts = max(retry_attempts, 0)
+        self._retry_backoff = retry_backoff_seconds
+        # v0.4.0: reachability of the *last* request actually made (any
+        # model, any of chat_json/chat_text/probe_schema_support) -- "LLM
+        # unavailable" state, distinct from a schema-valid-but-off-target
+        # or low-confidence parse (see module docstring).
+        self.available: bool = True
 
     async def _post(
         self,
@@ -116,7 +137,14 @@ class OllamaClient:
     ) -> str | None:
         """POST /api/chat for one model. Returns the raw, unstripped
         `message.content` string, or None on any transport/HTTP failure.
-        Never raises."""
+        Never raises.
+
+        v0.4.0: a transport-level failure (host unreachable/timed out) is
+        retried up to `retry_attempts` times with exponential backoff
+        before giving up and setting `self.available = False`. An
+        HTTP error *status* (the host responded) is not retried here --
+        it sets `self.available = True` (host is up) and returns None so
+        the existing fail-closed-to-unknown behavior is unchanged."""
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -128,14 +156,41 @@ class OllamaClient:
         }
         if json_schema is not None:
             payload["format"] = json_schema
-        try:
-            resp = await self._client.post(f"{self._base_url}/api/chat", json=payload)
-            resp.raise_for_status()
-            body = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("Ollama request failed (model=%s): %s", model, exc)
-            return None
-        return body.get("message", {}).get("content", "")
+
+        backoff = self._retry_backoff
+        attempts = self._retry_attempts + 1
+        for attempt in range(attempts):
+            try:
+                resp = await self._client.post(f"{self._base_url}/api/chat", json=payload)
+            except httpx.TransportError as exc:
+                self.available = False
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "Ollama request unreachable (model=%s, attempt %d/%d, retrying in %.1fs): %s",
+                        model,
+                        attempt + 1,
+                        attempts,
+                        backoff,
+                        exc,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+                    continue
+                logger.warning(
+                    "Ollama request failed after %d attempt(s) (model=%s): %s", attempts, model, exc
+                )
+                return None
+
+            self.available = True  # a response (of any status) means the host is reachable
+            try:
+                resp.raise_for_status()
+                body = resp.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning("Ollama request failed (model=%s): %s", model, exc)
+                return None
+            return body.get("message", {}).get("content", "")
+
+        return None  # unreachable in practice -- defensive
 
     async def chat_json(self, system_prompt: str, user_prompt: str, json_schema: dict[str, Any]) -> str | None:
         """POST /api/chat with stream=false and a JSON schema in `format`,

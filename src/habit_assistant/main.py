@@ -1,13 +1,15 @@
 """Wiring: load config, start the scheduler + Telegram inbound loop.
 
 Also the CLI entry point: --test-reminder, --seed, --dry-run (SPEC.md §10),
-plus --migrate, --backup, --restore (ROADMAP.md v0.3.0).
+plus --migrate, --backup, --restore (ROADMAP.md v0.3.0), plus the health
+monitor task (ROADMAP.md v0.4.0).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import random
 import sys
@@ -24,6 +26,7 @@ from habit_assistant.config import Config, ConfigError, load_config, load_secret
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
+from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
 from habit_assistant.core.reminders import REMINDER_TEXTS, schedule_reminders, send_reminder
 from habit_assistant.core.review import run_weekly_review
@@ -37,6 +40,14 @@ logger = logging.getLogger("habit_assistant")
 CLARIFYING_QUESTION = (
     "🤔 I couldn't quite tell what you meant — was that about water, a stretch "
     "break, or today's diary? Try something like '500ml water' or '10 min stretch'."
+)
+
+# ROADMAP.md v0.4.0 AC3.3: sent instead of the normal parse/confirm flow
+# while the LLM is known DOWN (health_monitor.ollama_up is False) -- the
+# message is persisted verbatim (category='unparsed') and re-parsed
+# automatically once Ollama recovers (see reparse_pending_unparsed below).
+DEFERRED_ACK_MESSAGE = (
+    "⏳ Got it — I'll process this once the connection to the assistant is back."
 )
 
 
@@ -75,9 +86,26 @@ async def handle_inbound_message(
     source: str = "reply",
     clock=datetime.now,
     dry_run: bool = False,
+    health_monitor: HealthMonitor | None = None,
 ) -> None:
     """Parse -> validate -> (write row + confirm) OR (clarifying question).
-    Confirmation formats are verbatim per SPEC.md §6."""
+    Confirmation formats are verbatim per SPEC.md §6.
+
+    ROADMAP.md v0.4.0 AC3.3: if `health_monitor` says Ollama is currently
+    DOWN, skip calling the LLM entirely -- acknowledge the message and
+    persist it verbatim as category='unparsed' (raw text kept). It gets
+    re-parsed and confirmed automatically once Ollama recovers (see
+    `reparse_pending_unparsed`, wired as `health_monitor`'s
+    `on_ollama_recovered` callback in `async_main`, and also run once at
+    startup to catch up on anything deferred by a previous process run)."""
+    if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
+        assert channel is not None, "channel is required outside dry-run"
+        now = clock()
+        ts = now.isoformat(timespec="seconds")
+        db.insert_log(LogEntry(None, ts, "unparsed", None, None, text, source))
+        await channel.send(DEFERRED_ACK_MESSAGE)
+        return
+
     result = await parse_message(
         text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
     )
@@ -123,6 +151,51 @@ async def handle_inbound_message(
             reflection = "Thanks for sharing — noted."
         await channel.send(f"✅ Saved. {reflection}")
         return
+
+
+async def reparse_pending_unparsed(
+    db: Database, llm: OllamaClient, channel: Channel, config: Config
+) -> None:
+    """ROADMAP.md v0.4.0 AC3.3 recovery path: re-parse every row deferred
+    while Ollama was DOWN (category='unparsed'), convert it to its real
+    category, and confirm. Rows come straight from `db.pending_unparsed()`
+    -- a plain query against persisted state, not an in-memory queue --
+    so this also picks up rows deferred by a *previous* process run. Two
+    call sites in `async_main`: once at startup (catches up any backlog
+    left over from before a restart) and once per DOWN->UP transition via
+    `health_monitor`'s `on_ollama_recovered` callback.
+
+    A row that's still unparseable after Ollama is back (genuinely bad
+    input, not an outage) is left as 'unparsed' and logged -- it is not
+    retried again until the next DOWN->UP transition."""
+    pending = db.pending_unparsed()
+    if not pending:
+        return
+
+    logger.info("Re-parsing %d deferred message(s)", len(pending))
+    for row in pending:
+        text = row["raw_message"]
+        result = await parse_message(
+            text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
+        )
+
+        if result.category == "water":
+            db.reclassify_log(row["id"], "water", float(result.water_ml), None)
+            await channel.send(f"🔁 Recovered: {result.water_ml} ml logged from your earlier message.")
+        elif result.category == "stretch":
+            db.reclassify_log(row["id"], "stretch", float(result.stretch_min), None)
+            await channel.send(
+                f"🔁 Recovered: {result.stretch_min} min stretch logged from your earlier message."
+            )
+        elif result.category == "diary":
+            db.reclassify_log(row["id"], "diary", None, result.diary_text)
+            await channel.send("🔁 Recovered: saved your earlier diary message.")
+        else:
+            logger.warning(
+                "Deferred message id=%s still unparseable after Ollama recovery; left as 'unparsed': %r",
+                row["id"],
+                text,
+            )
 
 
 def seed_fake_data(db: Database, config: Config) -> None:
@@ -214,8 +287,20 @@ async def async_main(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     db = Database(config.app.db_path)
-    llm = OllamaClient(config.ollama.base_url, config.ollama.model_chain, config.ollama.timeout_seconds)
-    channel = TelegramChannel(secrets.telegram_bot_token, secrets.telegram_chat_id, config.telegram.poll_timeout)
+    llm = OllamaClient(
+        config.ollama.base_url,
+        config.ollama.model_chain,
+        config.ollama.timeout_seconds,
+        retry_attempts=config.ollama.retry_attempts,
+        retry_backoff_seconds=config.ollama.retry_backoff_seconds,
+    )
+    channel = TelegramChannel(
+        secrets.telegram_bot_token,
+        secrets.telegram_chat_id,
+        config.telegram.poll_timeout,
+        backoff_initial_seconds=config.telegram.backoff_initial_seconds,
+        backoff_max_seconds=config.telegram.backoff_max_seconds,
+    )
 
     if args.test_reminder:
         try:
@@ -239,6 +324,27 @@ async def async_main(args: argparse.Namespace) -> None:
         await llm.probe_schema_support()
     except Exception:
         logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
+
+    # ROADMAP.md v0.4.0 AC3.3: catch up on anything deferred by a
+    # *previous* process run before entering the main loop. If Ollama is
+    # still down right now, parse_message just fails closed per row (no
+    # change, no confirmation) and they stay 'unparsed' for the health
+    # monitor's own DOWN->UP callback to pick up later -- never raises.
+    try:
+        await reparse_pending_unparsed(db, llm, channel, config)
+    except Exception:
+        logger.exception("Startup re-parse of deferred messages failed unexpectedly; continuing")
+
+    async def on_ollama_recovered() -> None:
+        await reparse_pending_unparsed(db, llm, channel, config)
+
+    health_monitor = HealthMonitor(
+        config.ollama.base_url,
+        secrets.telegram_bot_token,
+        interval_seconds=config.health.interval_seconds,
+        channel=channel,
+        on_ollama_recovered=on_ollama_recovered,
+    )
 
     scheduler = AsyncIOScheduler()
     schedule_reminders(scheduler, channel, config)
@@ -265,11 +371,20 @@ async def async_main(args: argparse.Namespace) -> None:
     logger.info("Scheduler started; entering Telegram long-poll loop")
 
     async def on_message(text: str) -> None:
-        await handle_inbound_message(text, db=db, llm=llm, channel=channel, config=config)
+        await handle_inbound_message(
+            text, db=db, llm=llm, channel=channel, config=config, health_monitor=health_monitor
+        )
 
+    # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own
+    # asyncio task alongside the scheduler and the inbound loop.
+    health_task = asyncio.create_task(health_monitor.run())
     try:
         await channel.run(on_message)
     finally:
+        health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await health_task
+        await health_monitor.aclose()
         scheduler.shutdown(wait=False)
         await channel.aclose()
         await llm.aclose()

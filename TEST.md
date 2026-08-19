@@ -218,3 +218,49 @@ None. All 160 baseline tests (v0.1.0 + v0.2.0) pass unmodified — same assertio
 ## Recommendation
 
 **Ready to ship.** All 5 acceptance criteria (AC4.1–AC4.5) are covered and green. The full 186-test suite (160 baseline + 26 new) passes with the same single intentional skip as before — 0 failures, 0 regressions. The out-of-scope `pyproject.toml` BOM fix Luna made to unblock testing is audited as content-identical apart from the BOM. Production DB (`data/habits.db`, PID 15804) and `.env` were verified untouched throughout.
+
+---
+
+# Test Report — v0.4.0 (Runtime Resilience & Self-Monitoring)
+
+Implements `ROADMAP.md`'s "v0.3.0 — Runtime Resilience & Self-Monitoring" section (AC3.1–AC3.5), **shipped as v0.4.0** per Archi's reorder (Migrations first, so this version's deferral queue is persistent from the start rather than in-memory). Built on top of the released v0.3.0 migration runner (`data/habits.db` schema version 2, migration `_migration_002_category_index`).
+
+## Summary
+- Total: 203 tests (186 baseline + 17 new)
+- Passed: 203
+- Failed: 0
+- Skipped: 1 (same pre-existing intentional skip as baseline, unrelated to this version)
+- Status: **PASS**
+
+Full suite run: `.venv\Scripts\python.exe -m pytest -q` → `203 passed, 1 skipped in 26.07s`, on Windows, fully offline (`httpx.MockTransport` for every Telegram/Ollama/health-check request; real on-disk SQLite via `tmp_path` for persistence tests). Baseline re-confirmed independently before writing any new test: `186 passed, 1 skipped`, matching Luna's `IMPL.md`-reported baseline exactly.
+
+**Live-environment compliance:** every test in `tests/test_resilience.py` runs against a mocked `httpx.MockTransport` (no real network call to Telegram or Ollama) or a `tmp_path`-backed `Database` (never `data/habits.db`). Confirmed `data/habits.db`'s mtime (`1787135716.401662`) identical before and after the full run, and the live bot process (PID 1660) still present and untouched. No `.env` was read or written by any new test. No commit was made.
+
+## Test files
+
+| Path | Tests added | Covers |
+|---|---|---|
+| `tests/test_resilience.py` | 17 | AC3.1, AC3.2, AC3.3, AC3.4, AC3.5, migration 002 |
+
+## AC coverage
+
+| AC | Description | Tests | Result |
+|---|---|---|---|
+| AC3.1 | Simulated Telegram transport errors trigger exponential backoff (capped), recovering without dropping the polling offset (no missed/duplicated updates) | `test_backoff_grows_and_caps_across_consecutive_transport_errors` (4 consecutive `httpx.ConnectError`s → captured `asyncio.sleep` calls `== [1.0, 2.0, 4.0, 4.0]`, cap respected on the 4th; `channel._offset` stays `None` — never touched by failure-only runs) + `test_backoff_resets_to_initial_after_a_successful_poll` (2 failures → `[1.0, 2.0]`, success resets, next 2 failures → `[1.0, 2.0]` again, not `[4.0, 8.0]`) + `test_offset_never_advances_on_failure_and_recovery_resumes_from_correct_offset` (success carrying `update_id=10` → 3 consecutive failures → success carrying `update_id=20`; asserts the `offset` query param sent on *every one* of the 3 failing requests, and on the recovering request, is exactly `"11"` — proving the offset the retry path sends is never corrupted by the failures in between; `received == ["500ml", "10 min stretch"]`, each exactly once; final `channel._offset == 21`) | **PASS** |
+| AC3.2 | Ollama DOWN→(stays down) sends exactly one channel alert; no repeat alert until UP then DOWN again | `test_exactly_one_alert_per_up_to_down_transition_no_repeat_while_still_down` (7-cycle sequence up→down×3→up→down×2; asserts `channel.sent == [OLLAMA_DOWN_MESSAGE, OLLAMA_DOWN_MESSAGE]` — exactly 2 alerts, one per transition, not 5 for 5 failing checks — and `on_ollama_recovered` fired exactly once) + `test_no_new_alert_while_still_down_new_alert_only_after_up_then_down_again` (up→down×5, never recovers in-run: `channel.sent == [OLLAMA_DOWN_MESSAGE]`, exactly one) + `test_alert_still_logged_when_channel_send_itself_fails` (channel's `.send` raises `RuntimeError` on the DOWN transition: `run_once()` does not propagate the exception, `caplog` still shows `OLLAMA_DOWN_MESSAGE` logged as the fallback record) | **PASS** |
+| AC3.3 | A message received while the LLM is unavailable is acknowledged and persisted as `unparsed` (raw text kept), then automatically re-parsed and confirmed when Ollama returns | `test_deferred_message_acks_writes_unparsed_row_and_never_calls_llm` (`_NeverCalledLLM` raises `AssertionError` if ever invoked — proves the LLM is never touched; `channel.sent == [DEFERRED_ACK_MESSAGE]`; one `category='unparsed'` row, raw text preserved, `value_num`/`value_text` both `None`) + `test_deferred_row_excluded_from_aggregations_while_pending` (`water_total_ml`/`stretch_count`/`diary_count` all `0` while pending) + `test_deferred_row_persists_across_database_close_and_reopen` (real `tmp_path` file: `Database` closed then **reopened at the same path**, simulating a full process restart — `pending_unparsed()` still returns the row; this is the PERSISTENT-not-in-memory requirement, explicitly verified against disk, not mocked) + `test_reparse_on_recovery_reclassifies_confirms_and_reincludes_in_aggregations` (`reparse_pending_unparsed` with a now-succeeding LLM stub: `🔁 Recovered: 500 ml logged...` sent, row flips `unparsed`→`water` with `value_num==500.0` and original `raw_message` intact, `pending_unparsed()` empty, `water_total_ml` now `500.0`) + `test_startup_backlog_reparsed_with_no_in_process_transition` (a row inserted directly — simulating what a *previous process run* left behind — is picked up by `reparse_pending_unparsed` called on its own, with **no `HealthMonitor` ever constructed** in the test, proving the startup call site doesn't depend on an in-process DOWN→UP transition) + `test_reparse_leaves_genuinely_unparseable_row_as_unparsed` (still-`unknown` re-parse result leaves the row as `unparsed`, sends no recovery confirmation, per `IMPL.md`'s documented "not retried until next recovery" behavior) | **PASS** |
+| AC3.4 | Telegram unreachable → logged and retried, process stays alive (no crash, no exit) | `test_telegram_unreachable_is_logged_and_retried_without_crashing` (6 consecutive `httpx.ConnectError`s: `caplog` shows exactly 6 `"Telegram getUpdates failed"` warnings, one per failure, none propagated as an unhandled exception — only the test's own sentinel on the 7th call ends the loop) — also demonstrated by every AC3.1 test above, each of which drives `channel.run` through multiple consecutive failures without the loop exiting or raising anything but the deliberate stop sentinel | **PASS** |
+| AC3.5 | Health checks are read-only calls to the two already-allowed hosts only — no new outbound destination | `test_only_allowed_hosts_contacted_across_all_resilience_paths` — one shared `httpx.MockTransport`/`AsyncClient` wired into a `TelegramChannel`, an `OllamaClient`, and a `HealthMonitor` together; the handler raises `AssertionError` on any host outside `{mac-mini, api.telegram.org}` (fails fast on a leak, doesn't just record it); exercises `TelegramChannel.send`, one `getUpdates` poll cycle, `OllamaClient.chat_json` (including its transport-retry path — first attempt fails, second succeeds), and `HealthMonitor.run_once` (both `/api/version` and `/getMe`) against the *same* client; final `hosts_hit == {"mac-mini", "api.telegram.org"}`, nothing else | **PASS** |
+| Migration 002 | `_migration_002_category_index` applies on a fresh DB, applies forward from a v1-only DB, and is idempotent | `test_migration_002_creates_category_index_on_a_fresh_db` (`schema_version == len(MIGRATIONS) == 2`, `idx_logs_category` present) + `test_migration_002_applies_forward_from_a_v1_db` (bare connection stamped at `user_version=1` via `MIGRATIONS[:1]` only, index absent; running the full `MIGRATIONS` list applies migration 002 specifically, `(1, 2)` from/to, index now present) + `test_migration_002_is_idempotent` (`Database` reopened at the same path a second time: `schema_version_before == schema_version == 2`, nothing re-applied, index still present) | **PASS** |
+
+## Failures (if any)
+
+None.
+
+## Regressions detected
+
+None. All 186 baseline tests (v0.1.0–v0.3.0) pass unmodified — same assertions, same count, same single intentional skip. No existing test file was touched; `tests/test_resilience.py` is an addition only.
+
+## Recommendation
+
+**Ready to ship.** All 5 acceptance criteria (AC3.1–AC3.5) plus migration 002 are covered and green. The full 203-test suite (186 baseline + 17 new) passes with the same single intentional skip as before — 0 failures, 0 regressions. AC3.3's PERSISTENT (not in-memory) deferral queue requirement is explicitly verified with a real close/reopen of an on-disk `Database`. AC3.5's "only the two allowed hosts" requirement is verified with a fail-fast assertion inside the mocked transport handler shared across all three resilience components (Telegram, Ollama, health monitor), not just a post-hoc host-set check. Production DB (`data/habits.db`, PID 1660) was verified untouched (identical mtime) throughout; no real Telegram call was made; no commit was made.

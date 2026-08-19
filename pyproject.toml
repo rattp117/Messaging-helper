@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first Telegram habit-tracking assistant backed by a local Qwen model via Ollama"
 requires-python = ">=3.11"
 dependencies = [
