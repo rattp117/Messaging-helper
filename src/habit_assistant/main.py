@@ -27,16 +27,30 @@ from habit_assistant.core import commands, i18n
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
+from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
-from habit_assistant.core.reminders import REMINDER_TEXTS, schedule_reminders, send_reminder
+from habit_assistant.core.reminders import schedule_reminders, send_reminder
 from habit_assistant.core.review import run_weekly_review
-from habit_assistant.llm.ollama_client import OllamaClient
-from habit_assistant.llm.prompts import DIARY_REFLECTION_SYSTEM_PROMPT, DIARY_REFLECTION_USER_TEMPLATE
+from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
+from habit_assistant.llm.prompts import (
+    DIARY_REFLECTION_SYSTEM_PROMPT,
+    DIARY_REFLECTION_USER_TEMPLATE,
+    build_extraction_system_prompt,
+    build_extraction_user_prompt,
+)
 from habit_assistant.storage.db import Database
 from habit_assistant.storage.models import LogEntry
 
 logger = logging.getLogger("habit_assistant")
+
+# ROADMAP.md v0.7.0 "Multi-Habit Extensibility": the default habit registry
+# (water/stretch/diary, SPEC-v0.7.md §2.1), used wherever a registry is
+# needed before `config.toml` has been loaded -- currently only
+# `build_arg_parser()`'s `--test-reminder` choices (argparse runs before
+# `async_main` loads config). Every other call site builds its own
+# registry from the loaded `Config` (SPEC-v0.7.md §4 R3).
+_DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
 # ROADMAP.md v0.6.0: every user-facing string below now resolves through
 # core/i18n.py's catalog (AC6.2). These module-level names are kept as the
@@ -83,9 +97,11 @@ def setup_logging(level: str) -> None:
     )
 
 
-def _describe_log(row, lang: i18n.Language) -> str:
+def _describe_log(row, registry: HabitRegistry, lang: i18n.Language) -> str:
     """Human-readable one-line summary of a log row, for undo's "confirm
-    what was removed" (AC5.1)."""
+    what was removed" (AC5.1). ROADMAP.md v0.7.0: built-ins keep their
+    byte-identical v0.6 catalog entries; any other configured habit
+    resolves through `registry` to a type-generic description (AC9)."""
     category = row["category"]
     if category == "water":
         return i18n.t("describe_log_water", lang, value_num=row["value_num"])
@@ -95,46 +111,106 @@ def _describe_log(row, lang: i18n.Language) -> str:
         text = row["value_text"] or ""
         snippet = text if len(text) <= 40 else text[:37] + "..."
         return i18n.t("describe_log_diary", lang, snippet=snippet)
+
+    habit = registry.get(category)
+    if habit is not None:
+        if habit.type in ("numeric", "duration"):
+            msg_id = "describe_log_numeric" if habit.type == "numeric" else "describe_log_duration"
+            return i18n.t(
+                msg_id, lang, value_num=row["value_num"], unit=habit.unit(lang) or "", label=habit.label(lang)
+            )
+        if habit.type == "boolean":
+            return i18n.t("describe_log_boolean", lang, label=habit.label(lang))
     return i18n.t("describe_log_generic", lang, category=category)
 
 
-async def _execute_undo(db: Database, channel: Channel, config: Config, clock, lang: i18n.Language) -> None:
+async def _execute_undo(
+    db: Database, channel: Channel, config: Config, clock, registry: HabitRegistry, lang: i18n.Language
+) -> None:
     """ROADMAP.md v0.5.0 AC5.1/AC5.2: soft-delete the most recent
     non-deleted log and confirm what was removed, with today's running
     total reflecting the removal. Nothing logged -> friendly message, no
     write (AC5.2). `lang` is the reply language resolved from the inbound
-    undo command itself (ROADMAP.md v0.6.0 AC6.1/AC6.3)."""
+    undo command itself (ROADMAP.md v0.6.0 AC6.1/AC6.3).
+
+    ROADMAP.md v0.7.0: water/stretch keep their byte-identical v0.6
+    confirmations (AC7.1); any other configured habit gets a type-generic
+    undo confirmation via `registry` (AC9); anything else (including
+    diary, unchanged from v0.6) falls back to `undo_removed_generic`."""
     row = db.last_log()
     if row is None:
         await channel.send(i18n.t("nothing_to_undo", lang))
         return
 
     db.soft_delete(row["id"])
-    description = _describe_log(row, lang)
+    description = _describe_log(row, registry, lang)
     today_str = clock().date().isoformat()
+    category = row["category"]
 
-    if row["category"] == "water":
+    if category == "water":
         total = db.water_total_ml(today_str)
         goal = config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
         await channel.send(
             i18n.t("undo_removed_water", lang, description=description, total=int(total), goal=goal, pct=pct)
         )
-    elif row["category"] == "stretch":
+        return
+    if category == "stretch":
         count = db.stretch_count(today_str)
         await channel.send(i18n.t("undo_removed_stretch", lang, description=description, count=count))
-    else:
-        await channel.send(i18n.t("undo_removed_generic", lang, description=description))
+        return
+
+    habit = registry.get(category)
+    if habit is not None and habit.type == "numeric" and habit.goal:
+        total = db.sum_value(habit.id, today_str)
+        pct = round(100 * total / habit.goal) if habit.goal else 0
+        await channel.send(
+            i18n.t(
+                "undo_removed_numeric",
+                lang,
+                description=description,
+                total=total,
+                goal=habit.goal,
+                unit=habit.unit(lang) or "",
+                pct=pct,
+            )
+        )
+        return
+    if habit is not None and habit.type == "duration":
+        count = db.count(habit.id, today_str)
+        await channel.send(
+            i18n.t("undo_removed_duration", lang, description=description, count=count, label=habit.label(lang))
+        )
+        return
+    if habit is not None and habit.type == "boolean":
+        await channel.send(i18n.t("undo_removed_boolean", lang, description=description))
+        return
+
+    await channel.send(i18n.t("undo_removed_generic", lang, description=description))
 
 
 async def _execute_edit(
-    db: Database, channel: Channel, config: Config, clock, command: commands.Command, lang: i18n.Language
+    db: Database,
+    channel: Channel,
+    config: Config,
+    clock,
+    command: commands.Command,
+    registry: HabitRegistry,
+    lang: i18n.Language,
 ) -> None:
     """ROADMAP.md v0.5.0 AC5.3: update the last matching (same-category)
     entry's value and re-confirm the new daily total. No matching entry ->
     friendly message, no write (mirrors AC5.2's undo-with-nothing shape).
     `lang` is resolved from the inbound edit command itself (v0.6.0
-    AC6.1/AC6.3)."""
+    AC6.1/AC6.3).
+
+    ROADMAP.md v0.7.0: water/stretch keep their byte-identical v0.6
+    confirmations (AC7.1); a non-built-in numeric/duration habit gets a
+    type-generic edit confirmation (AC9). `core/commands.py`'s
+    registry-aware `dispatch()` (module M1) can now classify an edit
+    against any numeric/duration habit's own units/aliases, not just
+    water/stretch, so this generic branch is live in production
+    (SPEC-v0.7.md §4 R14)."""
     row = db.last_log(category=command.category)
     if row is None:
         await channel.send(i18n.t("nothing_to_edit", lang))
@@ -150,11 +226,117 @@ async def _execute_edit(
         await channel.send(
             i18n.t("edit_updated_water", lang, value_num=command.value_num, total=int(total), goal=goal, pct=pct)
         )
-    elif command.category == "stretch":
+        return
+    if command.category == "stretch":
         count = db.stretch_count(today_str)
         await channel.send(
             i18n.t("edit_updated_stretch", lang, value_num=command.value_num, ordinal=ordinal(count), count=count)
         )
+        return
+
+    habit = registry.get(command.category)
+    if habit is not None and habit.type == "numeric" and habit.goal:
+        total = db.sum_value(habit.id, today_str)
+        pct = round(100 * total / habit.goal) if habit.goal else 0
+        await channel.send(
+            i18n.t(
+                "edit_updated_numeric",
+                lang,
+                value=command.value_num,
+                total=total,
+                goal=habit.goal,
+                unit=habit.unit(lang) or "",
+                pct=pct,
+            )
+        )
+        return
+    if habit is not None and habit.type == "duration":
+        count = db.count(habit.id, today_str)
+        await channel.send(
+            i18n.t(
+                "edit_updated_duration",
+                lang,
+                value=command.value_num,
+                unit=habit.unit(lang) or "",
+                label=habit.label(lang),
+                ordinal=ordinal(count),
+                count=count,
+            )
+        )
+        return
+    # A numeric-without-goal/boolean/text habit, or an unrecognized
+    # category: editing those is out of scope (SPEC-v0.7.md §10) -- no
+    # confirmation is sent, matching v0.6.0's behavior for any category
+    # other than water/stretch (which could never occur pre-v0.7).
+
+
+async def _generic_confirmation(
+    db: Database, llm: OllamaClient, habit: Habit, value, today_str: str, lang: i18n.Language
+) -> str:
+    """Type-generic confirmation for any habit that is NOT one of the
+    three built-ins (SPEC-v0.7.md §3.2/§4 R13). Built-ins never reach
+    here -- `handle_inbound_message` keeps their byte-identical v0.6
+    catalog entries inline (AC7.1)."""
+    if habit.type == "numeric":
+        total = db.sum_value(habit.id, today_str)
+        unit = habit.unit(lang) or ""
+        if habit.goal:
+            pct = round(100 * total / habit.goal) if habit.goal else 0
+            return i18n.t(
+                "confirm_numeric_goal",
+                lang,
+                label=habit.label(lang),
+                value=value,
+                unit=unit,
+                total=total,
+                goal=habit.goal,
+                pct=pct,
+            )
+        return i18n.t("confirm_numeric_nogoal", lang, label=habit.label(lang), value=value, unit=unit)
+
+    if habit.type == "duration":
+        count = db.count(habit.id, today_str)
+        unit = habit.unit(lang) or ""
+        return i18n.t(
+            "confirm_duration",
+            lang,
+            label=habit.label(lang),
+            value=value,
+            unit=unit,
+            ordinal=ordinal(count),
+            count=count,
+        )
+
+    if habit.type == "text":
+        reflection = await llm.chat_text(
+            DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
+            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=value),
+        )
+        if not reflection:
+            reflection = i18n.t("diary_reflection_fallback", lang)
+        return i18n.t("confirm_text", lang, label=habit.label(lang), reflection=reflection)
+
+    # boolean
+    status = i18n.t("bool_status_done" if value else "bool_status_not_done", lang)
+    return i18n.t("confirm_boolean", lang, label=habit.label(lang), status=status)
+
+
+async def _send_recovered_generic(channel: Channel, habit: Habit, value, lang: i18n.Language) -> None:
+    """The recovery-confirmation counterpart of `_generic_confirmation`,
+    for `reparse_pending_unparsed` (SPEC-v0.7.md §4 R14)."""
+    if habit.type == "numeric":
+        await channel.send(
+            i18n.t("recovered_numeric", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang))
+        )
+    elif habit.type == "duration":
+        await channel.send(
+            i18n.t("recovered_duration", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang))
+        )
+    elif habit.type == "boolean":
+        await channel.send(i18n.t("recovered_boolean", lang, label=habit.label(lang)))
+    else:  # text -- not explicitly listed among SPEC-v0.7.md §5's catalog
+        # ids; added for completeness (see IMPL.md "known limitations").
+        await channel.send(i18n.t("recovered_text", lang, label=habit.label(lang)))
 
 
 async def handle_inbound_message(
@@ -168,6 +350,7 @@ async def handle_inbound_message(
     clock=datetime.now,
     dry_run: bool = False,
     health_monitor: HealthMonitor | None = None,
+    registry: HabitRegistry | None = None,
 ) -> None:
     """Command dispatch -> (act + confirm) OR Parse -> validate -> (write
     row + confirm) OR (clarifying question). Confirmation formats are
@@ -194,18 +377,34 @@ async def handle_inbound_message(
     the message itself (`i18n.resolve_reply_language`) -- "auto" mode
     matches whatever the user just wrote (Thai in -> Thai out, English in
     -> English out), and a forced `config.i18n.language` overrides that
-    for every branch uniformly, commands included."""
+    for every branch uniformly, commands included.
+
+    ROADMAP.md v0.7.0 "Multi-Habit Extensibility": `registry` defaults to
+    `HabitRegistry.from_config(config)` when not given, so every pre-v0.7
+    caller (this file's own `async_main`, and every test that doesn't care
+    about a custom habit set) keeps working unchanged. A result's
+    `habit = registry.get(result.category)` decides confirmation shape:
+    built-in ids (`water`/`stretch`/`diary`) keep their exact v0.6 catalog
+    entries below (byte-identical, AC7.1); any other habit renders through
+    `_generic_confirmation` (AC9).
+
+    ROADMAP.md v0.7.0 integration: `commands.dispatch(text, registry)` is
+    module M1's registry-aware contract (SPEC-v0.7.md §5) -- wired here
+    now that `core/commands.py` has landed (was deferred during the
+    shared-surface build; see `IMPL.md`'s v0.7.0 "Known limitations" #1
+    and `IMPL-v0.7-M1.md`'s "READ THIS FIRST")."""
+    registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config)
-    command = commands.dispatch(text, config.units.glass_ml, config.units.bottle_ml)
+    command = commands.dispatch(text, registry)
     if command is not None:
         if dry_run:
             print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
             return
         assert channel is not None, "channel is required outside dry-run"
         if command.kind == "undo":
-            await _execute_undo(db, channel, config, clock, lang)
+            await _execute_undo(db, channel, config, clock, registry, lang)
         else:
-            await _execute_edit(db, channel, config, clock, command, lang)
+            await _execute_edit(db, channel, config, clock, command, registry, lang)
         return
 
     if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
@@ -216,9 +415,7 @@ async def handle_inbound_message(
         await channel.send(i18n.t("deferred_ack", lang))
         return
 
-    result = await parse_message(
-        text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
-    )
+    result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
 
     if dry_run:
         print(asdict(result))
@@ -230,47 +427,50 @@ async def handle_inbound_message(
     ts = now.isoformat(timespec="seconds")
     today_str = now.date().isoformat()
 
-    if result.category == "unknown":
+    habit = registry.get(result.category)
+    if habit is None:
         await channel.send(i18n.t("clarifying_question", lang))
         return
 
-    if result.category == "water":
-        entry = LogEntry(None, ts, "water", float(result.water_ml), None, text, source)
-        db.insert_log(entry)
+    entry = log_entry_from_result(habit, result, ts, text, source)
+    db.insert_log(entry)
+
+    if habit.id == "water":
+        water_ml = int(result.value)  # type: ignore[arg-type]
         total = db.water_total_ml(today_str)
         goal = config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
         await channel.send(
-            i18n.t("water_confirmation", lang, water_ml=result.water_ml, total=int(total), goal=goal, pct=pct)
+            i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
         )
         return
 
-    if result.category == "stretch":
-        entry = LogEntry(None, ts, "stretch", float(result.stretch_min), None, text, source)
-        db.insert_log(entry)
+    if habit.id == "stretch":
+        stretch_min = int(result.value)  # type: ignore[arg-type]
         count = db.stretch_count(today_str)
         await channel.send(
-            i18n.t(
-                "stretch_confirmation", lang, stretch_min=result.stretch_min, ordinal=ordinal(count), count=count
-            )
+            i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
         )
         return
 
-    if result.category == "diary":
-        entry = LogEntry(None, ts, "diary", None, result.diary_text, text, source)
-        db.insert_log(entry)
+    if habit.id == "diary":
+        diary_text = str(result.value)
         reflection = await llm.chat_text(
             DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
-            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=result.diary_text),
+            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=diary_text),
         )
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
         await channel.send(i18n.t("diary_confirmation", lang, reflection=reflection))
         return
 
+    # Any other configured habit: type-generic confirmation (AC9).
+    message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang)
+    await channel.send(message)
+
 
 async def reparse_pending_unparsed(
-    db: Database, llm: OllamaClient, channel: Channel, config: Config
+    db: Database, llm: OllamaClient, channel: Channel, config: Config, registry: HabitRegistry | None = None
 ) -> None:
     """ROADMAP.md v0.4.0 AC3.3 recovery path: re-parse every row deferred
     while Ollama was DOWN (category='unparsed'), convert it to its real
@@ -288,7 +488,14 @@ async def reparse_pending_unparsed(
     ROADMAP.md v0.6.0 AC6.1/AC6.3: the recovery confirmation is still a
     reply to the *original* message the user sent (just delayed), so its
     language is resolved from that row's `raw_message`, same rule as a
-    live confirmation."""
+    live confirmation.
+
+    ROADMAP.md v0.7.0: `registry` defaults like `handle_inbound_message`'s;
+    built-ins keep their byte-identical `recovered_*` catalog entries,
+    any other habit renders via `_send_recovered_generic` (AC9), and
+    `reclassify_log` is now also stamped with `habit_type` (SPEC-v0.7.md
+    §4 R14)."""
+    registry = registry or HabitRegistry.from_config(config)
     pending = db.pending_unparsed()
     if not pending:
         return
@@ -297,25 +504,30 @@ async def reparse_pending_unparsed(
     for row in pending:
         text = row["raw_message"]
         lang = i18n.resolve_reply_language(text, config)
-        result = await parse_message(
-            text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
-        )
+        result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
 
-        if result.category == "water":
-            db.reclassify_log(row["id"], "water", float(result.water_ml), None)
-            await channel.send(i18n.t("recovered_water", lang, water_ml=result.water_ml))
-        elif result.category == "stretch":
-            db.reclassify_log(row["id"], "stretch", float(result.stretch_min), None)
-            await channel.send(i18n.t("recovered_stretch", lang, stretch_min=result.stretch_min))
-        elif result.category == "diary":
-            db.reclassify_log(row["id"], "diary", None, result.diary_text)
-            await channel.send(i18n.t("recovered_diary", lang))
-        else:
+        habit = registry.get(result.category)
+        if habit is None:
             logger.warning(
                 "Deferred message id=%s still unparseable after Ollama recovery; left as 'unparsed': %r",
                 row["id"],
                 text,
             )
+            continue
+
+        recovered_entry = log_entry_from_result(habit, result, row["ts"], text, row["source"])
+        db.reclassify_log(
+            row["id"], habit.id, recovered_entry.value_num, recovered_entry.value_text, habit_type=habit.type
+        )
+
+        if habit.id == "water":
+            await channel.send(i18n.t("recovered_water", lang, water_ml=int(result.value)))  # type: ignore[arg-type]
+        elif habit.id == "stretch":
+            await channel.send(i18n.t("recovered_stretch", lang, stretch_min=int(result.value)))  # type: ignore[arg-type]
+        elif habit.id == "diary":
+            await channel.send(i18n.t("recovered_diary", lang))
+        else:
+            await _send_recovered_generic(channel, habit, result.value, lang)
 
 
 def seed_fake_data(db: Database, config: Config) -> None:
@@ -348,6 +560,10 @@ async def async_main(args: argparse.Namespace) -> None:
 
     setup_logging(config.app.log_level)
 
+    # ROADMAP.md v0.7.0: built once from the loaded config and threaded
+    # through every call site below (SPEC-v0.7.md §4 R3, §5 main.py note).
+    registry = HabitRegistry.from_config(config)
+
     # --seed and --dry-run don't need Telegram credentials.
     if args.seed:
         db = Database(config.app.db_path)
@@ -358,7 +574,9 @@ async def async_main(args: argparse.Namespace) -> None:
     if args.dry_run is not None:
         db = Database(config.app.db_path)
         llm = OllamaClient(config.ollama.base_url, config.ollama.model_chain, config.ollama.timeout_seconds)
-        await handle_inbound_message(args.dry_run, db=db, llm=llm, channel=None, config=config, dry_run=True)
+        await handle_inbound_message(
+            args.dry_run, db=db, llm=llm, channel=None, config=config, dry_run=True, registry=registry
+        )
         await llm.aclose()
         db.close()
         return
@@ -423,8 +641,23 @@ async def async_main(args: argparse.Namespace) -> None:
     )
 
     if args.test_reminder:
+        # ROADMAP.md v0.7.0 integration: `send_reminder` takes a real
+        # `Habit`, not a bare category string (SPEC-v0.7.md §5, module M2's
+        # `core/reminders.py`) -- resolve it from the registry first.
+        # `--test-reminder`'s argparse `choices` are already restricted to
+        # `_DEFAULT_REGISTRY.ids()`, so `habit` should never be None for a
+        # value that reached this branch at all; the check is defensive
+        # belt-and-suspenders (e.g. a config.toml that dropped a habit
+        # between process invocations) rather than an expected runtime path.
+        habit = registry.get(args.test_reminder)
+        if habit is None:
+            print(f"ERROR: {args.test_reminder!r} is not a configured habit", file=sys.stderr)
+            await channel.aclose()
+            await llm.aclose()
+            db.close()
+            sys.exit(1)
         try:
-            await send_reminder(channel, args.test_reminder, i18n.resolve_unprompted_language(config))
+            await send_reminder(channel, habit, i18n.resolve_unprompted_language(config))
         except httpx.HTTPError as exc:
             print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
             await channel.aclose()
@@ -436,12 +669,21 @@ async def async_main(args: argparse.Namespace) -> None:
         db.close()
         return
 
-    # AC2.1: probe each configured model's schema conformance once at
+    # AC2.1 / SPEC-v0.7.md §4 R4/R5: build the generic extraction schema
+    # and the registry-driven system/user prompt from the live registry
+    # (module M1's `build_extraction_system_prompt`/
+    # `build_extraction_user_prompt`, wired here now that M1 has landed --
+    # was interim-wired to the fixed v0.6.0 prompt during the
+    # shared-surface build, see `IMPL.md`'s v0.7.0 "Known limitations" #3),
+    # then probe each configured model's schema conformance once at
     # startup, purely for operator visibility (logged inside the client).
     # Never allowed to crash startup -- probe_schema_support() itself never
     # raises, but this is belt-and-suspenders against a future change to it.
+    extraction_schema = build_extraction_schema(registry.category_enum())
+    probe_system_prompt = build_extraction_system_prompt(registry)
+    probe_user_prompt = build_extraction_user_prompt("500ml")
     try:
-        await llm.probe_schema_support()
+        await llm.probe_schema_support(probe_system_prompt, probe_user_prompt, extraction_schema)
     except Exception:
         logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
 
@@ -451,12 +693,12 @@ async def async_main(args: argparse.Namespace) -> None:
     # change, no confirmation) and they stay 'unparsed' for the health
     # monitor's own DOWN->UP callback to pick up later -- never raises.
     try:
-        await reparse_pending_unparsed(db, llm, channel, config)
+        await reparse_pending_unparsed(db, llm, channel, config, registry)
     except Exception:
         logger.exception("Startup re-parse of deferred messages failed unexpectedly; continuing")
 
     async def on_ollama_recovered() -> None:
-        await reparse_pending_unparsed(db, llm, channel, config)
+        await reparse_pending_unparsed(db, llm, channel, config, registry)
 
     health_monitor = HealthMonitor(
         config.ollama.base_url,
@@ -467,13 +709,18 @@ async def async_main(args: argparse.Namespace) -> None:
         language=i18n.resolve_unprompted_language(config),
     )
 
+    # ROADMAP.md v0.7.0 integration: `schedule_reminders`/`run_weekly_review`
+    # take the registry-aware signatures modules M2/M3 landed (SPEC-v0.7.md
+    # §5) -- wired here now that both modules have landed (was deferred
+    # during the shared-surface build; see `IMPL.md`'s v0.7.0 "Known
+    # limitations").
     scheduler = AsyncIOScheduler()
-    schedule_reminders(scheduler, channel, config)
+    schedule_reminders(scheduler, channel, config, registry)
 
     review_hour, review_minute = (int(x) for x in config.weekly_review.time.split(":"))
 
     async def weekly_review_job() -> None:
-        text = await run_weekly_review(db, config, llm)
+        text = await run_weekly_review(db, config, registry, llm)
         await channel.send(text)
 
     scheduler.add_job(
@@ -493,7 +740,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
     async def on_message(text: str) -> None:
         await handle_inbound_message(
-            text, db=db, llm=llm, channel=channel, config=config, health_monitor=health_monitor
+            text, db=db, llm=llm, channel=channel, config=config, health_monitor=health_monitor, registry=registry
         )
 
     # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own
@@ -517,7 +764,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--test-reminder",
         metavar="CATEGORY",
-        choices=sorted(REMINDER_TEXTS),
+        # ROADMAP.md v0.7.0 (SPEC-v0.7.md §4 R15): choices come from the
+        # (default) habit registry's ids, not the fixed REMINDER_TEXTS
+        # keys -- same set for the shipped three habits, but this is what
+        # makes a newly configured habit show up here too.
+        choices=sorted(_DEFAULT_REGISTRY.ids()),
         help="Fire one reminder immediately and exit",
     )
     parser.add_argument("--seed", action="store_true", help="Insert a few days of fake logs for weekly-review testing")

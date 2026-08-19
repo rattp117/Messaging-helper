@@ -2,6 +2,29 @@
 Edit/Undo", AC5.1-AC5.5), plus migration 003 (soft-delete `deleted_at`
 column) which this version's undo/edit is built on.
 
+ROADMAP.md v0.7.0 "Multi-Habit Extensibility" (module M1, AC12):
+`commands.dispatch(text, registry)` is now registry-aware -- edit values
+resolve to a habit id via the habit's configured `unit`/`unit_aliases`
+instead of a hardcoded water/stretch check. Every direct `dispatch(...)`
+call below updated to the new 2-arg signature; `ExtractionResult`
+construction updated to the new 3-field generic shape.
+
+IMPORTANT (documented per this task's explicit audit requirement -- see
+IMPL-v0.7-M1.md "Known limitations"/"Iteration log"): the tests in this
+file that go through `handle_inbound_message` (undo/edit end-to-end, the
+adversarial false-positive corpus's "reaches the parser" half, the
+LLM-down-still-executes-commands cases) currently FAIL against the live
+tree, not because of a bug in this file or in `core/commands.py`, but
+because `main.py` (shared-surface, frozen, not owned by module M1) still
+calls `commands.dispatch(text, config.units.glass_ml, config.units.bottle_ml)`
+at its v0.6.0 call site (main.py line ~402) instead of the new
+`commands.dispatch(text, registry)` contract SPEC-v0.7.md §5 assigns to
+this module. That one-line wiring flip is explicitly deferred to
+SPEC-v0.7.md §11's "Integration order" step 1 and is outside this file's
+(and module M1's) ownership. `commands.dispatch()` itself is fully correct
+and covered directly (AC12, AC5.5) by the tests that call it without going
+through `handle_inbound_message`.
+
 All against real on-disk SQLite files (tmp_path) -- no mocks for the DB,
 since sqlite3 is cheap, reliable, local state. The LLM is either never
 constructed (a `_NeverCalledLLM` stand-in that raises if touched -- proves
@@ -12,7 +35,7 @@ many times.
 
 Companion to test_db.py (schema/aggregation), test_migrations.py (migration
 runner contract), test_resilience.py (health-monitor-aware deferral) --
-this file covers only the v0.5.0 additions.
+this file covers only the v0.5.0 additions (now generalized per v0.7.0).
 """
 
 from __future__ import annotations
@@ -25,6 +48,7 @@ import pytest
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
 from habit_assistant.core import commands, i18n
+from habit_assistant.core.habits import HabitRegistry
 from habit_assistant.core.review import compute_weekly_stats
 from habit_assistant.llm.ollama_client import ExtractionResult
 from habit_assistant.main import (
@@ -37,8 +61,7 @@ from habit_assistant.storage.db import Database
 from habit_assistant.storage.migrations import MIGRATIONS, current_version, run_migrations
 from habit_assistant.storage.models import LogEntry
 
-GLASS_ML = 250
-BOTTLE_ML = 600
+DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +116,7 @@ def fixed_clock():
 
 
 def patch_parse_message(monkeypatch, result: ExtractionResult):
-    async def fake_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
+    async def fake_parse_message(text, llm, registry, confidence_threshold=None):
         return result
 
     monkeypatch.setattr("habit_assistant.main.parse_message", fake_parse_message)
@@ -227,9 +250,9 @@ async def test_undo_on_all_deleted_history_sends_friendly_message_and_writes_not
 
 
 # ===========================================================================
-# AC5.3 -- edit updates the last matching entry's value in place and
+# AC5.3 / AC12 -- edit updates the last matching entry's value in place and
 # re-confirms the new daily total; edit with no matching entry is handled
-# gracefully.
+# gracefully; edit values resolve to a habit via the registry.
 # ===========================================================================
 
 
@@ -324,6 +347,91 @@ async def test_edit_on_empty_history_sends_friendly_message_and_writes_nothing(d
     assert _raw_row_count(db) == 0
 
 
+# ---------------------------------------------------------------------------
+# AC12 -- `commands.dispatch(text, registry)` called directly (SPEC-v0.7.md
+# §8's own AC12 examples, verbatim): edit-value unit resolution is now
+# registry-driven, not hardcoded to water/stretch.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("edit_phrase", ["make that 300ml", "แก้เป็น 300 มล."])
+def test_ac12_edit_water_examples_classify_as_water_edit(edit_phrase):
+    command = commands.dispatch(edit_phrase, DEFAULT_REGISTRY)
+    assert command is not None
+    assert command.kind == "edit"
+    assert command.category == "water"
+    assert command.value_num == 300.0
+
+
+def test_ac12_edit_stretch_example_classifies_as_stretch_edit():
+    command = commands.dispatch("edit that to 15 min", DEFAULT_REGISTRY)
+    assert command is not None
+    assert command.kind == "edit"
+    assert command.category == "stretch"
+    assert command.value_num == 15.0
+
+
+@pytest.mark.parametrize(
+    "garbled_phrase",
+    ["make that a lot more", "edit that to blah", "/edit   ", "change it to feeling better today"],
+)
+def test_ac12_garbled_edit_tail_returns_none(garbled_phrase):
+    assert commands.dispatch(garbled_phrase, DEFAULT_REGISTRY) is None
+
+
+def test_ac12_edit_value_resolves_via_a_non_default_habit_alias():
+    """A habit added purely for this test (not one of the three built-ins)
+    with its own `unit`/`unit_aliases` must be resolvable the same way,
+    proving edit-unit resolution is generic, not water/stretch-specific."""
+    from habit_assistant.core.habits import Habit
+
+    sleep = Habit(
+        id="sleep",
+        type="numeric",
+        label_en="sleep",
+        label_th="นอน",
+        unit_en="h",
+        unit_th="ชม.",
+        goal=8,
+        reminder_times=(),
+        reminder_text_en=None,
+        reminder_text_th=None,
+        unit_aliases={"hour": 1, "hours": 1},
+    )
+    registry = HabitRegistry([sleep])
+
+    command = commands.dispatch("make that 7h", registry)
+
+    assert command == commands.Command(kind="edit", category="sleep", value_num=7.0)
+
+
+def test_ac12_ambiguous_unit_resolves_first_match_in_registry_order():
+    """SPEC-v0.7.md §9 risk 6: two duration habits sharing the same unit
+    token ("min") resolve to the FIRST one in registry order."""
+    from habit_assistant.core.habits import Habit
+
+    def duration_habit(id_: str) -> Habit:
+        return Habit(
+            id=id_,
+            type="duration",
+            label_en=id_,
+            label_th=id_,
+            unit_en="min",
+            unit_th="นาที",
+            goal=None,
+            reminder_times=(),
+            reminder_text_en=None,
+            reminder_text_th=None,
+            unit_aliases={},
+        )
+
+    registry = HabitRegistry([duration_habit("stretch"), duration_habit("yoga")])
+
+    command = commands.dispatch("edit that to 20 min", registry)
+
+    assert command.category == "stretch"  # first in registry order, not "yoga"
+
+
 # ===========================================================================
 # AC5.4 -- a soft-deleted row stays in the table (raw SQL) but is excluded
 # from every aggregation: water totals, stretch count/ordinal, diary count,
@@ -349,7 +457,7 @@ async def test_soft_deleted_row_excluded_from_stretch_count_and_ordinal(db, fixe
     db.soft_delete(old_id)
     assert db.stretch_count("2026-08-19") == 0
 
-    patch_parse_message(monkeypatch, ExtractionResult("stretch", None, 5, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("stretch", 5, 0.9))
     await handle_inbound_message(
         "5 min stretch", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
@@ -373,17 +481,26 @@ def test_soft_deleted_row_excluded_from_pending_unparsed(db):
 
 
 def test_soft_deleted_rows_excluded_from_weekly_review_stats(db):
+    """CHANGED (ROADMAP.md v0.7.0 integration): `compute_weekly_stats` is
+    module M3's function (`core/review.py`) -- its new registry-aware
+    signature (`db, config, registry, end_date`) and per-habit
+    `WeeklyStats.get(habit_id)` accessor shape (`SPEC-v0.7.md` §5) are now
+    wired through; same underlying math/assertions as before, only the
+    call/accessor shape changed (registry-wiring edit, per
+    `IMPL-v0.7-M3.md`'s own rename table for the equivalent `test_review.py`
+    tests)."""
     config = Config()
+    registry = HabitRegistry.from_config(config)
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
     deleted_id = _seed(db, "2026-08-19T10:00:00", "water", 300.0, raw="300ml")
     stretch_id = _seed(db, "2026-08-19T11:00:00", "stretch", 10.0, raw="10 min")
     db.soft_delete(deleted_id)
     db.soft_delete(stretch_id)
 
-    stats = compute_weekly_stats(db, config, date(2026, 8, 19))
+    stats = compute_weekly_stats(db, config, registry, date(2026, 8, 19))
 
-    assert stats.water_total_ml == 500.0
-    assert stats.stretch_total == 0
+    assert stats.get("water").total == 500.0
+    assert stats.get("stretch").total == 0
 
 
 def test_soft_delete_never_issues_a_hard_delete(db):
@@ -421,7 +538,7 @@ ADVERSARIAL_MESSAGES = [
 
 @pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)
 def test_dispatch_returns_none_for_normal_habit_messages(message):
-    assert commands.dispatch(message, GLASS_ML, BOTTLE_ML) is None
+    assert commands.dispatch(message, DEFAULT_REGISTRY) is None
 
 
 @pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)
@@ -430,7 +547,7 @@ async def test_normal_habit_messages_reach_parser_exactly_once(db, fixed_clock, 
     config = Config()
     calls: list[str] = []
 
-    async def counting_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
+    async def counting_parse_message(text, llm, registry, confidence_threshold=None):
         calls.append(text)
         return ExtractionResult.unknown()
 
@@ -457,9 +574,9 @@ async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands
 
     calls: list[str] = []
 
-    async def counting_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
+    async def counting_parse_message(text, llm, registry, confidence_threshold=None):
         calls.append(text)
-        return ExtractionResult("water", 500, None, None, 0.9)
+        return ExtractionResult("water", 500, 0.9)
 
     monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
 
@@ -561,21 +678,30 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_3(tmp_path):
-    """Pinned regression guard (not tautological): as of v0.5.0 there are
-    exactly 3 migrations, and a fresh DB must land on version 3. Bump this
+def test_fresh_db_migrates_to_schema_version_4(tmp_path):
+    """Pinned regression guard (not tautological): as of ROADMAP.md v0.7.0
+    ("Multi-Habit Extensibility", migration 004: `habit_type`) there are
+    exactly 4 migrations, and a fresh DB must land on version 4. Bump this
     literal deliberately the next time a migration is added -- unlike a
     bare `== len(MIGRATIONS)` comparison, this fails if a migration is
-    silently added/removed without the test being updated."""
-    assert len(MIGRATIONS) == 3
+    silently added/removed without the test being updated.
+    CHANGED (v0.7.0): was `== 3` / `test_..._schema_version_3` before
+    migration 004 (`habit_type`) was added -- see IMPL.md."""
+    assert len(MIGRATIONS) == 4
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 3
+    assert database.schema_version == 4
     database.close()
 
 
 def test_migration_003_applies_forward_from_a_v2_db_with_rows_intact():
+    """CHANGED (v0.7.0): `run_migrations(conn, migrations=MIGRATIONS)` ->
+    `migrations=MIGRATIONS[:3]` -- this test is specifically about the
+    v2->v3 (`deleted_at`) transition, so it now pins its own migration
+    slice instead of the full (growing) `MIGRATIONS` list, which would
+    otherwise also apply migration 004 and change the expected
+    from/to version tuple. See IMPL.md."""
     conn = sqlite3.connect(":memory:")
     try:
         run_migrations(conn, migrations=MIGRATIONS[:2])
@@ -589,7 +715,7 @@ def test_migration_003_applies_forward_from_a_v2_db_with_rows_intact():
         )
         conn.commit()
 
-        from_version, to_version = run_migrations(conn, migrations=MIGRATIONS)
+        from_version, to_version = run_migrations(conn, migrations=MIGRATIONS[:3])
 
         assert (from_version, to_version) == (2, 3)
         assert current_version(conn) == 3
@@ -619,16 +745,21 @@ def test_migration_003_creates_deleted_at_index():
 
 
 def test_migration_003_is_idempotent(tmp_path):
+    """CHANGED (v0.7.0): the hardcoded `== 3` literals became
+    `== len(MIGRATIONS)` -- this test's point is reopen-idempotency, not
+    pinning the exact migration count (that's
+    `test_fresh_db_migrates_to_schema_version_4`'s job), so it shouldn't
+    need updating every time a migration is appended. See IMPL.md."""
     db_path = tmp_path / "idem003.db"
 
     first = Database(db_path)
-    assert first.schema_version == 3
+    assert first.schema_version == len(MIGRATIONS)
     first.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
     first.close()
 
     second = Database(db_path)
-    assert second.schema_version_before == 3  # nothing pending
-    assert second.schema_version == 3
+    assert second.schema_version_before == len(MIGRATIONS)  # nothing pending
+    assert second.schema_version == len(MIGRATIONS)
     rows = second.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1  # row from the first open survived
     second.close()

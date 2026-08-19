@@ -35,38 +35,65 @@ class Database:
 
     def insert_log(self, entry: LogEntry) -> int:
         cur = self._conn.execute(
-            "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (entry.ts, entry.category, entry.value_num, entry.value_text, entry.raw_message, entry.source),
+            "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source, habit_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.ts,
+                entry.category,
+                entry.value_num,
+                entry.value_text,
+                entry.raw_message,
+                entry.source,
+                entry.habit_type,
+            ),
         )
         self._conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
-    def water_total_ml(self, day: str) -> float:
-        """day: 'YYYY-MM-DD'. Sums value_num for water logs whose ts starts
-        with that date. Excludes soft-deleted rows (ROADMAP.md v0.5.0
-        AC5.4) -- an undone/edited-away entry must not count toward today's
-        total."""
+    def sum_value(self, habit_id: str, day: str) -> float:
+        """ROADMAP.md v0.7.0 (SPEC-v0.7.md §4 R12): generic `SUM(value_num)`
+        for any habit id, day: 'YYYY-MM-DD'. Excludes soft-deleted rows
+        (ROADMAP.md v0.5.0 AC5.4) -- an undone/edited-away entry must not
+        count toward today's total. `water_total_ml` is a thin wrapper."""
         row = self._conn.execute(
             "SELECT COALESCE(SUM(value_num), 0) AS total FROM logs "
-            "WHERE category = 'water' AND deleted_at IS NULL AND ts LIKE ?",
-            (f"{day}%",),
+            "WHERE category = ? AND deleted_at IS NULL AND ts LIKE ?",
+            (habit_id, f"{day}%"),
         ).fetchone()
         return float(row["total"])
 
-    def stretch_count(self, day: str) -> int:
+    def count(self, habit_id: str, day: str) -> int:
+        """Generic `COUNT(*)` for any habit id/day. `stretch_count`/
+        `diary_count` are thin wrappers."""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM logs WHERE category = 'stretch' AND deleted_at IS NULL AND ts LIKE ?",
-            (f"{day}%",),
+            "SELECT COUNT(*) AS n FROM logs WHERE category = ? AND deleted_at IS NULL AND ts LIKE ?",
+            (habit_id, f"{day}%"),
         ).fetchone()
         return int(row["n"])
 
-    def diary_count(self, day: str) -> int:
+    def count_true(self, habit_id: str, day: str) -> int:
+        """Generic count of "truthy" boolean-habit rows for a day
+        (`value_num != 0`, per `log_entry_from_result`'s 1.0/0.0 encoding
+        of a boolean value)."""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM logs WHERE category = 'diary' AND deleted_at IS NULL AND ts LIKE ?",
-            (f"{day}%",),
+            "SELECT COUNT(*) AS n FROM logs "
+            "WHERE category = ? AND deleted_at IS NULL AND ts LIKE ? AND value_num != 0",
+            (habit_id, f"{day}%"),
         ).fetchone()
         return int(row["n"])
+
+    def water_total_ml(self, day: str) -> float:
+        """Thin wrapper over `sum_value` (ROADMAP.md v0.7.0 R12) -- kept so
+        every pre-v0.7 caller's behavior is unchanged."""
+        return self.sum_value("water", day)
+
+    def stretch_count(self, day: str) -> int:
+        """Thin wrapper over `count` (ROADMAP.md v0.7.0 R12)."""
+        return self.count("stretch", day)
+
+    def diary_count(self, day: str) -> int:
+        """Thin wrapper over `count` (ROADMAP.md v0.7.0 R12)."""
+        return self.count("diary", day)
 
     def logs_between(self, start_ts: str, end_ts: str) -> list[sqlite3.Row]:
         return self._conn.execute(
@@ -86,15 +113,23 @@ class Database:
         ).fetchall()
 
     def reclassify_log(
-        self, log_id: int, category: str, value_num: float | None, value_text: str | None
+        self,
+        log_id: int,
+        category: str,
+        value_num: float | None,
+        value_text: str | None,
+        habit_type: str | None = None,
     ) -> None:
         """Convert a deferred 'unparsed' row to its real category once it
         has been successfully re-parsed (ROADMAP.md v0.4.0 AC3.3).
         `ts`/`raw_message`/`source` are left untouched -- only the
-        parsed-out fields change."""
+        parsed-out fields change. ROADMAP.md v0.7.0: also stamps
+        `habit_type` (defaults to None, so pre-v0.7 callers that don't pass
+        it behave exactly as before -- the row just stays NULL there, same
+        as any other historical row migration 004 couldn't infer)."""
         self._conn.execute(
-            "UPDATE logs SET category = ?, value_num = ?, value_text = ? WHERE id = ?",
-            (category, value_num, value_text, log_id),
+            "UPDATE logs SET category = ?, value_num = ?, value_text = ?, habit_type = ? WHERE id = ?",
+            (category, value_num, value_text, habit_type, log_id),
         )
         self._conn.commit()
 

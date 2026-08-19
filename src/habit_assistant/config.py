@@ -7,11 +7,12 @@ the environment / .env and must never be written to config.toml.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,14 @@ class ConfigError(RuntimeError):
     traceback."""
 
 
+# ROADMAP.md v0.7.0 "Multi-Habit Extensibility": `[[habits]]` (HabitConfig,
+# below) is now the single source of truth for water/stretch/diary's
+# schedule/goal/units. The four models below (through UnitsConfig) are
+# retained-but-ignored -- kept loadable so an existing config.toml's
+# `[reminders.*]`/`[units]` sections don't raise, per SPEC-v0.7.md §6/§10
+# ("dropping them is future cleanup") -- until the leaf modules that still
+# read them (core/commands.py, core/reminders.py, core/review.py) are
+# migrated onto the registry at integration.
 class WaterConfig(BaseModel):
     times: list[str] = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
     goal_ml: int = 2500
@@ -106,6 +115,101 @@ class AppConfig(BaseModel):
     log_level: str = "INFO"
 
 
+_HABIT_ID_RE = re.compile(r"^[a-z0-9_]+$")
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_RESERVED_HABIT_IDS = {"unknown", "unparsed"}
+
+
+class HabitLabel(BaseModel):
+    """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
+    `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
+
+    en: str
+    th: str
+
+
+class HabitConfig(BaseModel):
+    """One `[[habits]]` entry: SPEC-v0.7.md §2.1 -- the single source of
+    truth that generates the extraction schema/prompt, per-type validation,
+    storage, reminders, confirmations, and review for a habit, instead of
+    that behavior being hand-coded per category (water/stretch/diary) as
+    it was through v0.6.0."""
+
+    id: str
+    type: Literal["numeric", "duration", "text", "boolean"]
+    label: HabitLabel
+    unit: HabitLabel | None = None
+    goal: float | None = None
+    reminder_times: list[str] = Field(default_factory=list)
+    reminder_text: HabitLabel | None = None
+    unit_aliases: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_valid_and_not_reserved(cls, v: str) -> str:
+        if not _HABIT_ID_RE.match(v):
+            raise ValueError(f"habit id {v!r} must match ^[a-z0-9_]+$")
+        if v in _RESERVED_HABIT_IDS:
+            raise ValueError(f"habit id {v!r} is reserved and may not be used")
+        return v
+
+    @field_validator("label")
+    @classmethod
+    def _label_both_languages_present(cls, v: HabitLabel) -> HabitLabel:
+        if not v.en.strip() or not v.th.strip():
+            raise ValueError("habit label.en and label.th must both be non-empty")
+        return v
+
+    @field_validator("reminder_times")
+    @classmethod
+    def _reminder_times_are_hhmm(cls, v: list[str]) -> list[str]:
+        for t in v:
+            if not _HHMM_RE.match(t):
+                raise ValueError(f"reminder_times entry {t!r} must match HH:MM")
+        return v
+
+    @model_validator(mode="after")
+    def _unit_and_goal_match_type(self) -> "HabitConfig":
+        numeric_or_duration = self.type in ("numeric", "duration")
+        if numeric_or_duration and self.unit is None:
+            raise ValueError(f"habit {self.id!r} of type {self.type!r} requires a unit")
+        if not numeric_or_duration and self.unit is not None:
+            raise ValueError(f"habit {self.id!r} of type {self.type!r} must not have a unit")
+        if not numeric_or_duration and self.goal is not None:
+            raise ValueError(f"habit {self.id!r} of type {self.type!r} must not have a goal")
+        return self
+
+
+def _default_habits() -> list[HabitConfig]:
+    """The three habits generalized (SPEC-v0.7.md §2.1): with no
+    `config.toml`, or one that omits `[[habits]]`, `Config()` must be
+    behaviourally identical to v0.6.0 (AC1)."""
+    return [
+        HabitConfig(
+            id="water",
+            type="numeric",
+            goal=2500,
+            reminder_times=["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"],
+            label=HabitLabel(en="water", th="น้ำ"),
+            unit=HabitLabel(en="ml", th="มล."),
+            unit_aliases={"glass": 250, "แก้ว": 250, "bottle": 600, "ขวด": 600},
+        ),
+        HabitConfig(
+            id="stretch",
+            type="duration",
+            reminder_times=["11:00", "16:00"],
+            label=HabitLabel(en="stretch", th="ยืดเส้น"),
+            unit=HabitLabel(en="min", th="นาที"),
+        ),
+        HabitConfig(
+            id="diary",
+            type="text",
+            reminder_times=["21:30"],
+            label=HabitLabel(en="diary", th="ไดอารี่"),
+        ),
+    ]
+
+
 class Config(BaseModel):
     app: AppConfig = AppConfig()
     telegram: TelegramConfig = TelegramConfig()
@@ -116,6 +220,16 @@ class Config(BaseModel):
     backup: BackupConfig = BackupConfig()
     health: HealthConfig = HealthConfig()
     i18n: I18nConfig = I18nConfig()
+    habits: list[HabitConfig] = Field(default_factory=_default_habits)
+
+    @field_validator("habits")
+    @classmethod
+    def _habit_ids_are_unique(cls, v: list[HabitConfig]) -> list[HabitConfig]:
+        ids = [h.id for h in v]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"duplicate habit id(s): {dupes}")
+        return v
 
 
 class Secrets(BaseSettings):

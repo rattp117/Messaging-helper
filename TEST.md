@@ -400,3 +400,117 @@ Both PASSED. Production bot (PID 18648) and `data\habits.db` mtime unchanged bef
 ## Recommendation
 
 **Ready to ship.** All 5 acceptance criteria (AC6.1–AC6.5) are covered and green. The 9 changed pre-existing test expectations were audited individually against the ROADMAP ACs and found to be legitimate consequences of Thai becoming the default primary/detected language, not weakened assertions — 8 kept as-is, 1 (`test_commands.py`'s Thai undo case) kept with a supplementary test added to close a narrow gap rather than a rewrite. Coverage was extended in 4 places Luna's own tests left thin: (a) byte-identical-to-v0.5.0 English regression checks for confirmations/undo/edit/clarify, not just "routes through the catalog"; (b) `core/health.py`'s catalog wiring, which ROADMAP's file list omits but this task's brief explicitly included; (c) the weekly-review narrative's *system*-prompt language directive, previously unasserted; (d) the exact detector edge-case strings named in this task's brief, plus an end-to-end mixed-language reply check. Two independent live-Ollama spot-checks (different inputs than Luna's) corroborate AC6.4's real-model claim. The full 318-test suite (290 baseline + 28 new) passes with the same single intentional skip — 0 failures, 0 regressions. Production bot (PID 18648), `data\habits.db`, and `.env` were verified untouched throughout (no real Telegram call anywhere; the only live network calls were the two explicitly-permitted Ollama spot-checks against scratch inputs); no commit was made.
+
+---
+
+# Test Report — v0.7.0 (Multi-Habit Extensibility)
+
+## Summary
+
+- Scope: the shared surface + all three parallel leaf modules (M1 extraction, M2 reminders, M3 review) + the integration wiring pass, judged jointly against `SPEC-v0.7.md` §8's AC1–AC17 and, at the ROADMAP level, AC7.1–AC7.5. This is the **release-gate** pass — it supersedes M1's own (never separately Vera-scoped) audit, and consolidates M2's/M3's module-scoped `TEST-v0.7-M2.md`/`TEST-v0.7-M3.md` (both already `PASS`, left as standalone files, not re-litigated below except where this pass adds independent evidence).
+- **Full suite, run by this pass, from a clean checkout of the current tree:** **463 passed, 1 skipped, 0 failed** (`.venv\Scripts\python.exe -m pytest -q -rs`). The 1 skip is `tests/test_channels.py:231`, confirmed to be the pre-existing v0.1.0-era skip ("only core/ wires the Channel ABC directly") — present in every baseline run since v0.1.0, unrelated to v0.7.0. This reconciles exactly against the reported baseline: Luna's integration pass reported 432 passed / 1 skipped / 0 failed; this pass adds 31 new tests (12 in `test_ac17_v060_byte_identical_composite.py` + 18 in `test_multi_habit_integration.py` + 1 added to `test_parser.py`), and 432 + 31 = 463.
+- **Status: PASS.**
+
+## Test files (this pass's own additions)
+
+| Path | Tests added | Covers |
+|---|---|---|
+| `tests/test_ac17_v060_byte_identical_composite.py` (new) | 12 | AC17 — water (en, th-glass, en-bottle, th-bottle), stretch (en, th), diary (en, th), unknown (en, th), undo, edit, all driven through the REAL `handle_inbound_message` → `parse_message` → registry-built schema/prompt chain (network boundary mocked via `httpx.MockTransport`, not `main.parse_message` itself), asserted against literals hand-copied from `git show v0.6.0:src/habit_assistant/core/i18n.py` |
+| `tests/test_multi_habit_integration.py` (new) | 18 | AC11 — a `sleep` (numeric+goal) and synthetic `meds` (boolean) habit added via `Config`/`HabitConfig` data only (zero production-code edits): extraction, confirmation (both languages, matching SPEC §3.2's own examples verbatim), reminder job registration + generic-template firing, weekly-review inclusion (both languages, alongside built-ins), undo/edit where type-appropriate, and migration-004-backfilled legacy rows aggregating alongside brand-new habit rows in one `compute_weekly_stats` call |
+| `tests/test_parser.py` (1 test added to Luna's file) | 1 | AC8-adjacent audit fix — `test_arbitrary_custom_unit_alias_value_reaches_the_prompt`, closing a coverage gap found during the old→new rewrite audit (see below) |
+
+No other test file was modified by this pass. `TEST-v0.7-M2.md` and `TEST-v0.7-M3.md` remain the module-scoped reports for M2/M3 and are not duplicated here.
+
+## Audit — M1's test rewrites + integration Luna's touched tests (old → new, per this task's mandate)
+
+Compared every file in `IMPL-v0.7-M1.md`'s own old→new table (`test_parser.py`, `test_fallback.py`, `test_commands.py`, new `test_prompts.py`) and every file in `IMPL.md`'s "v0.7.0 — Integration" §"Every test touched, old → new" table (`test_resilience.py`, `test_v060_bilingual_gaps.py`, `test_commands.py`, `test_db.py`, `test_cli.py`, `test_reminders.py`, `test_confirmations.py`) directly against `git show v0.6.0:tests/<file>`, line by line (`diff -u` + manual read of every changed `assert` line), rather than trusting either IMPL.md's or the module Vera's own characterization. M1 never got its own scoped Vera pass (flagged explicitly in this task's brief), so its audit is folded fully into this one.
+
+**Result: no weakened assertion found anywhere in the audited set, with one coverage-gap exception, fixed below.**
+
+- `test_fallback.py`, `test_resilience.py`, `test_v060_bilingual_gaps.py`, `test_confirmations.py`, `test_reminders.py`, `test_db.py`, `test_cli.py`: every changed line is a mechanical call-shape/accessor-shape update (`ExtractionResult(cat, water_ml, stretch_min, diary_text, conf)` → `(cat, value, conf)`; `compute_weekly_stats(db, config, end_date)` → `(db, config, registry, end_date)` + `stats.water_total_ml` → `stats.get("water").total`; `chat_json(sys, usr, schema)` → `(..., valid_categories)`; etc.) — every literal expected *value* (string, number, boolean) is byte-for-byte identical to its v0.6.0 counterpart. Two tests were correctly *unskipped* (`test_reminders.py::test_async_main_registers_weekly_review_job_from_config`, `test_confirmations.py::test_end_to_end_water_confirmation_with_mocked_ollama`) once their blocking boundary closed — a strengthening, not a weakening.
+- `test_commands.py`: the `ADVERSARIAL_MESSAGES` false-positive corpus (10 entries, AC5.5) is byte-for-byte identical, in the same order, to `git show v0.6.0`'s copy — confirmed by direct diff of the list literal, not just "the test still exists." The 3 migration-count assertions Luna fixed (`3`→`4`/`len(MIGRATIONS)`) are legitimate (migration count is now genuinely 4). New AC12 sections are pure additions.
+- `test_prompts.py` (new file, M1): covers the default registry, an added `sleep` habit, boolean/text synthetic habits, and the schema-flat/prompt-grows contrast, matching AC8 exactly.
+- **One coverage gap found and fixed:** `test_parser.py`'s old `test_unit_constants_are_configurable` (v0.6.0) proved *configurability* by asserting **non-default** injected values (`glass_ml=450`, `bottle_ml=900`) reached the prompt. Its v0.7 replacement, `test_registry_unit_aliases_reach_the_prompt`, only ever asserts the **default** registry's own values (`250`/`600`) reach the prompt — every test in the file (including the new `test_prompts.py`) makes the same choice. This is a real regression in what's proven: a bug that hardcoded `"250"`/`"600"` into the prompt template instead of reading `habit.unit_aliases` would pass every existing v0.7 test. Not a wrong *value* (nothing asserts a false thing), but a silently narrower *guarantee* than the test it replaced — exactly the "smell" this task's brief asked me to rewrite. **Fixed:** added `tests/test_parser.py::test_arbitrary_custom_unit_alias_value_reaches_the_prompt`, which builds a synthetic habit with a deliberately non-realistic alias multiplier (`{"cup": 337}`) and asserts `"337"` reaches the generated prompt — restoring the original test's configurability guarantee under the v0.7 registry-driven contract. Verified failing against a hypothetical hardcoded-250/600 implementation by inspection (the real implementation reads `habit.unit_aliases` generically, so it passes); verified passing against the shipped `llm/prompts.py`.
+
+No other smell found. `bool_status_done`/`_not_done`/`recovered_text` (additive i18n entries beyond SPEC-v0.7.md §5's illustrative list, per `IMPL.md` Known limitation 2) are exercised by existing tests (`test_confirmations.py`'s boolean AC9 cases) and don't need dedicated new coverage beyond what's already there.
+
+## AC coverage — SPEC-v0.7.md §8 (AC1–AC17)
+
+| AC | Track | Verdict | Evidence |
+|---|---|---|---|
+| AC1 (config/HabitConfig validation) | shared | PASS | `test_config.py` (defaults reproduce builtins, 9 validator-rejection cases, `ConfigError` e2e) |
+| AC2 (HabitRegistry) | shared | PASS | `test_habits.py` (16 tests) |
+| AC3 (migration 004) | shared | PASS | `test_migrations.py::test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled` (byte-for-byte row preservation, idempotent) + this pass's `test_multi_habit_integration.py::test_migration_004_backfilled_legacy_rows_aggregate_alongside_new_habit_rows` |
+| AC4 (generic aggregations) | shared | PASS | `test_db.py` (`sum_value`/`count`/`count_true`, soft-delete exclusion, wrapper parity) |
+| AC5 (flat-size schema) | shared | PASS | `test_extraction_schema.py` (3-vs-30-habit size independence) |
+| AC6 (category matching / fail-closed) | M1 | PASS | `test_parser.py` (56 tests, audited above) |
+| AC7 (per-type validation) | M1 | PASS | `test_parser.py`'s per-type validation section (numeric/duration ≤0, text empty, boolean truthy/falsy/uncoercible, confidence gate) |
+| AC8 (dynamic prompt) | M1 | PASS | `test_prompts.py` (5 tests) + this pass's `test_arbitrary_custom_unit_alias_value_reaches_the_prompt` (gap fix) |
+| AC9 (built-in byte-identical + generic templates) | shared | PASS | `test_confirmations.py` (built-in cases unchanged + 9 new AC9 generic-template cases matching SPEC §3.2 verbatim), `test_bilingual_confirmations.py` |
+| AC11 (zero-code new habit, e2e) | integration | PASS | this pass's `test_multi_habit_integration.py` (18 tests) + live smoke (below) |
+| AC12 (edit generalization) | M1 | PASS | `test_commands.py` AC12 section (exact SPEC examples, garbled-tail corpus, ambiguous-unit first-match) |
+| AC13 (reminders byte-identical) | M2 | PASS | `test_reminders.py` (per `TEST-v0.7-M2.md`, independently re-verified there against the live catalog, not just Luna's claim) |
+| AC14 (new-habit reminders) | M2 | PASS | `test_reminders.py` (per `TEST-v0.7-M2.md`) + this pass's `test_multi_habit_integration.py` (generic-template branch, the sibling of M2's custom-`reminder_text` branch) |
+| AC15 (review byte-identical) | M3 | PASS | `test_review.py` + `TEST-v0.7-M3.md`'s independent byte-identical reconstruction against the real `git show v0.6.0:core/review.py` (character-for-character match, both languages) |
+| AC16 (generic review + AC7.5 rows) | M3 | PASS | `test_review.py`, `test_v07_m3_review_extra.py` (8 tests) + this pass's migration-alongside-new-rows test |
+| AC17 (composite byte-identical) | integration | PASS | full suite (463/1/0) + this pass's dedicated `test_ac17_v060_byte_identical_composite.py` (12 tests, literals pinned from `git show v0.6.0`, driven through the real pipeline, not derived from the current catalog) |
+
+## AC coverage — ROADMAP.md v0.7.0 (AC7.1–AC7.5), the release-gate criteria
+
+| ROADMAP AC | Meaning | Maps to (SPEC-v0.7.md) | Verdict | Evidence |
+|---|---|---|---|---|
+| **AC7.1** | Default config (water/stretch/diary) is byte-identical to v0.6.0 across confirmations, reminders, and the weekly review, jointly | AC9, AC13, AC15, AC17 | **PASS** | Pre-v0.7 corpus passes unmodified in assertion value (audited above); M3's independent v0.6.0-module reconstruction (`TEST-v0.7-M3.md`); this pass's `test_ac17_v060_byte_identical_composite.py` — 12 tests, literals hand-copied from `git show v0.6.0`, run through the real (not bypassed) parser/confirmation chain |
+| **AC7.2** | Adding a habit via `[[habits]]` config requires zero code changes and works end to end (parse, store, confirm, remind, review) | AC11 | **PASS** | `test_multi_habit_integration.py` — 18 tests covering every stage listed, for both a numeric+goal (`sleep`) and boolean (`meds`) habit added purely as config data; live-Ollama smoke below independently confirms the extraction stage against the real model |
+| **AC7.3** | Extraction (schema, prompt, category matching) is generated from the registry, not hardcoded per habit | AC5, AC6, AC8 | **PASS** | `test_extraction_schema.py`, `test_parser.py`, `test_prompts.py`; one coverage gap found and closed (custom-alias configurability, see audit above) |
+| **AC7.4** | Per-type validation (numeric/duration/text/boolean) replaces the old per-category validation, with no regression | AC7 | **PASS** | `test_parser.py`'s per-type section, audited line-by-line against `SPEC-v0.7.md` §4 R8 — all cases present, no value drift from the v0.6.0-carried-forward subset |
+| **AC7.5** | Storage/migration generalizes without losing or misclassifying historical rows | AC3, AC4, AC16 | **PASS** | `test_migrations.py` (byte-for-byte row preservation across the 3→4 migration, idempotent), `test_review.py::test_pre_v070_rows_with_null_habit_type_aggregate_correctly`, this pass's migration-alongside-new-rows test (legacy-backfilled and brand-new rows aggregate together in one `compute_weekly_stats` call, not just independently) |
+
+## AC17 composite byte-identical — verification detail
+
+Per this task's explicit instruction, the expected strings in `test_ac17_v060_byte_identical_composite.py` are typed in by hand from `git show v0.6.0:src/habit_assistant/core/i18n.py`'s catalog templates (formatted by hand with the scenario's known parameters), not produced by calling the *current* `i18n.t(...)` or any other current-code helper — confirmed by inspection of the test file (no `i18n` import, no catalog lookup anywhere in it). The 12 scenarios (water: en-plain, th-glass-alias, en-bottle-alias, th-bottle-alias; stretch: en, th; diary: en, th; unknown: en, th; undo: en; edit: en) each drive the real `handle_inbound_message` → `parse_message` → registry-built schema/prompt → real `core/parser.py._validate` chain, with only the network boundary (`httpx.MockTransport` under a real `OllamaClient`) mocked — not `main.parse_message` itself, so this is strictly stronger evidence than the pre-existing corpus's `patch_parse_message` monkeypatch style. All 12 pass.
+
+Separately, `TEST-v0.7-M3.md` already did an even deeper version of this for the review path specifically: it loaded the actual `git show v0.6.0:core/review.py` module via `importlib` and ran it side by side against the current module on identically-seeded databases, comparing output character-for-character in both languages — also `MATCH` in every case. Between that and this pass's confirmation/undo/edit coverage, AC7.1's "jointly byte-identical" claim now has direct evidence for every one of confirmations, undo, edit, and review — reminders' byte-identical claim is independently verified in `TEST-v0.7-M2.md` against the live catalog.
+
+## AC11 zero-code new habit — verification detail
+
+`tests/test_multi_habit_integration.py`'s `SLEEP`/`MEDS` `HabitConfig` instances are the only "new" things in the file — every production import (`parse_message`, `handle_inbound_message`, `schedule_reminders`, `send_reminder`, `compute_weekly_stats`, `run_weekly_review`, `dispatch`) is used completely unmodified. The file covers, per the task's explicit checklist:
+
+- **Extraction (mocked LLM):** real `parse_message` against the real registry-built schema/prompt (network boundary mocked), for both `sleep` (Thai, numeric) and `meds` (English, boolean).
+- **Logging:** DB rows confirmed to carry `category='sleep'`/`habit_type='numeric'`/`value_num=7.0` and `category='meds'`/`habit_type='boolean'`/`value_num∈{0.0,1.0}`.
+- **Confirmation, generic templates, both languages:** `sleep`'s en/th strings match `SPEC-v0.7.md` §3.2's own worked example verbatim (`✅ 7 h logged — today 7 / 8 h (88%)` / `✅ บันทึกนอน 7 ชม. แล้ว — วันนี้ 7 / 8 ชม. (88%)`); `meds`'s English string matches §3.2's `meds` example verbatim (`✅ meds — done today`); Thai boolean confirmed too.
+- **Reminder job registration:** `schedule_reminders` registers `reminder_sleep_07:00` and `reminder_meds_09:00` alongside the untouched 9 built-in jobs; both fire through the generic `reminder_generic` template (the sibling of `TEST-v0.7-M2.md`'s AC14 coverage, which used a custom `reminder_text` — this pass deliberately covers the no-`reminder_text` branch instead of duplicating it).
+- **Weekly review inclusion:** both `compute_weekly_stats` (per-habit numbers) and `run_weekly_review` (full rendered text, both languages) include `sleep`/`meds` alongside the three built-ins, via the generic `stats_generic_numeric_total`/`stats_generic_count_summary` templates.
+- **Undo/edit where type-appropriate:** `sleep` (numeric+goal) supports both undo and edit (generic templates verified byte-for-byte against the catalog's own format strings); `meds` (boolean) supports undo only — confirmed edit is correctly *never* dispatched for a boolean habit (`core/commands.py`'s unit-lookup only ever includes numeric/duration habits, per `SPEC-v0.7.md` §10's explicit "editing text/boolean is out of scope").
+- **Migration-004 backfill aggregating alongside:** a hand-built v3-shaped DB (pre-v0.7 schema, no `habit_type` column) with real legacy water rows is opened through the real `Database` class (migrates 3→4, backfills `habit_type='numeric'`), then `sleep`/`meds` rows are inserted through the same now-migrated DB; one `compute_weekly_stats` call aggregates the migrated-legacy water total (`800.0` = `500+300`) and the brand-new `sleep` total (`13.0` = `7+6`) and `meds` done-day count (`1`) together, confirming the backfill isn't inert — it participates in the same aggregation query path new-habit rows do.
+
+## Live smoke (Ollama)
+
+Ollama was reachable this session (`curl http://mac-mini:11434/api/version` → `{"version":"0.32.6"}`, matching M1's own earlier live check). Ran 3 real extractions through the real `parse_message`/`OllamaClient` against the real `config.toml`'s model chain (`qwen3.5:9b-mlx` → `qwen3:8b`), using an in-memory registry only (never opened `data/habits.db`, never touched `.env`, no Telegram):
+
+| Input | category | value | confidence |
+|---|---|---|---|
+| `"500ml"` | `water` | `500.0` | `0.98` |
+| `"did 10 min stretch"` | `stretch` | `10.0` | `0.95` |
+| `"นอน 7 ชม."` (sleep, zero code change) | `sleep` | `7.0` | `0.95` |
+
+All 3 correct. The `sleep` result is the direct, live confirmation of AC7.2/AC11's central claim: a habit that exists only as in-memory `HabitConfig` data, added to a registry built from the real loaded config, parses correctly against the real model with no code change anywhere. M1's `IMPL-v0.7-M1.md` already live-verified 8/8 cases (including a live-discovered-and-fixed diary-prompt wording issue, re-verified 5/5 after the fix) during its own module pass; this pass's 3 cases are corroborating spot-checks with fresh inputs, not a re-run of the same evidence, per the "Ollama intermittent, don't block on it" guidance — it happened to be reachable this session so the check was run rather than skipped.
+
+## Failures (if any)
+
+None.
+
+## Regressions detected
+
+None. Full suite: 463 passed, 1 skipped (the documented pre-existing v0.1.0-era skip), 0 failed. No test that passed before this pass now fails; no assertion value was weakened (see audit above; the one coverage gap found was closed, not left open).
+
+## Live-environment / safety checks
+
+- Production bot (PID 13956) confirmed running via `tasklist` both before and after all work in this pass.
+- `data/habits.db` mtime unchanged throughout (all tests use `tmp_path`; the live-smoke script above never imports `storage.db.Database` or touches `config.app.db_path`).
+- `.env` not read or written by this pass.
+- No real Telegram call made anywhere (no `TelegramChannel` instantiated in this pass's new tests or scripts).
+- No git commit made (per instruction). `git status` at the end of this pass shows only Luna's pre-existing `src/`/test-file modifications (already present at session start) plus this pass's 2 new test files and the 1-test addition to `test_parser.py` — no production file touched by this pass, consistent with Vera's role.
+
+## Recommendation
+
+**Ready to ship — v0.7.0 Multi-Habit Extensibility, overall status PASS.** All 17 SPEC-v0.7.md ACs and all 5 ROADMAP.md AC7.1–AC7.5 release-gate criteria are green, with direct test evidence (not just "the module Vera said so") for every one, including two ACs (AC11, AC17) that had no dedicated end-to-end test before this pass and now do. The old→new test-rewrite audit covering M1 (which never got its own scoped Vera pass) plus every file the integration Luna touched found no weakened assertions and exactly one coverage-gap smell, which was fixed in place. Full suite: 463 passed / 1 skipped (pre-existing, documented) / 0 failed. Production bot, live DB, and `.env` confirmed untouched throughout; live Ollama smoke corroborates the central AC7.2 claim against the real model. No blockers for Archi to proceed to release (version bump, `PROGRESS.md` update, commit + tag).

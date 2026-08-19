@@ -71,6 +71,28 @@ def _migration_003_soft_delete(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_deleted_at ON logs(deleted_at)")
 
 
+def _migration_004_habit_type(conn: sqlite3.Connection) -> None:
+    """ROADMAP.md v0.7.0 "Multi-Habit Extensibility" (SPEC-v0.7.md §4 R11):
+    additive-only, like every migration before it -- a new nullable
+    column, then a one-time backfill of the three categories that existed
+    before this version (`water`->'numeric', `stretch`->'duration',
+    `diary`->'text'); any other category (notably 'unparsed', and any
+    unrecognized historical category) is left NULL rather than guessed at.
+    `value_num`/`value_text`/`category`/`ts` of every existing row are
+    untouched -- they already sit in the right column/value (AC3/AC7.5)."""
+    conn.execute("ALTER TABLE logs ADD COLUMN habit_type TEXT NULL")
+    conn.execute(
+        """
+        UPDATE logs SET habit_type = CASE category
+            WHEN 'water' THEN 'numeric'
+            WHEN 'stretch' THEN 'duration'
+            WHEN 'diary' THEN 'text'
+            ELSE NULL
+        END
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -78,6 +100,7 @@ MIGRATIONS: list[Migration] = [
     _migration_001_baseline,
     _migration_002_category_index,
     _migration_003_soft_delete,
+    _migration_004_habit_type,
 ]
 
 

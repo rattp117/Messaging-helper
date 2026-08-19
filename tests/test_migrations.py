@@ -235,6 +235,105 @@ def test_v010_shaped_db_migrates_forward_preserving_rows(tmp_path):
     db.close()
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP.md v0.7.0 "Multi-Habit Extensibility" (AC3): migration 004
+# (`habit_type`) on a COPY of a v3-shaped DB (never the live
+# `data/habits.db` -- this test builds its own throwaway file under
+# `tmp_path`). Verifies schema_version 3->4, the new column's backfilled
+# values per category, and that every pre-existing row's
+# value_num/value_text/category/ts is byte-for-byte unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
+    db_path = tmp_path / "v3_copy.db"
+
+    # Hand-build a v3-shaped DB (migrations 001-003 already applied,
+    # i.e. the schema shape shipped through v0.6.0): logs table +
+    # deleted_at, no habit_type yet, user_version=3. Seeded with real rows
+    # across every category the live DB could plausibly carry, including
+    # 'unparsed' (SPEC-v0.7.md §2.3).
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL
+        );
+        CREATE INDEX idx_logs_ts_cat ON logs(ts, category);
+        CREATE INDEX idx_logs_category ON logs(category);
+        CREATE INDEX idx_logs_deleted_at ON logs(deleted_at);
+        PRAGMA user_version = 3;
+        """
+    )
+    rows_to_insert = [
+        ("2026-08-10T09:00:00", "water", 500.0, None, "500ml", "reply"),
+        ("2026-08-10T11:00:00", "stretch", 10.0, None, "10 min stretch", "reply"),
+        ("2026-08-10T21:30:00", "diary", None, "a good day", "a good day", "reply"),
+        ("2026-08-11T09:00:00", "unparsed", None, None, "garbled message", "reply"),
+    ]
+    for ts, category, value_num, value_text, raw_message, source in rows_to_insert:
+        conn.execute(
+            "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (ts, category, value_num, value_text, raw_message, source),
+        )
+    conn.commit()
+    before_rows = [
+        tuple(r)
+        for r in conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source FROM logs ORDER BY id"
+        )
+    ]
+    assert current_version(conn) == 3
+    conn.close()
+
+    # Open through the real Database class -- this is where migration 004 runs.
+    db = Database(db_path)
+
+    assert db.schema_version_before == 3
+    assert db.schema_version == 4
+
+    after_rows = [
+        tuple(r)
+        for r in db._conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source FROM logs ORDER BY id"
+        )
+    ]
+    assert after_rows == before_rows  # untouched, byte-for-byte, row count identical
+
+    habit_types = {
+        row["category"]: row["habit_type"]
+        for row in db._conn.execute("SELECT category, habit_type FROM logs ORDER BY id")
+    }
+    assert habit_types["water"] == "numeric"
+    assert habit_types["stretch"] == "duration"
+    assert habit_types["diary"] == "text"
+    assert habit_types["unparsed"] is None
+    db.close()
+
+    # Re-running (reopen) migrates nothing further (idempotent).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 4
+    assert reopened.schema_version == 4
+    reopened.close()
+
+
+def test_fresh_db_reports_schema_version_4(tmp_path):
+    db = Database(tmp_path / "fresh_v4.db")
+    assert db.schema_version == 4
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)").fetchall()}
+    assert "habit_type" in cols
+    db.close()
+
+
 def test_v010_shaped_db_index_and_wal_still_correct_after_migration(tmp_path):
     db_path = tmp_path / "legacy2.db"
     conn = sqlite3.connect(str(db_path))

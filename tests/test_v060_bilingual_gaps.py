@@ -46,6 +46,7 @@ import pytest
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
 from habit_assistant.core import i18n
+from habit_assistant.core.habits import HabitRegistry
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.review import run_weekly_review
 from habit_assistant.llm.ollama_client import ExtractionResult
@@ -91,7 +92,10 @@ def db(tmp_path):
 
 
 def patch_parse_message(monkeypatch, result: ExtractionResult):
-    async def fake_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
+    # ROADMAP.md v0.7.0 (SPEC-v0.7.md §5): handle_inbound_message now calls
+    # parse_message(text, llm, registry, confidence_threshold) -- the fake's
+    # parameter names are updated to match (registry-wiring edit only).
+    async def fake_parse_message(text, llm, registry, confidence_threshold=None):
         return result
 
     monkeypatch.setattr("habit_assistant.main.parse_message", fake_parse_message)
@@ -105,7 +109,7 @@ def patch_parse_message(monkeypatch, result: ExtractionResult):
 
 
 async def test_english_water_confirmation_byte_identical_to_v050(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock)
@@ -114,7 +118,7 @@ async def test_english_water_confirmation_byte_identical_to_v050(db, fixed_clock
 
 
 async def test_english_stretch_confirmation_byte_identical_to_v050(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("stretch", None, 10, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("stretch", 10, 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message(
@@ -125,7 +129,7 @@ async def test_english_stretch_confirmation_byte_identical_to_v050(db, fixed_clo
 
 
 async def test_english_diary_confirmation_byte_identical_to_v050(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("diary", None, None, "good day", 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("diary", "good day", 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message(
@@ -137,7 +141,7 @@ async def test_english_diary_confirmation_byte_identical_to_v050(db, fixed_clock
 
 
 async def test_english_diary_confirmation_uses_v050_fallback_when_llm_empty(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("diary", None, None, "good day", 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("diary", "good day", 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message(
@@ -415,9 +419,13 @@ class RecordingLLM:
 
 
 async def test_weekly_review_system_prompt_carries_thai_directive_by_default(review_db):
+    """CHANGED (ROADMAP.md v0.7.0 integration): run_weekly_review gains a
+    required `registry` param (SPEC-v0.7.md §5, module M3) -- registry-
+    wiring edit only, no assertion changed."""
     llm = RecordingLLM()
+    registry = HabitRegistry.from_config(Config())
 
-    await run_weekly_review(review_db, Config(), llm, today=date(2026, 8, 19))
+    await run_weekly_review(review_db, Config(), registry, llm, today=date(2026, 8, 19))
 
     assert len(llm.calls) == 1
     system_prompt, _user_prompt = llm.calls[0]
@@ -427,8 +435,9 @@ async def test_weekly_review_system_prompt_carries_thai_directive_by_default(rev
 async def test_weekly_review_system_prompt_carries_english_directive_when_forced(review_db):
     llm = RecordingLLM()
     config = Config.model_validate({"i18n": {"language": "en"}})
+    registry = HabitRegistry.from_config(config)
 
-    await run_weekly_review(review_db, config, llm, today=date(2026, 8, 19))
+    await run_weekly_review(review_db, config, registry, llm, today=date(2026, 8, 19))
 
     system_prompt, _user_prompt = llm.calls[0]
     assert i18n.language_instruction("en") in system_prompt
@@ -461,7 +470,7 @@ async def test_mixed_thai_english_input_produces_thai_reply_end_to_end(db, fixed
     """"ดื่มน้ำ 500ml" (any-Thai-char rule, AC6.5) drives a real
     handle_inbound_message call all the way to a Thai confirmation --
     not just a unit-level detect_language() call."""
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message(

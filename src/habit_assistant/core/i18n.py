@@ -254,4 +254,118 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "Diary entries this week: {diary_count}",
         "th": "บันทึกไดอารี่สัปดาห์นี้: {diary_count} ครั้ง",
     },
+    # -----------------------------------------------------------------
+    # ROADMAP.md v0.7.0 "Multi-Habit Extensibility" (SPEC-v0.7.md §5): the
+    # type-generic templates. Built-in habits (water/stretch/diary) never
+    # use these -- they keep reusing the entries above verbatim, which is
+    # what makes AC7.1/AC9 byte-identical-by-construction rather than by
+    # re-derivation (SPEC-v0.7.md §9 risk 2). These render any *other*
+    # configured habit, parameterized by its `label`/`unit`/type.
+    # -----------------------------------------------------------------
+    "confirm_numeric_goal": {
+        "en": "✅ {value:g} {unit} logged — today {total:g} / {goal:g} {unit} ({pct}%)",
+        "th": "✅ บันทึก{label} {value:g} {unit} แล้ว — วันนี้ {total:g} / {goal:g} {unit} ({pct}%)",
+    },
+    "confirm_numeric_nogoal": {
+        "en": "✅ {value:g} {unit} logged today",
+        "th": "✅ บันทึก{label} {value:g} {unit} แล้ว วันนี้",
+    },
+    "confirm_duration": {
+        "en": "✅ {value:g} {unit} {label} logged — {ordinal} today",
+        "th": "✅ บันทึก{label} {value:g} {unit} แล้ว — ครั้งที่ {count} ของวันนี้",
+    },
+    "confirm_text": {
+        "en": "✅ {label} saved. {reflection}",
+        "th": "✅ บันทึก{label}แล้วนะ {reflection}",
+    },
+    "confirm_boolean": {
+        "en": "✅ {label} — {status} today",
+        "th": "✅ {label} — {status} วันนี้",
+    },
+    "bool_status_done": {
+        "en": "done",
+        "th": "ทำแล้ว",
+    },
+    "bool_status_not_done": {
+        "en": "not done",
+        "th": "ยังไม่ทำ",
+    },
+    "undo_removed_numeric": {
+        "en": "↩️ Undone — removed {description}. Today: {total:g} / {goal:g} {unit} ({pct}%)",
+        "th": "↩️ ยกเลิกแล้ว — ลบ {description} วันนี้เหลือ {total:g} / {goal:g} {unit} ({pct}%)",
+    },
+    "undo_removed_duration": {
+        "en": "↩️ Undone — removed {description}. {count} {label} session(s) today",
+        "th": "↩️ ยกเลิกแล้ว — ลบ {description} วันนี้{label}ไปแล้ว {count} ครั้ง",
+    },
+    "undo_removed_boolean": {
+        "en": "↩️ Undone — removed {description}",
+        "th": "↩️ ยกเลิกแล้ว — ลบ {description}",
+    },
+    "edit_updated_numeric": {
+        "en": "✏️ Updated to {value:g} {unit} — today {total:g} / {goal:g} {unit} ({pct}%)",
+        "th": "✏️ แก้เป็น {value:g} {unit} แล้ว — วันนี้ {total:g} / {goal:g} {unit} ({pct}%)",
+    },
+    "edit_updated_duration": {
+        "en": "✏️ Updated to {value:g} {unit} {label} — {ordinal} today",
+        "th": "✏️ แก้เป็น {value:g} {unit} {label} แล้ว — ครั้งที่ {count} ของวันนี้",
+    },
+    "describe_log_numeric": {
+        "en": "{value_num:g} {unit} {label}",
+        "th": "{label} {value_num:g} {unit}",
+    },
+    "describe_log_duration": {
+        "en": "{value_num:g} {unit} {label}",
+        "th": "{label} {value_num:g} {unit}",
+    },
+    "describe_log_boolean": {
+        "en": "{label}",
+        "th": "{label}",
+    },
+    "recovered_numeric": {
+        "en": "🔁 Recovered: {value:g} {unit} {label} logged from your earlier message.",
+        "th": "🔁 กู้คืนแล้ว: บันทึก{label} {value:g} {unit} จากข้อความก่อนหน้า",
+    },
+    "recovered_duration": {
+        "en": "🔁 Recovered: {value:g} {unit} {label} logged from your earlier message.",
+        "th": "🔁 กู้คืนแล้ว: บันทึก{label} {value:g} {unit} จากข้อความก่อนหน้า",
+    },
+    "recovered_boolean": {
+        "en": "🔁 Recovered: {label} logged from your earlier message.",
+        "th": "🔁 กู้คืนแล้ว: บันทึก{label}จากข้อความก่อนหน้า",
+    },
+    # Not in SPEC-v0.7.md §5's illustrative catalog list (which names only
+    # recovered_numeric/_duration/_boolean); added so a non-built-in TEXT
+    # habit's deferred-recovery path (main.py._send_recovered_generic) has
+    # somewhere to resolve to, mirroring recovered_diary's shape.
+    "recovered_text": {
+        "en": "🔁 Recovered: saved your earlier {label} message.",
+        "th": "🔁 กู้คืนแล้ว: บันทึก{label}จากข้อความก่อนหน้าเรียบร้อย",
+    },
+    # --- reminders (core/reminders.py, module M2) -------------------------
+    "reminder_generic": {
+        "en": "⏰ Time for {label}. How did it go?",
+        "th": "⏰ ถึงเวลา{label}แล้วนะ วันนี้เป็นยังไงบ้าง?",
+    },
+    # --- weekly review (core/review.py, module M3) -------------------------
+    "stats_generic_numeric_header": {
+        "en": "{label} ({unit} / goal / %):",
+        "th": "{label} ({unit} / เป้าหมาย / %):",
+    },
+    "stats_generic_numeric_line": {
+        "en": "  {day}: {value:g} / {goal:g} ({pct}%)",
+        "th": "  {day}: {value:g} / {goal:g} ({pct}%)",
+    },
+    "stats_generic_numeric_total": {
+        "en": "{label} total: {total:g} {unit}, average/day: {avg:g} {unit}",
+        "th": "{label}รวม: {total:g} {unit} เฉลี่ยต่อวัน: {avg:g} {unit}",
+    },
+    "stats_generic_duration_summary": {
+        "en": "{label} sessions this week: {total}, current streak: {streak} day(s)",
+        "th": "{label}สัปดาห์นี้: {total} ครั้ง ต่อเนื่อง {streak} วัน",
+    },
+    "stats_generic_count_summary": {
+        "en": "{label} entries this week: {count}",
+        "th": "บันทึก{label}สัปดาห์นี้: {count} ครั้ง",
+    },
 }

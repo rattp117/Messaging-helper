@@ -22,6 +22,25 @@ concern, handled in core/parser.py, not an availability concern). An
 application-level HTTP error status (host responded, just badly) is NOT
 retried here and still counts as "available" -- only a transport error
 means the host itself is unreachable.
+
+v0.7.0 (ROADMAP.md "Multi-Habit Extensibility", SPEC-v0.7.md §4 R4/R6):
+`ExtractionResult` becomes generic (`category`, a single `value` field
+typed number|string|bool|None, `confidence`) instead of one field per
+habit, and `build_extraction_schema(category_enum)` generates the JSON
+schema from the live habit registry -- the schema's *size* stays
+independent of habit count (one `value` field, not N), which matters
+because the schema-weak MLX backend already struggles with `format`
+(see v0.1.0/v0.2.0 findings below; the fallback chain remains the safety
+net). `chat_json`/`probe_schema_support` take the system/user prompt and
+schema as parameters instead of reading module-level constants, since the
+prompt is now built per-registry (`llm/prompts.py`, module M1) rather than
+being a fixed template.
+
+`EXTRACTION_JSON_SCHEMA`/`VALID_CATEGORIES`/`REQUIRED_SCHEMA_KEYS` (the old
+fixed water/stretch/diary schema) are kept as-is, unchanged, purely so
+`core/parser.py` (not yet migrated onto the registry -- that is module M1's
+work) still imports cleanly; nothing in this module derives from or reads
+them anymore.
 """
 
 from __future__ import annotations
@@ -40,6 +59,10 @@ logger = logging.getLogger(__name__)
 
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
+# --- Legacy (v0.1.0-v0.6.0) fixed schema -----------------------------------
+# Kept unchanged, purely as a backward-compatibility import target for
+# core/parser.py (module M1's file, not yet migrated onto the registry).
+# Nothing in this module derives from these anymore -- see module docstring.
 EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -55,24 +78,43 @@ EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
 VALID_CATEGORIES = set(EXTRACTION_JSON_SCHEMA["properties"]["category"]["enum"])
 REQUIRED_SCHEMA_KEYS = set(EXTRACTION_JSON_SCHEMA["required"])
 
-# Fixed probe message for probe_schema_support(): a simple, unambiguous
-# water log that every configured model should extract the same way.
-_PROBE_MESSAGE = "500ml"
-_PROBE_GLASS_ML = 250
-_PROBE_BOTTLE_ML = 600
+
+# --- v0.7.0 generic extraction result + schema builder ----------------------
 
 
 @dataclass(slots=True)
 class ExtractionResult:
+    """Generic across every habit type (SPEC-v0.7.md §4 R9): `category` is
+    a habit id or `"unknown"`; `value` is the single extracted value,
+    typed per the matched habit (`float` for numeric/duration, `str` for
+    text, `bool` for boolean), or `None` for `unknown`."""
+
     category: str
-    water_ml: int | None
-    stretch_min: int | None
-    diary_text: str | None
+    value: float | str | bool | None
     confidence: float
 
     @classmethod
     def unknown(cls) -> "ExtractionResult":
-        return cls(category="unknown", water_ml=None, stretch_min=None, diary_text=None, confidence=0.0)
+        return cls(category="unknown", value=None, confidence=0.0)
+
+
+def build_extraction_schema(category_enum: list[str]) -> dict[str, Any]:
+    """Generate the extraction JSON schema from the live habit registry's
+    category enum (SPEC-v0.7.md §4 R4). Deliberately a single `value`
+    field regardless of habit count -- the schema's *size* is independent
+    of how many habits are configured (one field, not one per habit),
+    to avoid growing the payload the schema-weak MLX backend already
+    struggles with (module docstring; the fallback chain in `chat_json`
+    remains the safety net)."""
+    return {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "enum": list(category_enum)},
+            "value": {"type": ["number", "string", "boolean", "null"]},
+            "confidence": {"type": "number"},
+        },
+        "required": ["category", "value", "confidence"],
+    }
 
 
 def strip_think_and_prose(raw: str) -> str:
@@ -88,7 +130,7 @@ def strip_think_and_prose(raw: str) -> str:
     return without_think[start : end + 1]
 
 
-def _has_recognizable_category(data: Any) -> bool:
+def _has_recognizable_category(data: Any, valid_categories: set[str]) -> bool:
     """Lightweight fallback-worthiness gate for chat_json's model chain
     (AC2.2): does the parsed JSON at least carry a recognized `category`
     enum value? A model that ignores `format` entirely (the known MLX gap)
@@ -100,8 +142,13 @@ def _has_recognizable_category(data: Any) -> bool:
     `confidence`, or an out-of-range numeric field are NOT treated as
     off-schema here -- core/parser.py._validate already fails those closed
     to `unknown` without needing a second model, and that's the behavior
-    v0.1.0 already tested and relied on (AC2.4 no-regression)."""
-    return isinstance(data, dict) and data.get("category") in VALID_CATEGORIES
+    v0.1.0 already tested and relied on (AC2.4 no-regression).
+
+    v0.7.0 (SPEC-v0.7.md §4 R6): `valid_categories` is now a parameter --
+    the live habit registry's ids + `"unknown"` -- instead of the fixed
+    module-level `VALID_CATEGORIES`, so the gate accepts whatever habits
+    are actually configured."""
+    return isinstance(data, dict) and data.get("category") in valid_categories
 
 
 class OllamaClient:
@@ -192,13 +239,19 @@ class OllamaClient:
 
         return None  # unreachable in practice -- defensive
 
-    async def chat_json(self, system_prompt: str, user_prompt: str, json_schema: dict[str, Any]) -> str | None:
+    async def chat_json(
+        self, system_prompt: str, user_prompt: str, json_schema: dict[str, Any], valid_categories: set[str]
+    ) -> str | None:
         """POST /api/chat with stream=false and a JSON schema in `format`,
         trying each configured model in order (AC2.2). Returns the
         extracted JSON substring from the first model whose response has a
         recognized `category`; if every model fails (transport/HTTP error,
         unparseable JSON, or an off-schema category), returns None so the
-        caller fails closed to unknown. Never raises."""
+        caller fails closed to unknown. Never raises.
+
+        v0.7.0 (SPEC-v0.7.md §4 R6): `valid_categories` is now a required
+        parameter -- the live habit registry's `category_enum()` -- instead
+        of the fixed module-level `VALID_CATEGORIES`."""
         for model in self._models:
             content = await self._post(model, system_prompt, user_prompt, json_schema)
             if content is None:
@@ -210,7 +263,7 @@ class OllamaClient:
             except ValueError:
                 logger.warning("Model %s returned unparseable JSON, trying next model in chain", model)
                 continue
-            if _has_recognizable_category(data):
+            if _has_recognizable_category(data, valid_categories):
                 return raw
             logger.warning(
                 "Model %s returned off-schema JSON (category=%r), trying next model in chain",
@@ -231,31 +284,31 @@ class OllamaClient:
         logger.debug("Raw Ollama output (chat_text): %s", content)
         return THINK_BLOCK_RE.sub("", content).strip()
 
-    async def probe_schema_support(self) -> dict[str, bool]:
+    async def probe_schema_support(
+        self, system_prompt: str, user_prompt: str, json_schema: dict[str, Any]
+    ) -> dict[str, bool]:
         """AC2.1: send a known message + the extraction schema to each
         configured model once, and log per-model whether the response
         honors `format` (exact-keys check: the parsed JSON is a dict whose
-        keys are exactly the 5 required schema keys). Informational only --
+        keys are exactly the schema's required keys). Informational only --
         never gates chat_json's own fallback logic, and a probe failure
         (network error, bad JSON, unreachable model) for one model is
         logged and counted as non-conformant rather than raised, so a
-        broken probe can never crash startup."""
-        # Local import: llm.prompts has no import of ollama_client, so this
-        # is not a cycle, but keeping it here (rather than module-level)
-        # makes clear the probe is the only user of these specific prompts.
-        from habit_assistant.llm.prompts import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_TEMPLATE
+        broken probe can never crash startup.
 
-        system_prompt = EXTRACTION_SYSTEM_PROMPT.format(glass_ml=_PROBE_GLASS_ML, bottle_ml=_PROBE_BOTTLE_ML)
-        user_prompt = EXTRACTION_USER_TEMPLATE.format(message=_PROBE_MESSAGE)
-
+        v0.7.0 (SPEC-v0.7.md §4 R4/R6): `system_prompt`/`user_prompt`/
+        `json_schema` are now parameters instead of built internally from
+        the fixed v0.6.0 prompt/schema -- the caller (main.py) builds them
+        from the live habit registry."""
+        required_keys = set(json_schema.get("required", []))
         results: dict[str, bool] = {}
         for model in self._models:
             conformant = False
             try:
-                content = await self._post(model, system_prompt, user_prompt, EXTRACTION_JSON_SCHEMA)
+                content = await self._post(model, system_prompt, user_prompt, json_schema)
                 if content is not None:
                     data = json.loads(strip_think_and_prose(content))
-                    conformant = isinstance(data, dict) and set(data.keys()) == REQUIRED_SCHEMA_KEYS
+                    conformant = isinstance(data, dict) and set(data.keys()) == required_keys
             except Exception:
                 logger.warning("Schema conformance probe errored for model %s", model, exc_info=True)
                 conformant = False

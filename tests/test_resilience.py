@@ -82,12 +82,16 @@ class _NeverCalledLLM:
 
 class _StaticLLM:
     """Hand-picked chat_json response, bypassing HTTP entirely (same
-    pattern as test_fallback.py's `_StaticLLM`)."""
+    pattern as test_fallback.py's `_StaticLLM`).
+    CHANGED (ROADMAP.md v0.7.0 integration): `chat_json` gains a
+    `valid_categories` 5th param (shared-surface contract, `IMPL.md`),
+    matching the real `OllamaClient.chat_json`/module M1's
+    `core/parser.py` call shape."""
 
     def __init__(self, content: str | None):
         self._content = content
 
-    async def chat_json(self, system_prompt, user_prompt, json_schema):
+    async def chat_json(self, system_prompt, user_prompt, json_schema, valid_categories):
         return self._content
 
     async def chat_text(self, system_prompt, user_prompt):
@@ -95,11 +99,13 @@ class _StaticLLM:
 
 
 def json_payload(**overrides) -> str:
+    """CHANGED (ROADMAP.md v0.7.0 integration): the old per-category-key
+    shape (`water_ml`/`stretch_min`/`diary_text`) is now a single generic
+    `value` field, matching `build_extraction_schema`'s output and
+    `core/parser.py._validate`'s `data.get("value")` read (module M1)."""
     base = {
         "category": "unknown",
-        "water_ml": None,
-        "stretch_min": None,
-        "diary_text": None,
+        "value": None,
         "confidence": 0.1,
     }
     base.update(overrides)
@@ -453,8 +459,10 @@ async def test_only_allowed_hosts_contacted_across_all_resilience_paths(monkeypa
     )
 
     # Exercise every resilience path against the shared client/transport.
+    # CHANGED (ROADMAP.md v0.7.0 integration): chat_json's 4th param
+    # `valid_categories` is now required (shared-surface contract).
     await telegram_channel.send("alert-style message")
-    await ollama_client.chat_json("sys", "usr", EXTRACTION_JSON_SCHEMA)  # 1 retry then success
+    await ollama_client.chat_json("sys", "usr", EXTRACTION_JSON_SCHEMA, {"water", "stretch", "diary", "unknown"})
     await health.run_once()
 
     async def on_message(text: str) -> None:
@@ -564,7 +572,7 @@ async def test_reparse_on_recovery_reclassifies_confirms_and_reincludes_in_aggre
     )
     assert db.water_total_ml("2026-08-19") == 0.0  # excluded while pending
 
-    content = json_payload(category="water", water_ml=500, confidence=0.9)
+    content = json_payload(category="water", value=500, confidence=0.9)
     recovering_llm = _StaticLLM(content)
 
     await reparse_pending_unparsed(db, recovering_llm, channel, config)
@@ -597,7 +605,7 @@ async def test_startup_backlog_reparsed_with_no_in_process_transition(db):
 
     channel = _RecordingChannel()
     config = Config()
-    content = json_payload(category="stretch", stretch_min=10, confidence=0.9)
+    content = json_payload(category="stretch", value=10, confidence=0.9)
     recovering_llm = _StaticLLM(content)
 
     await reparse_pending_unparsed(db, recovering_llm, channel, config)

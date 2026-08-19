@@ -62,7 +62,10 @@ def db(tmp_path):
 
 
 def patch_parse_message(monkeypatch, result: ExtractionResult):
-    async def fake_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
+    # ROADMAP.md v0.7.0 (SPEC-v0.7.md §5): handle_inbound_message now calls
+    # parse_message(text, llm, registry, confidence_threshold) -- the fake's
+    # parameter names are updated to match (registry-wiring edit only).
+    async def fake_parse_message(text, llm, registry, confidence_threshold=None):
         return result
 
     monkeypatch.setattr("habit_assistant.main.parse_message", fake_parse_message)
@@ -75,7 +78,7 @@ def patch_parse_message(monkeypatch, result: ExtractionResult):
 
 
 async def test_thai_input_produces_thai_water_confirmation(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
     config = Config()  # i18n.language="auto"
 
@@ -89,7 +92,7 @@ async def test_thai_input_produces_thai_water_confirmation(db, fixed_clock, monk
 
 
 async def test_english_input_produces_english_water_confirmation(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
     config = Config()
 
@@ -104,11 +107,11 @@ async def test_thai_and_english_input_yield_same_structured_data_different_copy(
     channel = FakeChannel()
     config = Config()
 
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
     en_sent = channel.sent[-1]
 
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     await handle_inbound_message(
         "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
     )
@@ -119,7 +122,7 @@ async def test_thai_and_english_input_yield_same_structured_data_different_copy(
 
 
 async def test_thai_input_produces_thai_stretch_confirmation(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("stretch", None, 10, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("stretch", 10, 0.9))
     channel = FakeChannel()
 
     await handle_inbound_message(
@@ -147,7 +150,7 @@ async def test_thai_input_produces_thai_clarifying_question(db, fixed_clock, mon
 
 
 async def test_forced_th_language_overrides_english_input(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
     config = Config.model_validate({"i18n": {"language": "th"}})
 
@@ -158,7 +161,7 @@ async def test_forced_th_language_overrides_english_input(db, fixed_clock, monke
 
 
 async def test_forced_en_language_overrides_thai_input(db, fixed_clock, monkeypatch):
-    patch_parse_message(monkeypatch, ExtractionResult("water", 500, None, None, 0.9))
+    patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
     config = Config.model_validate({"i18n": {"language": "en"}})
 
@@ -214,7 +217,7 @@ async def test_diary_reflection_prompt_carries_the_resolved_language_instruction
             captured.append(system_prompt)
             return "ok"
 
-    patch_parse_message(monkeypatch, ExtractionResult("diary", None, None, "วันนี้เหนื่อยแต่ก็ดี", 0.85))
+    patch_parse_message(monkeypatch, ExtractionResult("diary", "วันนี้เหนื่อยแต่ก็ดี", 0.85))
     channel = FakeChannel()
 
     await handle_inbound_message(

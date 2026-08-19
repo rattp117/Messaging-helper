@@ -45,3 +45,34 @@ interval_seconds = 60
 [i18n]
 language = "auto"
 primary_language = "th"
+
+# ROADMAP.md v0.7.0 "Multi-Habit Extensibility": `[[habits]]` is now the
+# source of truth for water/stretch/diary (config.py's `Config.habits`
+# default reproduces this exact shape when this file/section is absent).
+# The legacy `[reminders.*]`/`[units]` sections above are retained but
+# ignored by the new habit-driven code paths.
+[[habits]]
+id = "water"
+type = "numeric"
+goal = 2500
+reminder_times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
+label = { en = "water", th = "น้ำ" }
+unit  = { en = "ml",    th = "มล." }
+[habits.unit_aliases]
+glass = 250
+"แก้ว" = 250
+bottle = 600
+"ขวด" = 600
+
+[[habits]]
+id = "stretch"
+type = "duration"
+reminder_times = ["11:00", "16:00"]
+label = { en = "stretch", th = "ยืดเส้น" }
+unit  = { en = "min",     th = "นาที" }
+
+[[habits]]
+id = "diary"
+type = "text"
+reminder_times = ["21:30"]
+label = { en = "diary", th = "ไดอารี่" }

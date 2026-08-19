@@ -9,6 +9,7 @@ import sqlite3
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
+from habit_assistant.core.habits import HabitRegistry
 from habit_assistant.core.review import compute_weekly_stats, format_stats_summary
 from habit_assistant.storage.db import Database
 from habit_assistant.storage.models import LogEntry
@@ -41,6 +42,7 @@ def test_logs_table_created_with_expected_columns(tmp_path):
     assert cols == {
         "id", "ts", "category", "value_num", "value_text", "raw_message", "source", "created_at",
         "deleted_at",  # ROADMAP.md v0.5.0 migration 003: soft-delete for undo
+        "habit_type",  # ROADMAP.md v0.7.0 migration 004: multi-habit extensibility (AC3)
     }
     db.close()
 
@@ -198,6 +200,96 @@ def test_diary_count_respects_day_boundary(tmp_path):
     db.close()
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP.md v0.7.0 "Multi-Habit Extensibility" (AC4): generic
+# sum_value/count/count_true, soft-delete-aware, and the v0.6 wrappers
+# (water_total_ml/stretch_count/diary_count) returning identical numbers.
+# ---------------------------------------------------------------------------
+
+
+def test_sum_value_matches_water_total_ml_and_excludes_soft_deleted(tmp_path):
+    db = make_db(tmp_path)
+    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 500.0, None, "a", "reply"))
+    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 300.0, None, "b", "reply"))
+    db.soft_delete(row_id)
+
+    assert db.sum_value("water", "2026-08-19") == 500.0
+    assert db.sum_value("water", "2026-08-19") == db.water_total_ml("2026-08-19")
+    db.close()
+
+
+def test_count_matches_stretch_count_and_diary_count(tmp_path):
+    db = make_db(tmp_path)
+    db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
+    db.insert_log(LogEntry(None, "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
+    db.insert_log(LogEntry(None, "2026-08-19T21:30:00", "diary", None, "c", "c", "reply"))
+
+    assert db.count("stretch", "2026-08-19") == 2 == db.stretch_count("2026-08-19")
+    assert db.count("diary", "2026-08-19") == 1 == db.diary_count("2026-08-19")
+    db.close()
+
+
+def test_count_excludes_soft_deleted_rows(tmp_path):
+    db = make_db(tmp_path)
+    row_id = db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
+    db.insert_log(LogEntry(None, "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
+    db.soft_delete(row_id)
+
+    assert db.count("stretch", "2026-08-19") == 1
+    db.close()
+
+
+def test_count_true_counts_only_truthy_boolean_rows(tmp_path):
+    """log_entry_from_result encodes a boolean habit as value_num 1.0/0.0
+    (SPEC-v0.7.md §4 R10) -- count_true counts only the 1.0 rows, and
+    excludes a soft-deleted truthy row."""
+    db = make_db(tmp_path)
+    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "meds", 1.0, None, "took meds", "reply", habit_type="boolean"))
+    db.insert_log(LogEntry(None, "2026-08-19T10:00:00", "meds", 0.0, None, "no meds", "reply", habit_type="boolean"))
+    deleted_id = db.insert_log(
+        LogEntry(None, "2026-08-19T11:00:00", "meds", 1.0, None, "took meds again", "reply", habit_type="boolean")
+    )
+    db.soft_delete(deleted_id)
+
+    assert db.count_true("meds", "2026-08-19") == 1
+    db.close()
+
+
+def test_insert_log_writes_habit_type_column(tmp_path):
+    db = make_db(tmp_path)
+    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply", habit_type="numeric"))
+
+    row = db._conn.execute("SELECT habit_type FROM logs WHERE category = 'water'").fetchone()
+    assert row["habit_type"] == "numeric"
+    db.close()
+
+
+def test_reclassify_log_stamps_habit_type(tmp_path):
+    db = make_db(tmp_path)
+    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
+
+    db.reclassify_log(row_id, "water", 500.0, None, habit_type="numeric")
+
+    row = db._conn.execute("SELECT category, value_num, habit_type FROM logs WHERE id = ?", (row_id,)).fetchone()
+    assert row["category"] == "water"
+    assert row["value_num"] == 500.0
+    assert row["habit_type"] == "numeric"
+    db.close()
+
+
+def test_reclassify_log_habit_type_defaults_to_none_for_pre_v070_callers(tmp_path):
+    """Backward compatibility: a caller that doesn't pass habit_type (the
+    v0.6.0 call shape) still works, leaving the column NULL."""
+    db = make_db(tmp_path)
+    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
+
+    db.reclassify_log(row_id, "water", 500.0, None)
+
+    row = db._conn.execute("SELECT habit_type FROM logs WHERE id = ?", (row_id,)).fetchone()
+    assert row["habit_type"] is None
+    db.close()
+
+
 def test_water_total_ml_only_counts_water_category(tmp_path):
     """A stretch/diary log on the same day/timestamp prefix must not leak
     into the water total (category filter correctness)."""
@@ -271,27 +363,37 @@ def _seed_known_week(db: Database, end_date: date) -> None:
             db.insert_log(LogEntry(None, f"{day_str}T21:30:00", "diary", None, "seed diary", "seed diary", "reply"))
 
 
+# ROADMAP.md v0.7.0 integration: `compute_weekly_stats`/`format_stats_summary`
+# gained a required `registry` param (SPEC-v0.7.md §5, module M3), and
+# `WeeklyStats` is now per-habit (`stats.get(habit_id)`) instead of a single
+# water-shaped object -- registry-wiring/accessor-shape edits only, same
+# underlying math/assertions as before (per `IMPL-v0.7-M3.md`'s own rename
+# table for the equivalent tests it kept in `test_review.py`).
+
+
 def test_compute_weekly_stats_totals_and_adherence(tmp_path):
     db = make_db(tmp_path)
     config = Config()  # default goal_ml = 2500
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
 
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
+    water = stats.get("water")
 
-    assert len(stats.days) == 7
-    assert stats.days[0].day == (end_date - timedelta(days=6)).isoformat()
-    assert stats.days[-1].day == end_date.isoformat()
+    assert len(water.days) == 7
+    assert water.days[0].day == (end_date - timedelta(days=6)).isoformat()
+    assert water.days[-1].day == end_date.isoformat()
 
     # Per-day adherence % (water_ml / goal_ml * 100)
-    by_day = {d.day: d for d in stats.days}
-    assert by_day[(end_date - timedelta(days=6)).isoformat()].water_pct == 40.0  # 1000/2500
-    assert by_day[end_date.isoformat()].water_pct == 100.0  # 2500/2500
+    by_day = {d.day: d for d in water.days}
+    assert by_day[(end_date - timedelta(days=6)).isoformat()].pct == 40.0  # 1000/2500
+    assert by_day[end_date.isoformat()].pct == 100.0  # 2500/2500
 
-    assert stats.water_total_ml == 1000 + 2500 + 0 + 1250 + 2500 + 2500 + 2500
-    assert stats.water_avg_ml == round(stats.water_total_ml / 7, 1)
-    assert stats.stretch_total == 0 + 1 + 1 + 0 + 1 + 1 + 1
-    assert stats.diary_count == 0 + 1 + 0 + 0 + 1 + 0 + 1
+    assert water.total == 1000 + 2500 + 0 + 1250 + 2500 + 2500 + 2500
+    assert water.avg == round(water.total / 7, 1)
+    assert stats.get("stretch").total == 0 + 1 + 1 + 0 + 1 + 1 + 1
+    assert stats.get("diary").total == 0 + 1 + 0 + 0 + 1 + 0 + 1
     db.close()
 
 
@@ -301,68 +403,74 @@ def test_compute_weekly_stats_current_streak(tmp_path):
     stretch, so the streak should only count days -2, -1, 0 = 3."""
     db = make_db(tmp_path)
     config = Config()
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
 
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
 
-    assert stats.stretch_streak == 3
+    assert stats.get("stretch").streak == 3
     db.close()
 
 
 def test_compute_weekly_stats_streak_zero_when_last_day_has_no_stretch(tmp_path):
     db = make_db(tmp_path)
     config = Config()
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
     # No stretch logs at all this week.
 
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
 
-    assert stats.stretch_streak == 0
+    assert stats.get("stretch").streak == 0
     db.close()
 
 
 def test_compute_weekly_stats_empty_week_is_all_zero(tmp_path):
     db = make_db(tmp_path)
     config = Config()
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
 
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
 
-    assert stats.water_total_ml == 0
-    assert stats.water_avg_ml == 0.0
-    assert stats.stretch_total == 0
-    assert stats.stretch_streak == 0
-    assert stats.diary_count == 0
-    assert all(d.water_pct == 0.0 for d in stats.days)
+    assert stats.get("water").total == 0
+    assert stats.get("water").avg == 0.0
+    assert stats.get("stretch").total == 0
+    assert stats.get("stretch").streak == 0
+    assert stats.get("diary").total == 0
+    assert all(d.pct == 0.0 for d in stats.get("water").days)
     db.close()
 
 
 def test_format_stats_summary_contains_expected_figures(tmp_path):
     db = make_db(tmp_path)
     config = Config()
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
 
-    summary = format_stats_summary(stats)
+    summary = format_stats_summary(stats, registry)
 
-    assert f"Water total: {int(stats.water_total_ml)} ml" in summary
-    assert f"Stretch sessions this week: {stats.stretch_total}" in summary
-    assert f"current streak: {stats.stretch_streak} day(s)" in summary
-    assert f"Diary entries this week: {stats.diary_count}" in summary
+    assert f"Water total: {int(stats.get('water').total)} ml" in summary
+    assert f"Stretch sessions this week: {stats.get('stretch').total}" in summary
+    assert f"current streak: {stats.get('stretch').streak} day(s)" in summary
+    assert f"Diary entries this week: {stats.get('diary').total}" in summary
     db.close()
 
 
 def test_compute_weekly_stats_respects_custom_goal(tmp_path):
     db = make_db(tmp_path)
     config = Config.model_validate({"reminders": {"water": {"goal_ml": 1000}}})
+    registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, config, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date)
+    water = stats.get("water")
 
-    assert stats.days[-1].water_goal_ml == 1000
-    assert stats.days[-1].water_pct == 50.0
+    assert water.days[-1].goal == 1000
+    assert water.days[-1].pct == 50.0
     db.close()

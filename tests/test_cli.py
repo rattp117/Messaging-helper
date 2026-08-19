@@ -94,13 +94,18 @@ def test_seed_flag_runs_cleanly_and_inserts_rows(tmp_path):
 
 
 class _FakeOllamaClientForDryRun:
+    """CHANGED (ROADMAP.md v0.7.0 integration): `chat_json` gains a
+    `valid_categories` 5th param (shared-surface contract) and the canned
+    response uses the generic `value` field instead of the old
+    per-category keys (`water_ml`/`stretch_min`/`diary_text`), matching
+    `build_extraction_schema`'s output and `core/parser.py._validate`'s
+    `data.get("value")` read (module M1)."""
+
     def __init__(self, *args, **kwargs):
         pass
 
-    async def chat_json(self, system_prompt, user_prompt, json_schema):
-        return json.dumps(
-            {"category": "water", "water_ml": 500, "stretch_min": None, "diary_text": None, "confidence": 0.9}
-        )
+    async def chat_json(self, system_prompt, user_prompt, json_schema, valid_categories):
+        return json.dumps({"category": "water", "value": 500, "confidence": 0.9})
 
     async def chat_text(self, system_prompt, user_prompt):
         return "reflection"
@@ -123,7 +128,10 @@ async def test_dry_run_flag_via_async_main_prints_structured_result_offline(tmp_
 
     captured = capsys.readouterr()
     assert "'category': 'water'" in captured.out
-    assert "'water_ml': 500" in captured.out
+    # CHANGED (ROADMAP.md v0.7.0 integration): the printed dict is now
+    # asdict(ExtractionResult(category, value, confidence)) -- generic
+    # `value`, not the old per-category `water_ml` key.
+    assert "'value': 500.0" in captured.out
 
     # No DB row should be written for a dry-run.
     import sqlite3
