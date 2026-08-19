@@ -41,3 +41,7 @@ retain = 14
 
 [health]
 interval_seconds = 60
+
+[i18n]
+language = "auto"
+primary_language = "th"

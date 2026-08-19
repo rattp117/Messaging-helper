@@ -24,7 +24,7 @@ import pytest
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
-from habit_assistant.core import commands
+from habit_assistant.core import commands, i18n
 from habit_assistant.core.review import compute_weekly_stats
 from habit_assistant.llm.ollama_client import ExtractionResult
 from habit_assistant.main import (
@@ -116,6 +116,15 @@ def _raw_row_count(db: Database) -> int:
 
 @pytest.mark.parametrize("undo_phrase", ["/undo", "undo last", "ยกเลิกอันล่าสุด"])
 async def test_undo_phrasing_soft_deletes_most_recent_log(db, fixed_clock, undo_phrase):
+    """CHANGED (ROADMAP.md v0.6.0 AC6.1/AC6.3): the Thai-triggered case
+    ("ยกเลิกอันล่าสุด") now gets a Thai confirmation, whose wording has no
+    English "Today" marker to split on -- the old `.split("Today")[0]`
+    trick to isolate the "what was removed" clause doesn't generalize
+    across languages. Replaced with a language-agnostic check: the
+    removed-item description (built from the same i18n catalog entry the
+    production code itself resolves to) must appear verbatim in the
+    confirmation -- that alone proves the 300ml row, not the 500ml one,
+    was the one named, in either language."""
     channel = FakeChannel()
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
@@ -125,10 +134,13 @@ async def test_undo_phrasing_soft_deletes_most_recent_log(db, fixed_clock, undo_
         undo_phrase, db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
-    # Confirmation names what was removed (the most recent: 300 ml).
+    lang = i18n.detect_language(undo_phrase)
+    removed_description = i18n.t("describe_log_water", lang, value_num=300.0)
+
+    # Confirmation names what was removed (the most recent: 300 ml), not
+    # the older 500ml row.
     assert len(channel.sent) == 1
-    assert "300" in channel.sent[0]
-    assert "500" not in channel.sent[0].split("Today")[0]  # removed-item part doesn't mention the older row
+    assert removed_description in channel.sent[0]
 
     # Running total reflects the removal: only the 500ml row remains.
     assert db.water_total_ml("2026-08-19") == 500.0
@@ -226,6 +238,13 @@ async def test_undo_on_all_deleted_history_sends_friendly_message_and_writes_not
     ["make that 300ml", "แก้เป็น 300 มล."],
 )
 async def test_edit_updates_last_matching_water_entry_and_reconfirms_total(db, fixed_clock, edit_phrase):
+    """CHANGED (ROADMAP.md v0.6.0 AC6.1/AC6.3): the Thai-triggered case
+    ("แก้เป็น 300 มล.") now gets a Thai confirmation instead of the single
+    hardcoded English string this test asserted pre-v0.6.0
+    (f"✏️ Updated to 300 ml — today {total} / 2500 ml (12%)"). Expected
+    text is now built per-phrase from the same catalog id/kwargs the
+    production code resolves, so both languages are covered by one
+    parametrized assertion."""
     channel = FakeChannel()
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
@@ -240,7 +259,9 @@ async def test_edit_updates_last_matching_water_entry_and_reconfirms_total(db, f
 
     total = db.water_total_ml("2026-08-19")
     assert total == 300.0
-    assert channel.sent == [f"✏️ Updated to 300 ml — today {int(total)} / 2500 ml (12%)"]
+    lang = i18n.detect_language(edit_phrase)
+    expected = i18n.t("edit_updated_water", lang, value_num=300.0, total=int(total), goal=2500, pct=12)
+    assert channel.sent == [expected]
 
 
 async def test_edit_updates_only_the_last_matching_entry_not_earlier_ones(db, fixed_clock):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -86,6 +87,19 @@ class HealthConfig(BaseModel):
     interval_seconds: float = 60.0
 
 
+class I18nConfig(BaseModel):
+    """ROADMAP.md v0.6.0: `language` forces every reply to Thai/English
+    regardless of input; "auto" (default) matches the detected language
+    of the inbound message being replied to (AC6.3). `primary_language`
+    is only consulted in "auto" mode, and only for unprompted sends that
+    have no inbound message to detect from (reminders, health alerts,
+    the weekly review) -- default Thai, per ROADMAP.md's own resolution
+    for that ambiguity, confirmed by Archi."""
+
+    language: Literal["auto", "th", "en"] = "auto"
+    primary_language: Literal["th", "en"] = "th"
+
+
 class AppConfig(BaseModel):
     timezone: str = "Asia/Bangkok"
     db_path: str = "data/habits.db"
@@ -101,6 +115,7 @@ class Config(BaseModel):
     weekly_review: WeeklyReviewConfig = WeeklyReviewConfig()
     backup: BackupConfig = BackupConfig()
     health: HealthConfig = HealthConfig()
+    i18n: I18nConfig = I18nConfig()
 
 
 class Secrets(BaseSettings):

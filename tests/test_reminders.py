@@ -83,6 +83,12 @@ def test_schedule_reminders_cron_times_match_config():
 
 
 def test_schedule_reminders_job_args_bind_correct_category_and_channel():
+    """CHANGED (ROADMAP.md v0.6.0 AC6.3): `schedule_reminders` now also
+    binds the resolved unprompted-send language as a third `send_reminder`
+    arg (reminders are unprompted, so "auto" resolves to
+    `config.i18n.primary_language`, default Thai) -- `job.args` grew from
+    `(channel, "water")` to `(channel, "water", "th")` under the default
+    `Config()` used here."""
     config = Config.model_validate({"reminders": {"water": {"times": ["08:00"]}, "stretch": {"times": []}, "diary": {"times": []}}})
     scheduler = AsyncIOScheduler()
     channel = FakeChannel()
@@ -90,7 +96,7 @@ def test_schedule_reminders_job_args_bind_correct_category_and_channel():
     schedule_reminders(scheduler, channel, config)
 
     job = scheduler.get_job("reminder_water_08:00")
-    assert job.args == (channel, "water")
+    assert job.args == (channel, "water", "th")
 
 
 def test_schedule_reminders_uses_configured_timezone():

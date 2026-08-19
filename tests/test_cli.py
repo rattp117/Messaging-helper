@@ -160,8 +160,17 @@ class _FakeTelegramChannelForReminder:
 
 
 async def test_test_reminder_flag_sends_correct_reminder_text_offline(tmp_path, monkeypatch):
+    """ROADMAP.md v0.6.0 AC6.3: --test-reminder is an unprompted send, so
+    it goes through `i18n.resolve_unprompted_language(config)` just like a
+    real scheduled reminder -- with a default `Config()` (i18n.language=
+    "auto", i18n.primary_language="th"), that resolves to Thai, not the
+    English `REMINDER_TEXTS["stretch"]` this test asserted pre-v0.6.0.
+    CHANGED (v0.6.0): expected text was `REMINDER_TEXTS["stretch"]`
+    (English); now `i18n.t("reminder_stretch", "th")` (Thai) -- same
+    catalog entry, resolved for the language this CLI path actually uses
+    in production."""
     from habit_assistant import main as main_module
-    from habit_assistant.core.reminders import REMINDER_TEXTS
+    from habit_assistant.core import i18n
 
     _FakeTelegramChannelForReminder.sent = []
     config = main_module.Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
@@ -173,7 +182,7 @@ async def test_test_reminder_flag_sends_correct_reminder_text_offline(tmp_path, 
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder="stretch")
     await main_module.async_main(args)
 
-    assert _FakeTelegramChannelForReminder.sent == [REMINDER_TEXTS["stretch"]]
+    assert _FakeTelegramChannelForReminder.sent == [i18n.t("reminder_stretch", "th")]
 
 
 class _FakeTelegramChannelUnauthorized:

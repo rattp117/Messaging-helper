@@ -38,7 +38,7 @@ DIARY_REFLECTION_SYSTEM_PROMPT = """You are a warm, concise habit-tracking assis
 wrote a short diary entry about their day. Respond with exactly one short,
 gentle, encouraging line (no more than ~15 words) reflecting back something
 positive or supportive about what they wrote. No questions, no advice, no
-markdown, no quotes around it. Plain text only, one line."""
+markdown, no quotes around it. Plain text only, one line. {language_instruction}"""
 
 DIARY_REFLECTION_USER_TEMPLATE = "Diary entry: {diary_text}"
 
@@ -48,7 +48,8 @@ Rules:
 - Be encouraging but strictly factual - never invent numbers not given to you.
 - Do not give medical advice of any kind.
 - Suggest 1-2 concrete, practical next steps (e.g. reminder timing, small goal tweaks).
-- Keep it to 4-6 short sentences, friendly tone, plain text (no markdown headers, no bullet lists)."""
+- Keep it to 4-6 short sentences, friendly tone, plain text (no markdown headers, no bullet lists).
+- {language_instruction}"""
 
 WEEKLY_REVIEW_USER_TEMPLATE = """Here are this week's stats:
 {stats_summary}

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
+from habit_assistant.core import i18n
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
 from habit_assistant.storage.db import Database
@@ -79,28 +80,62 @@ def compute_weekly_stats(db: Database, config: Config, end_date: date) -> Weekly
     )
 
 
-def format_stats_summary(stats: WeeklyStats) -> str:
-    lines = ["Water (ml / goal / %):"]
+def format_stats_summary(stats: WeeklyStats, lang: i18n.Language = "en") -> str:
+    """`lang` defaults to English so a caller that just wants the plain
+    factual block (e.g. feeding it to the LLM prompt is language-agnostic
+    by nature) doesn't have to think about localization -- `run_weekly_review`
+    below is the one production call site, and it always resolves and
+    passes the target language explicitly (ROADMAP.md v0.6.0, "weekly-review
+    labels localized")."""
+    lines = [i18n.t("stats_water_header", lang)]
     for d in stats.days:
-        lines.append(f"  {d.day}: {int(d.water_ml)} / {d.water_goal_ml} ({d.water_pct}%)")
-    lines.append(f"Water total: {int(stats.water_total_ml)} ml, average/day: {stats.water_avg_ml} ml")
-    lines.append(f"Stretch sessions this week: {stats.stretch_total}, current streak: {stats.stretch_streak} day(s)")
-    lines.append(f"Diary entries this week: {stats.diary_count}")
+        lines.append(
+            i18n.t(
+                "stats_water_line",
+                lang,
+                day=d.day,
+                water_ml=int(d.water_ml),
+                water_goal_ml=d.water_goal_ml,
+                water_pct=d.water_pct,
+            )
+        )
+    lines.append(
+        i18n.t("stats_water_total", lang, water_total_ml=int(stats.water_total_ml), water_avg_ml=stats.water_avg_ml)
+    )
+    lines.append(
+        i18n.t(
+            "stats_stretch_summary", lang, stretch_total=stats.stretch_total, stretch_streak=stats.stretch_streak
+        )
+    )
+    lines.append(i18n.t("stats_diary_summary", lang, diary_count=stats.diary_count))
     return "\n".join(lines)
 
 
 async def run_weekly_review(db: Database, config: Config, llm: OllamaClient, today: date | None = None) -> str:
     """Aggregate + narrate. Falls back to the plain stats block (no
-    narrative) if the LLM call fails, so the review still gets sent."""
+    narrative) if the LLM call fails, so the review still gets sent.
+
+    ROADMAP.md v0.6.0 AC6.4: the weekly review is an unprompted send (no
+    inbound message to detect a language from), so its language is
+    `i18n.resolve_unprompted_language(config)` -- forced language wins as
+    usual, "auto" uses the configured primary language (default Thai).
+    The narrative's system prompt gets the same target language via
+    `i18n.language_instruction`, so the LLM-generated prose matches the
+    factual stats block instead of being English inside a Thai message;
+    the "no medical advice" constraint (SPEC.md/ROADMAP.md AC6.4) stays in
+    the (English, LLM-facing, not user-facing) instruction text itself and
+    is unaffected by which language the narrative comes back in."""
     end_date = today or date.today()
     stats = compute_weekly_stats(db, config, end_date)
-    summary = format_stats_summary(stats)
+    lang = i18n.resolve_unprompted_language(config)
+    summary = format_stats_summary(stats, lang)
 
     narrative = await llm.chat_text(
-        WEEKLY_REVIEW_SYSTEM_PROMPT,
+        WEEKLY_REVIEW_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
         WEEKLY_REVIEW_USER_TEMPLATE.format(stats_summary=summary),
     )
     if not narrative:
-        narrative = "Here is your weekly summary."
+        narrative = i18n.t("weekly_review_fallback_narrative", lang)
 
-    return f"📊 Weekly Review\n\n{summary}\n\n{narrative}"
+    header = i18n.t("weekly_review_header", lang)
+    return f"{header}\n\n{summary}\n\n{narrative}"

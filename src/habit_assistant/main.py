@@ -23,7 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
-from habit_assistant.core import commands
+from habit_assistant.core import commands, i18n
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
@@ -38,25 +38,24 @@ from habit_assistant.storage.models import LogEntry
 
 logger = logging.getLogger("habit_assistant")
 
-CLARIFYING_QUESTION = (
-    "🤔 I couldn't quite tell what you meant — was that about water, a stretch "
-    "break, or today's diary? Try something like '500ml water' or '10 min stretch'."
-)
+# ROADMAP.md v0.6.0: every user-facing string below now resolves through
+# core/i18n.py's catalog (AC6.2). These module-level names are kept as the
+# resolved *English* text (== CATALOG[id]["en"]) purely for backward-compat
+# imports (existing tests, `--dry-run`/CLI tooling) -- the actual reply
+# language is resolved per-message inside handle_inbound_message via
+# `i18n.resolve_reply_language` (AC6.1/AC6.3) and is not a fixed constant.
+CLARIFYING_QUESTION = i18n.t("clarifying_question", "en")
 
 # ROADMAP.md v0.4.0 AC3.3: sent instead of the normal parse/confirm flow
 # while the LLM is known DOWN (health_monitor.ollama_up is False) -- the
 # message is persisted verbatim (category='unparsed') and re-parsed
 # automatically once Ollama recovers (see reparse_pending_unparsed below).
-DEFERRED_ACK_MESSAGE = (
-    "⏳ Got it — I'll process this once the connection to the assistant is back."
-)
+DEFERRED_ACK_MESSAGE = i18n.t("deferred_ack", "en")
 
 # ROADMAP.md v0.5.0 AC5.2 / edit-with-nothing-to-edit: friendly, no-write
-# responses when a command has nothing to act on. Bilingual-aware copy for
-# every reply is v0.6.0's message catalog (ROADMAP.md §2) -- these stay
-# English for now, per this version's explicit scope note.
-NOTHING_TO_UNDO_MESSAGE = "🤷 Nothing to undo — you don't have any logged entries yet."
-NOTHING_TO_EDIT_MESSAGE = "🤷 Nothing to edit — I couldn't find a matching entry to update."
+# responses when a command has nothing to act on.
+NOTHING_TO_UNDO_MESSAGE = i18n.t("nothing_to_undo", "en")
+NOTHING_TO_EDIT_MESSAGE = i18n.t("nothing_to_edit", "en")
 
 
 def ordinal(n: int) -> str:
@@ -84,56 +83,61 @@ def setup_logging(level: str) -> None:
     )
 
 
-def _describe_log(row) -> str:
+def _describe_log(row, lang: i18n.Language) -> str:
     """Human-readable one-line summary of a log row, for undo's "confirm
     what was removed" (AC5.1)."""
     category = row["category"]
     if category == "water":
-        return f"{row['value_num']:g} ml water"
+        return i18n.t("describe_log_water", lang, value_num=row["value_num"])
     if category == "stretch":
-        return f"{row['value_num']:g} min stretch"
+        return i18n.t("describe_log_stretch", lang, value_num=row["value_num"])
     if category == "diary":
         text = row["value_text"] or ""
         snippet = text if len(text) <= 40 else text[:37] + "..."
-        return f'diary entry: "{snippet}"'
-    return f"{category} entry"
+        return i18n.t("describe_log_diary", lang, snippet=snippet)
+    return i18n.t("describe_log_generic", lang, category=category)
 
 
-async def _execute_undo(db: Database, channel: Channel, config: Config, clock) -> None:
+async def _execute_undo(db: Database, channel: Channel, config: Config, clock, lang: i18n.Language) -> None:
     """ROADMAP.md v0.5.0 AC5.1/AC5.2: soft-delete the most recent
     non-deleted log and confirm what was removed, with today's running
     total reflecting the removal. Nothing logged -> friendly message, no
-    write (AC5.2)."""
+    write (AC5.2). `lang` is the reply language resolved from the inbound
+    undo command itself (ROADMAP.md v0.6.0 AC6.1/AC6.3)."""
     row = db.last_log()
     if row is None:
-        await channel.send(NOTHING_TO_UNDO_MESSAGE)
+        await channel.send(i18n.t("nothing_to_undo", lang))
         return
 
     db.soft_delete(row["id"])
-    description = _describe_log(row)
+    description = _describe_log(row, lang)
     today_str = clock().date().isoformat()
 
     if row["category"] == "water":
         total = db.water_total_ml(today_str)
         goal = config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
-        await channel.send(f"↩️ Undone — removed {description}. Today: {int(total)} / {goal} ml ({pct}%)")
+        await channel.send(
+            i18n.t("undo_removed_water", lang, description=description, total=int(total), goal=goal, pct=pct)
+        )
     elif row["category"] == "stretch":
         count = db.stretch_count(today_str)
-        await channel.send(f"↩️ Undone — removed {description}. {count} stretch session(s) today")
+        await channel.send(i18n.t("undo_removed_stretch", lang, description=description, count=count))
     else:
-        await channel.send(f"↩️ Undone — removed {description}")
+        await channel.send(i18n.t("undo_removed_generic", lang, description=description))
 
 
 async def _execute_edit(
-    db: Database, channel: Channel, config: Config, clock, command: commands.Command
+    db: Database, channel: Channel, config: Config, clock, command: commands.Command, lang: i18n.Language
 ) -> None:
     """ROADMAP.md v0.5.0 AC5.3: update the last matching (same-category)
     entry's value and re-confirm the new daily total. No matching entry ->
-    friendly message, no write (mirrors AC5.2's undo-with-nothing shape)."""
+    friendly message, no write (mirrors AC5.2's undo-with-nothing shape).
+    `lang` is resolved from the inbound edit command itself (v0.6.0
+    AC6.1/AC6.3)."""
     row = db.last_log(category=command.category)
     if row is None:
-        await channel.send(NOTHING_TO_EDIT_MESSAGE)
+        await channel.send(i18n.t("nothing_to_edit", lang))
         return
 
     db.update_value(row["id"], value_num=command.value_num)
@@ -143,10 +147,14 @@ async def _execute_edit(
         total = db.water_total_ml(today_str)
         goal = config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
-        await channel.send(f"✏️ Updated to {command.value_num:g} ml — today {int(total)} / {goal} ml ({pct}%)")
+        await channel.send(
+            i18n.t("edit_updated_water", lang, value_num=command.value_num, total=int(total), goal=goal, pct=pct)
+        )
     elif command.category == "stretch":
         count = db.stretch_count(today_str)
-        await channel.send(f"✏️ Updated to {command.value_num:g} min stretch — {ordinal(count)} today")
+        await channel.send(
+            i18n.t("edit_updated_stretch", lang, value_num=command.value_num, ordinal=ordinal(count), count=count)
+        )
 
 
 async def handle_inbound_message(
@@ -179,7 +187,15 @@ async def handle_inbound_message(
     re-parsed and confirmed automatically once Ollama recovers (see
     `reparse_pending_unparsed`, wired as `health_monitor`'s
     `on_ollama_recovered` callback in `async_main`, and also run once at
-    startup to catch up on anything deferred by a previous process run)."""
+    startup to catch up on anything deferred by a previous process run).
+
+    ROADMAP.md v0.6.0 AC6.1/AC6.3: every reply below is a *response* to
+    this inbound `text`, so its language is resolved once, up front, from
+    the message itself (`i18n.resolve_reply_language`) -- "auto" mode
+    matches whatever the user just wrote (Thai in -> Thai out, English in
+    -> English out), and a forced `config.i18n.language` overrides that
+    for every branch uniformly, commands included."""
+    lang = i18n.resolve_reply_language(text, config)
     command = commands.dispatch(text, config.units.glass_ml, config.units.bottle_ml)
     if command is not None:
         if dry_run:
@@ -187,9 +203,9 @@ async def handle_inbound_message(
             return
         assert channel is not None, "channel is required outside dry-run"
         if command.kind == "undo":
-            await _execute_undo(db, channel, config, clock)
+            await _execute_undo(db, channel, config, clock, lang)
         else:
-            await _execute_edit(db, channel, config, clock, command)
+            await _execute_edit(db, channel, config, clock, command, lang)
         return
 
     if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
@@ -197,7 +213,7 @@ async def handle_inbound_message(
         now = clock()
         ts = now.isoformat(timespec="seconds")
         db.insert_log(LogEntry(None, ts, "unparsed", None, None, text, source))
-        await channel.send(DEFERRED_ACK_MESSAGE)
+        await channel.send(i18n.t("deferred_ack", lang))
         return
 
     result = await parse_message(
@@ -215,7 +231,7 @@ async def handle_inbound_message(
     today_str = now.date().isoformat()
 
     if result.category == "unknown":
-        await channel.send(CLARIFYING_QUESTION)
+        await channel.send(i18n.t("clarifying_question", lang))
         return
 
     if result.category == "water":
@@ -224,26 +240,32 @@ async def handle_inbound_message(
         total = db.water_total_ml(today_str)
         goal = config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
-        await channel.send(f"✅ {result.water_ml} ml logged — today {int(total)} / {goal} ml ({pct}%)")
+        await channel.send(
+            i18n.t("water_confirmation", lang, water_ml=result.water_ml, total=int(total), goal=goal, pct=pct)
+        )
         return
 
     if result.category == "stretch":
         entry = LogEntry(None, ts, "stretch", float(result.stretch_min), None, text, source)
         db.insert_log(entry)
         count = db.stretch_count(today_str)
-        await channel.send(f"✅ {result.stretch_min} min stretch logged — {ordinal(count)} today")
+        await channel.send(
+            i18n.t(
+                "stretch_confirmation", lang, stretch_min=result.stretch_min, ordinal=ordinal(count), count=count
+            )
+        )
         return
 
     if result.category == "diary":
         entry = LogEntry(None, ts, "diary", None, result.diary_text, text, source)
         db.insert_log(entry)
         reflection = await llm.chat_text(
-            DIARY_REFLECTION_SYSTEM_PROMPT,
+            DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
             DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=result.diary_text),
         )
         if not reflection:
-            reflection = "Thanks for sharing — noted."
-        await channel.send(f"✅ Saved. {reflection}")
+            reflection = i18n.t("diary_reflection_fallback", lang)
+        await channel.send(i18n.t("diary_confirmation", lang, reflection=reflection))
         return
 
 
@@ -261,7 +283,12 @@ async def reparse_pending_unparsed(
 
     A row that's still unparseable after Ollama is back (genuinely bad
     input, not an outage) is left as 'unparsed' and logged -- it is not
-    retried again until the next DOWN->UP transition."""
+    retried again until the next DOWN->UP transition.
+
+    ROADMAP.md v0.6.0 AC6.1/AC6.3: the recovery confirmation is still a
+    reply to the *original* message the user sent (just delayed), so its
+    language is resolved from that row's `raw_message`, same rule as a
+    live confirmation."""
     pending = db.pending_unparsed()
     if not pending:
         return
@@ -269,21 +296,20 @@ async def reparse_pending_unparsed(
     logger.info("Re-parsing %d deferred message(s)", len(pending))
     for row in pending:
         text = row["raw_message"]
+        lang = i18n.resolve_reply_language(text, config)
         result = await parse_message(
             text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
         )
 
         if result.category == "water":
             db.reclassify_log(row["id"], "water", float(result.water_ml), None)
-            await channel.send(f"🔁 Recovered: {result.water_ml} ml logged from your earlier message.")
+            await channel.send(i18n.t("recovered_water", lang, water_ml=result.water_ml))
         elif result.category == "stretch":
             db.reclassify_log(row["id"], "stretch", float(result.stretch_min), None)
-            await channel.send(
-                f"🔁 Recovered: {result.stretch_min} min stretch logged from your earlier message."
-            )
+            await channel.send(i18n.t("recovered_stretch", lang, stretch_min=result.stretch_min))
         elif result.category == "diary":
             db.reclassify_log(row["id"], "diary", None, result.diary_text)
-            await channel.send("🔁 Recovered: saved your earlier diary message.")
+            await channel.send(i18n.t("recovered_diary", lang))
         else:
             logger.warning(
                 "Deferred message id=%s still unparseable after Ollama recovery; left as 'unparsed': %r",
@@ -398,7 +424,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
     if args.test_reminder:
         try:
-            await send_reminder(channel, args.test_reminder)
+            await send_reminder(channel, args.test_reminder, i18n.resolve_unprompted_language(config))
         except httpx.HTTPError as exc:
             print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
             await channel.aclose()
@@ -438,6 +464,7 @@ async def async_main(args: argparse.Namespace) -> None:
         interval_seconds=config.health.interval_seconds,
         channel=channel,
         on_ollama_recovered=on_ollama_recovered,
+        language=i18n.resolve_unprompted_language(config),
     )
 
     scheduler = AsyncIOScheduler()

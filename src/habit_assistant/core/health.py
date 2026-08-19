@@ -24,17 +24,19 @@ from typing import Awaitable, Callable
 import httpx
 
 from habit_assistant.channels.base import Channel
+from habit_assistant.core import i18n
 
 logger = logging.getLogger("habit_assistant")
 
-OLLAMA_DOWN_MESSAGE = (
-    "⚠️ Ollama is unreachable — new messages will be saved and "
-    "processed automatically once it's back."
-)
-TELEGRAM_DOWN_MESSAGE = (
-    "⚠️ Telegram connectivity check failed (this alert may not "
-    "reach you until it recovers)."
-)
+# ROADMAP.md v0.6.0: alert copy now lives in core/i18n.py's catalog.
+# These two names stay as the resolved *English* text (== CATALOG[id]["en"])
+# so existing imports/tests keep working unchanged; the localized send
+# path is HealthMonitor.__init__'s `language` param below (production
+# wiring in main.py passes `i18n.resolve_unprompted_language(config)`,
+# defaulting to Thai -- health alerts are unprompted, same rule as
+# reminders and the weekly review).
+OLLAMA_DOWN_MESSAGE = i18n.t("ollama_down_alert", "en")
+TELEGRAM_DOWN_MESSAGE = i18n.t("telegram_down_alert", "en")
 
 
 class HealthMonitor:
@@ -56,6 +58,7 @@ class HealthMonitor:
         client: httpx.AsyncClient | None = None,
         channel: Channel | None = None,
         on_ollama_recovered: Callable[[], Awaitable[None]] | None = None,
+        language: i18n.Language = "en",
     ):
         self._ollama_base_url = ollama_base_url.rstrip("/")
         self._telegram_base_url = f"https://api.telegram.org/bot{telegram_bot_token}"
@@ -64,6 +67,7 @@ class HealthMonitor:
         self._owns_client = client is None
         self._channel = channel
         self._on_ollama_recovered = on_ollama_recovered
+        self._language = language
 
         # Optimistic initial state: a check must actually run and observe
         # a transition before anything is alerted -- a slow/failing first
@@ -114,7 +118,7 @@ class HealthMonitor:
         DOWN->UP transition."""
         ollama_now = await self.check_ollama()
         if self.ollama_up and not ollama_now:
-            await self._alert(OLLAMA_DOWN_MESSAGE)
+            await self._alert(i18n.t("ollama_down_alert", self._language))
         elif not self.ollama_up and ollama_now:
             logger.info("Ollama reachability recovered")
             if self._on_ollama_recovered is not None:
@@ -126,7 +130,7 @@ class HealthMonitor:
 
         telegram_now = await self.check_telegram()
         if self.telegram_up and not telegram_now:
-            await self._alert(TELEGRAM_DOWN_MESSAGE)
+            await self._alert(i18n.t("telegram_down_alert", self._language))
         elif not self.telegram_up and telegram_now:
             logger.info("Telegram reachability recovered")
         self.telegram_up = telegram_now

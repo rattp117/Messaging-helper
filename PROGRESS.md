@@ -1,8 +1,8 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 0.5.0
+- **Current version:** 0.6.0
 - **Repo:** local-only (user not asked yet — autonomous session; change on request)
-- **Status:** Roadmap program — v0.5.0 (Command Layer & Edit/Undo) released; next: v0.6.0 Bilingual Output & Message Catalog
+- **Status:** Roadmap program — v0.6.0 (Bilingual Output) released; next: v0.7.0 Multi-Habit (Sophia re-speccing with PARALLEL module split first)
 - **Last updated:** 2026-08-19 · **Last commit:** (initial)
 
 ## Stack
@@ -25,6 +25,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 0.3.0 | 2026-08-19 | Migrations (user_version runner) + backup/restore/retention + --migrate/--backup/--restore CLI; ACs 4.1–4.5 PASS (186 tests) | storage/migrations.py, storage/db.py, core/backup.py, main.py, config.py, config.toml, tests/test_migrations.py, tests/test_backup.py | v0.3.0 |
 | 0.4.0 | 2026-08-19 | Resilience: long-poll backoff, health monitor (alert once/outage), Ollama retry, persistent unparsed-deferral + startup backlog re-parse; ACs 3.1–3.5 PASS (203 tests) | channels/telegram.py, llm/ollama_client.py, core/health.py, storage/{db,migrations}.py, main.py, config.py, config.toml, tests/test_resilience.py | v0.4.0 |
 | 0.5.0 | 2026-08-19 | Command layer + undo/edit (bilingual, LLM-free router), soft-delete via migration 003, aggregations exclude deleted; ACs 5.1–5.5 PASS (252 tests) | core/commands.py, storage/{db,migrations}.py, main.py, tests/test_commands.py | v0.5.0 |
+| 0.6.0 | 2026-08-19 | Bilingual output: en/th message catalog, auto language detection, Thai primary for unprompted sends, localized weekly review; ACs 6.1–6.5 PASS (318 tests) | core/i18n.py, main.py, core/{reminders,review,health}.py, llm/prompts.py, config.py, config.toml, tests/test_i18n*.py, tests/test_bilingual_confirmations.py, tests/test_v060_bilingual_gaps.py | v0.6.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.
