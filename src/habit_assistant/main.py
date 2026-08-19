@@ -23,7 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
-from habit_assistant.core import commands, i18n
+from habit_assistant.core import commands, i18n, query
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
@@ -392,11 +392,32 @@ async def handle_inbound_message(
     module M1's registry-aware contract (SPEC-v0.7.md §5) -- wired here
     now that `core/commands.py` has landed (was deferred during the
     shared-surface build; see `IMPL.md`'s v0.7.0 "Known limitations" #1
-    and `IMPL-v0.7-M1.md`'s "READ THIS FIRST")."""
+    and `IMPL-v0.7-M1.md`'s "READ THIS FIRST").
+
+    ROADMAP.md v0.8.0 "Natural-Language Queries": a `command.kind ==
+    "query"` (detected LLM-free by `dispatch`'s anchored interrogative
+    patterns, e.g. "how much water this week?" / "อาทิตย์นี้ยืดกี่ครั้ง")
+    is answered by `core/query.answer_question` and returned immediately --
+    before the health-monitor deferral check and the extractor below, and
+    without ever writing a `logs` row (AC8.5)."""
     registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config)
     command = commands.dispatch(text, registry)
     if command is not None:
+        if command.kind == "query":
+            # ROADMAP.md v0.8.0: read-only (AC8.5) -- never touches health_monitor
+            # deferral or the extractor below; classify_query_intent fails closed
+            # to the query_cant_answer catalog message on any error, including
+            # Ollama being unreachable, so this branch never raises (AC8.4).
+            answer = await query.answer_question(
+                text, db=db, llm=llm, registry=registry, config=config, lang=lang, clock=clock
+            )
+            if dry_run:
+                print(answer)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(answer)
+            return
         if dry_run:
             print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
             return

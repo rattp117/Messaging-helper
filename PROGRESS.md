@@ -1,8 +1,8 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 0.7.0
+- **Current version:** 0.8.0
 - **Repo:** local-only (user not asked yet — autonomous session; change on request)
-- **Status:** Roadmap program — v0.7.0 (Multi-Habit, the pivot) released; next: v0.8.0 NL Queries and v0.9.0 Adaptive Reminders (independent per ROADMAP §3)
+- **Status:** Roadmap program — v0.8.0 (NL Queries) released; next: v0.9.0 Adaptive Reminders, Snooze & Quiet Hours
 - **Last updated:** 2026-08-19 · **Last commit:** (initial)
 
 ## Stack
@@ -27,6 +27,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 0.5.0 | 2026-08-19 | Command layer + undo/edit (bilingual, LLM-free router), soft-delete via migration 003, aggregations exclude deleted; ACs 5.1–5.5 PASS (252 tests) | core/commands.py, storage/{db,migrations}.py, main.py, tests/test_commands.py | v0.5.0 |
 | 0.6.0 | 2026-08-19 | Bilingual output: en/th message catalog, auto language detection, Thai primary for unprompted sends, localized weekly review; ACs 6.1–6.5 PASS (318 tests) | core/i18n.py, main.py, core/{reminders,review,health}.py, llm/prompts.py, config.py, config.toml, tests/test_i18n*.py, tests/test_bilingual_confirmations.py, tests/test_v060_bilingual_gaps.py | v0.6.0 |
 | 0.7.0 | 2026-08-19 | Multi-habit pivot: [[habits]] config, HabitRegistry, generic extraction/DB/review/reminders, migration 004; parallel build (shared surface + 3 modules); all ACs 7.1–7.5 PASS (463 tests) | core/habits.py, config.py, config.toml, llm/{ollama_client,prompts}.py, core/{parser,commands,reminders,review}.py, storage/*, main.py, SPEC-v0.7.md, tests (7 new/rewritten files) | v0.7.0 |
+| 0.8.0 | 2026-08-19 | NL queries: bilingual interrogative routing, LLM intent classification (fail-closed), read-only answers via registry-generic aggregations; ACs 8.1–8.5 PASS (534 tests) | core/query.py, core/commands.py, llm/prompts.py, core/i18n.py, main.py, tests/test_query.py, tests/test_v08_query_gaps.py | v0.8.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.

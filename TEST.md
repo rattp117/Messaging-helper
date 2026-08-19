@@ -514,3 +514,79 @@ None. Full suite: 463 passed, 1 skipped (the documented pre-existing v0.1.0-era 
 ## Recommendation
 
 **Ready to ship — v0.7.0 Multi-Habit Extensibility, overall status PASS.** All 17 SPEC-v0.7.md ACs and all 5 ROADMAP.md AC7.1–AC7.5 release-gate criteria are green, with direct test evidence (not just "the module Vera said so") for every one, including two ACs (AC11, AC17) that had no dedicated end-to-end test before this pass and now do. The old→new test-rewrite audit covering M1 (which never got its own scoped Vera pass) plus every file the integration Luna touched found no weakened assertions and exactly one coverage-gap smell, which was fixed in place. Full suite: 463 passed / 1 skipped (pre-existing, documented) / 0 failed. Production bot, live DB, and `.env` confirmed untouched throughout; live Ollama smoke corroborates the central AC7.2 claim against the real model. No blockers for Archi to proceed to release (version bump, `PROGRESS.md` update, commit + tag).
+
+---
+
+# Test Report — v0.8.0 Natural-Language Queries
+
+> Scope: ROADMAP.md §"v0.8.0" (AC8.1–AC8.5), tested against Luna's uncommitted working-tree changes (`git diff v0.7.0 -- src tests` / `git status --porcelain`: `core/commands.py`, `core/i18n.py`, `llm/prompts.py`, `main.py`, `tests/test_commands.py` modified; `core/query.py`, `tests/test_query.py` new). Not committed (per task instruction — v0.7.0 is still the latest tag).
+
+## Summary
+
+- Baseline (v0.7.0, before this task's own additions): **508 passed, 1 skipped** — confirmed by re-running `.venv\Scripts\python.exe -m pytest -q` against Luna's tree as handed off, matching `IMPL.md`'s own claimed number exactly.
+- Luna's own v0.8.0 tests: 45 (25 in `tests/test_query.py`, 20 in the new "ROADMAP.md v0.8.0" section of `tests/test_commands.py`) — all reviewed line-by-line, all pass.
+- Diff audit: confirmed **zero existing tests modified** — `git diff v0.7.0 -- tests/test_commands.py` shows only a new `import json` line and pure additions (new `QUERY_MESSAGES`/test functions/`_StaticQueryLLM` class appended after the existing suite); no existing assertion, fixture, or test body touched. `tests/test_query.py` is entirely new. Claim verified, not just trusted.
+- Vera's supplementary gap tests (this pass): **26 new**, in `tests/test_v08_query_gaps.py` (see "Focus areas" below for what they close).
+- **Total this pass: 534 passed, 1 skipped, 0 failed** (508 baseline + 26 new; Luna's 45 are already inside the 508). The 1 skip is the same pre-existing v0.1.0-era `tests/test_channels.py:231` skip.
+- **Status: PASS.**
+
+## Test files
+
+| Path | Tests added | Covers which ACs |
+|---|---|---|
+| `tests/test_query.py` (Luna) | 25 | AC8.1, AC8.2, AC8.3, AC8.4, AC8.5 |
+| `tests/test_commands.py` (Luna, new section) | 20 | AC8.1–AC8.4 routing/detection (query-vs-log classification), precedence ordering |
+| `tests/test_v08_query_gaps.py` (Vera, this pass) | 26 | AC8.3 (midnight-boundary bucketing), AC8.4 (transport exception, non-dict payload, off-schema keys, Thai can't-answer), AC8.5 (write-method spy), false-positive sweep, undo/edit-before-query precedence, documented trailing-`?` grammar, full precedence chain incl. LLM-down |
+
+## AC coverage
+
+| AC | Requirement | Verdict | Evidence |
+|---|---|---|---|
+| **AC8.1** | "how much water this week?" → correct 7-day sum from seeded DB, English | **PASS** | `test_query.py::test_ac81_how_much_water_this_week_english` (exact boundary: seeded row one day outside the window excluded); live Ollama spot-check below, 4/4 correct this session |
+| **AC8.2** | "อาทิตย์นี้ยืดกี่ครั้ง" → correct weekly stretch count, Thai | **PASS** | `test_query.py::test_ac82_weekly_stretch_count_thai` (exact boundary, Thai output byte-matched against catalog) |
+| **AC8.3** | Timeframes (today/yesterday/this week/last 7 days, + Thai) map to correct date ranges, `Asia/Bangkok`-aware | **PASS** | `test_query.py`'s 6 timeframe tests + `test_v08_query_gaps.py::test_log_at_2350_yesterday_and_0010_today_bucket_correctly` (new: two log rows either side of local midnight land in disjoint today/yesterday buckets, not just "today stays today" as Luna's own boundary test proved) + `test_date_range_for_timeframe_today_and_yesterday_are_disjoint` + `test_clock_injection_makes_the_boundary_deterministic_across_repeated_calls` (3x identical output, same fixed clock — not flaky by construction; see "Clock injection" note below) |
+| **AC8.4** | Unconfigured habit or unparseable question → friendly can't-answer, never a wrong number, never a crash | **PASS** | Luna's 5 can't-answer cases (unknown category, unconfigured habit id, malformed JSON, bad-status transport, invalid metric) + this pass's 4 additions: a genuine `httpx.ConnectError` (transport-level exception, not just a bad status code — `test_transport_exception_yields_cant_answer_not_a_crash`), a syntactically-valid-JSON-but-wrong-shape bare list (`test_llm_returns_a_json_array_instead_of_object_yields_cant_answer`), an off-schema-keys object (`test_llm_returns_extra_and_missing_keys_yields_cant_answer`), and a **Thai-language** can't-answer confirmation (`test_thai_unconfigured_habit_question_yields_thai_cant_answer` — Luna's 5 can't-answer tests were all English input). Live Ollama spot-check (below) independently confirms two unconfigured-habit adversarial cases (English + Thai "coffee", an untracked habit) both correctly fail closed against the real model, not just the mocked transport. |
+| **AC8.5** | Query handling is strictly read-only — no `logs` row written by a query | **PASS** | Luna's 3 row-count tests (success/failure/5-repeats) + this pass's stronger structural proof: `write_spy_db` fixture monkeypatches all 4 `Database` write methods (`insert_log`, `soft_delete`, `update_value`, `reclassify_log`) to raise `AssertionError` if called at all, exercised across a successful query, a failed query, a transport-error query, and a direct `answer_question` call — none raised, i.e. none of the 4 write methods is *reachable* from the query path, not merely "happened to net out to zero rows" |
+
+Every AC8.1–8.5 is **PASS**. No untestable/ambiguous AC found — nothing escalated to Sophia.
+
+## Focus-area findings (per this task's brief)
+
+1. **AC8.1/8.2 end-to-end** — already solid in Luna's own suite (real `handle_inbound_message`, mocked LLM via `httpx.MockTransport` over a real `OllamaClient`, seeded temp DB, exact catalog-template string match). No gap found; not re-duplicated.
+2. **AC8.3 midnight boundary** — genuine gap closed. Luna's own timezone test (`test_answer_uses_the_configured_timezone_not_utc`) proved a single 23:30-Bangkok timestamp stays "today" rather than rolling to UTC's next day, but never proved two entries *either side* of local midnight land in *different* buckets. Added `test_log_at_2350_yesterday_and_0010_today_bucket_correctly` (seeds 23:50-Aug-18 and 00:10-Aug-19 water rows, queries both "today" and "yesterday", asserts each returns only its own row). Clock injection is already fully supported (`clock=` kwarg threaded from `handle_inbound_message` → `query.answer_question` → `_today_in_timezone`) and deterministic — no flakiness risk to flag; added a 3x-repeat determinism test as a regression guard.
+3. **AC8.4 adversarial** — closed 4 real gaps: a genuine transport-level exception (`httpx.ConnectError`, distinct from Luna's bad-HTTP-status-503 case — exercises `OllamaClient._post`'s exception path, not its status-code path), a non-dict JSON payload (bare list — exercises `_validate_intent`'s `isinstance(data, dict)` guard directly), an off-schema-keys object, and a Thai-language can't-answer confirmation (Luna's 5 can't-answer tests were all English-input). All 4 collapse to the same bilingual `query_cant_answer` fallback, never a number, never an unhandled exception. Live-model spot-check (below) independently confirms the unconfigured-habit case both in English and Thai.
+4. **AC8.5 write-method reachability** — closed the gap between "row count nets out unchanged" (Luna's tests) and "no write method is *reachable at all*" (this task's ask): a monkeypatched spy on all 4 `Database` write methods, raising if touched, passes clean across success/failure/transport-error/direct-call paths.
+5. **False-positive sweep (other direction)** — `"500ml"` and `"ดื่มน้ำ 2 แก้ว"` are already covered by Luna's reused `ADVERSARIAL_MESSAGES` corpus (both in `test_commands.py` and cross-checked again in `test_v08_query_gaps.py::NOT_QUERY_MESSAGES`). Added further prose cases with a bare "how"/"did" that don't satisfy the anchored `\bhow\s+(much|many)\b` / `\b(did|have|has)\s+i\b` patterns (e.g. `"not sure how I feel about tomorrow"`, `"did it rain today"`) — all correctly `None` (not routed as query). **Thai "กี่" mid-sentence:** could not construct a genuine false positive — unlike English "how", Thai "กี่" has no non-interrogative reading in ordinary usage (it *is* the "how many" question particle), so any occurrence is, by the language's own grammar, correctly question-shaped; documented as such rather than silently skipped (`test_thai_question_particle_ki_always_signals_a_question_by_design`). **Undo/edit precedence:** proved structurally (not just by absence of a naturally-overlapping message, since undo/edit's own trigger patterns are mutually exclusive with query's anchors by construction) by monkeypatching `_match_query` to always return `True` and confirming `dispatch()` still returns `kind="undo"`/`"edit"` for genuine undo/edit messages — 3 tests, English undo, edit, and Thai undo. **Trailing "?" on a log-like message:** confirmed it *does* route as query (`"should I go for a run tomorrow?"` → `Command(kind="query")`, then end-to-end → the can't-answer fallback, never logged as a diary row). **Grammar/documentation check: this matches IMPL.md exactly** — `IMPL.md`'s v0.8.0 "Known limitations" #5 explicitly documents "a trailing `?`/`？` alone is sufficient to route a message to the query path" and calls out the diary-ends-in-`?` trade-off by name. Held the code to what's documented per this task's instruction: **no grammar/behavior mismatch found** — this is intended, documented behavior, not a FAIL. (It is, however, a real UX trade-off worth Archi/the user knowing about if diary entries commonly end in questions — already flagged by Luna, not new.)
+6. **Precedence chain overall** — `commands.dispatch()`'s own ordering (undo → edit → query → fall-through) is structurally verified above. At the `handle_inbound_message` level, added `test_query_is_answered_not_deferred_while_ollama_is_reported_down`: with `health_monitor.ollama_up=False` *and* a genuinely-failing LLM transport (`httpx.ConnectError`), a query is answered with the can't-answer fallback — **not** deferred to the v0.4.0 unparsed-queue path (`channel.sent != [DEFERRED_ACK_MESSAGE]`, `db.pending_unparsed() == []`). This matches `main.py`'s own code structure (the `command.kind == "query"` branch returns before the `health_monitor.ollama_up` check is ever reached) and is exactly the intended behavior per the task brief ("it's read-only and shouldn't defer") — **it does not defer.** A companion test (`test_query_answers_successfully_while_ollama_is_reported_down_if_llm_call_itself_succeeds`) confirms the distinction holds even when the down-flag is stale (LLM call itself succeeds): the real answer is returned, not a deferral or a false can't-answer.
+
+## Live Ollama supplementary checks
+
+Ollama was reachable this session (`curl http://mac-mini:11434/api/version` → `{"version":"0.32.6"}`). Ran `classify_query_intent` through the real model chain against the real `config.toml` registry (read-only interpreter script, no `data/habits.db`, no `.env`, no Telegram):
+
+| Input | Result | Correct? |
+|---|---|---|
+| `"how much coffee did I drink this week?"` (unconfigured habit, English) | `None` | Yes — AC8.4 |
+| `"วันนี้กินกาแฟไปกี่แก้ว"` (unconfigured habit, Thai) | `None` | Yes — AC8.4 |
+| `"should I go for a run tomorrow?"` (trailing-`?`, not about tracked data) | `None` | Yes — consistent with the documented grammar |
+| `"how much water this week?"` (AC8.1 sanity) | `QueryIntent(habit_id='water', metric='sum', timeframe='this_week')` | Yes — AC8.1 |
+
+4/4 correct. This independently corroborates Luna's own live spot-check (which covered AC8.1/AC8.2 3/3 each) with the two adversarial unconfigured-habit cases (English and Thai) Luna's live pass didn't specifically target, plus the trailing-`?` grammar case.
+
+## Failures (if any)
+
+None.
+
+## Regressions detected
+
+None. Full suite: 534 passed, 1 skipped, 0 failed. `git diff v0.7.0 -- tests/test_commands.py` confirmed by direct inspection to contain zero deletions/modifications to pre-existing test bodies — the "0 existing tests modified" claim in `IMPL.md`'s "Smoke test done" is verified, not assumed.
+
+## Live-environment / safety checks
+
+- Production bot (PID 3264) confirmed running (`Get-Process -Id 3264`) both before and after this pass.
+- `data/habits.db` / `.env` `LastWriteTime` (2026-08-19 17:35) unchanged across this pass — every test in `test_v08_query_gaps.py` and Luna's `test_query.py` uses a `tmp_path`-scoped `Database`; the live spot-check script never imports/constructs a `Database` against the real config path.
+- No real Telegram call made anywhere (no `TelegramChannel` instantiated by any new test or script).
+- No git commit made (per instruction) — `git status` still shows only Luna's pre-existing uncommitted changes plus this pass's new `tests/test_v08_query_gaps.py`.
+
+## Recommendation
+
+**Ready to ship — v0.8.0 Natural-Language Queries, overall status PASS.** All 5 ROADMAP.md AC8.1–AC8.5 are green with direct test evidence, including several failure modes (genuine transport exception, non-dict JSON, Thai can't-answer, write-method-reachability spy, LLM-down precedence) beyond what Luna's own 45 tests already covered. One documentation/behavior cross-check was explicitly performed per the task brief (trailing-`?` routing) and found **no mismatch** — `IMPL.md` documents the exact behavior the code exhibits. No spec gaps, no untestable ACs, no regressions. Full suite: 534 passed / 1 skipped (pre-existing, documented) / 0 failed. Production bot, live DB, and `.env` confirmed untouched throughout. No blockers for Archi to proceed to release.

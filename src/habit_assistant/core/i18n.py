@@ -368,4 +368,44 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "{label} entries this week: {count}",
         "th": "บันทึก{label}สัปดาห์นี้: {count} ครั้ง",
     },
+    # -----------------------------------------------------------------
+    # ROADMAP.md v0.8.0 "Natural-Language Queries" (core/query.py):
+    # "how much water this week?" / "อาทิตย์นี้ยืดกี่ครั้ง" answers, plus
+    # the fail-closed "can't answer" fallback (AC8.4) and the four
+    # timeframe labels these answers are parameterized with (AC8.3).
+    # -----------------------------------------------------------------
+    "query_cant_answer": {
+        "en": (
+            "🤔 I can't answer that yet — try asking about a habit I track, "
+            "like 'how much water this week?'"
+        ),
+        "th": (
+            "🤔 ตอบคำถามนี้ไม่ได้นะ ลองถามเกี่ยวกับสิ่งที่บันทึกไว้ เช่น "
+            "'อาทิตย์นี้ดื่มน้ำไปเท่าไหร่?'"
+        ),
+    },
+    "query_timeframe_today": {"en": "today", "th": "วันนี้"},
+    "query_timeframe_yesterday": {"en": "yesterday", "th": "เมื่อวาน"},
+    "query_timeframe_this_week": {"en": "this week", "th": "สัปดาห์นี้"},
+    "query_timeframe_last_7_days": {"en": "in the last 7 days", "th": "ใน 7 วันที่ผ่านมา"},
+    "query_answer_numeric_sum": {
+        "en": "📊 {label}: {total:g} {unit} {timeframe}",
+        "th": "📊 {label}: {total:g} {unit} {timeframe}",
+    },
+    "query_answer_numeric_count": {
+        "en": "📊 {label}: logged {count} time(s) {timeframe}",
+        "th": "📊 บันทึก{label}ไปแล้ว {count} ครั้ง {timeframe}",
+    },
+    "query_answer_duration": {
+        "en": "📊 {label}: {count} time(s), {total:g} {unit} total {timeframe}",
+        "th": "📊 {label}: {count} ครั้ง รวม {total:g} {unit} {timeframe}",
+    },
+    "query_answer_boolean": {
+        "en": "📊 {label}: done on {count} day(s) {timeframe}",
+        "th": "📊 {label}: ทำแล้ว {count} วัน {timeframe}",
+    },
+    "query_answer_text": {
+        "en": "📊 {label}: {count} entry(ies) {timeframe}",
+        "th": "📊 บันทึก{label} {count} ครั้ง {timeframe}",
+    },
 }

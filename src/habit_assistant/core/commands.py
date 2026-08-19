@@ -21,6 +21,21 @@ M1): `dispatch`'s edit-value parsing is now driven by the live
 habit's `unit`/`unit_aliases` can be an edit target, not just water/stretch.
 Ambiguous units (two habits sharing the same unit token) resolve first-match
 in registry order (SPEC-v0.7.md §9 risk 6).
+
+v0.8.0 (ROADMAP.md "Natural-Language Queries", AC8.1-AC8.5): a third,
+LLM-free `"query"` kind, detected purely by anchored bilingual interrogative
+patterns -- "how much/many", "did I"/"have I", Thai "กี่"/"เท่าไหร่"/
+"เท่าไร"/"ไหม"/"หรือยัง", or a trailing "?"/"？". This module still never
+calls the LLM itself (the actual `{habit_id, metric, timeframe}`
+classification is `core/query.py`'s job, which `main.py` invokes only after
+`dispatch` has flagged the message as query-shaped) -- keeping the
+conservative "no false positives on a real log" contract for THIS layer:
+none of the anchors above can appear in a plain log like "500ml" or "10 min
+stretch" (see `tests/test_commands.py`'s adversarial corpus, unchanged and
+still green). Checked last, after undo/edit, so an edit-trigger phrase that
+fails to parse as NUMBER [+ UNIT] still falls through to the parser exactly
+as it did pre-v0.8 (it never reaches the query check) -- only a message that
+matched *neither* undo nor an edit trigger gets a chance to match query.
 """
 
 from __future__ import annotations
@@ -32,7 +47,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from habit_assistant.core.habits import HabitRegistry
 
-CommandKind = Literal["undo", "edit"]
+CommandKind = Literal["undo", "edit", "query"]
 
 
 @dataclass(slots=True)
@@ -71,6 +86,31 @@ _EDIT_TRIGGER = re.compile(
 # (any run of non-whitespace characters -- Thai and Latin unit strings both
 # come through as a single such run, e.g. "ml", "มล.", "min", "glass").
 _VALUE_RE = re.compile(r"^(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>\S+)?\s*$")
+
+# ---------------------------------------------------------------------------
+# query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
+# interrogative markers only: none of these substrings/endings can occur in
+# a normal habit log (verified against the full adversarial corpus in
+# tests/test_commands.py). The actual {habit_id, metric, timeframe}
+# classification happens in core/query.py via the LLM -- this function only
+# decides "does this look like a question about past data at all".
+# ---------------------------------------------------------------------------
+
+_QUERY_PATTERNS = [
+    re.compile(r"\bhow\s+(much|many)\b", re.IGNORECASE),
+    re.compile(r"\b(did|have|has)\s+i\b", re.IGNORECASE),
+    re.compile("กี่"),
+    re.compile("เท่าไหร่|เท่าไร"),
+    re.compile("ไหม"),
+    re.compile("หรือยัง"),
+]
+_TRAILING_QUESTION_MARK_RE = re.compile(r"[?？]\s*$")
+
+
+def _match_query(stripped: str) -> bool:
+    if _TRAILING_QUESTION_MARK_RE.search(stripped):
+        return True
+    return any(pattern.search(stripped) for pattern in _QUERY_PATTERNS)
 
 
 def _match_undo(stripped: str) -> bool:
@@ -161,7 +201,15 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
 
     SPEC-v0.7.md §4 R14 / AC12: edit values resolve to a habit id via
     `registry` (its configured `unit`/`unit_aliases`), not a hardcoded
-    water/stretch check."""
+    water/stretch check.
+
+    ROADMAP.md v0.8.0: checked in order undo -> edit -> query -> (fall
+    through to the parser), matching the ROADMAP's own required routing
+    ("explicit commands -> query intent -> extractor"). An edit-trigger
+    phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
+    immediately (pre-v0.8 behavior, unchanged) rather than also being
+    offered to the query matcher -- it already committed to "edit" shape,
+    not a question."""
     stripped = text.strip()
     if not stripped:
         return None
@@ -170,11 +218,14 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
         return Command(kind="undo")
 
     trigger_match = _EDIT_TRIGGER.match(stripped)
-    if trigger_match is None:
-        return None
+    if trigger_match is not None:
+        parsed = _parse_edit_value(trigger_match.group("value"), registry)
+        if parsed is None:
+            return None
+        category, value_num = parsed
+        return Command(kind="edit", category=category, value_num=value_num)
 
-    parsed = _parse_edit_value(trigger_match.group("value"), registry)
-    if parsed is None:
-        return None
-    category, value_num = parsed
-    return Command(kind="edit", category=category, value_num=value_num)
+    if _match_query(stripped):
+        return Command(kind="query")
+
+    return None

@@ -196,3 +196,108 @@ def build_extraction_user_prompt(message: str) -> str:
     """Same shape as the old fixed `EXTRACTION_USER_TEMPLATE`, exposed as a
     function per SPEC-v0.7.md §5's signature list."""
     return f"Message: {message}"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0 -- registry-driven query-intent prompt (ROADMAP.md "Natural-Language
+# Queries", AC8.1-AC8.5). `core/commands.py`'s `dispatch()` only decides a
+# message LOOKS like a question (anchored patterns, no LLM); once it does,
+# `core/query.py` calls the LLM through this prompt to classify exactly
+# *which* habit/metric/timeframe is being asked about, as a 3-key JSON
+# object reusing the same `OllamaClient.chat_json` fallback-chain machinery
+# `parse_message` already uses (see `core/query.py`'s `classify_query_intent`).
+# ---------------------------------------------------------------------------
+
+_QUERY_SYSTEM_PROMPT_HEADER = """You are a query-intent classifier for a habit-tracking bot. The user is \
+asking a question about their OWN past data -- never a new log entry to \
+record. Extract exactly three keys as a single JSON object: "category" \
+(the habit id being asked about, or "unknown"), "metric" ("sum" for a total \
+amount, "count" for a number of times/sessions/entries/days), and \
+"timeframe" ("today", "yesterday", "this_week", or "last_7_days" -- \
+"this_week" and "last_7_days" both mean the 7 days ending today, inclusive).
+
+Tracked habits:"""
+
+_QUERY_SYSTEM_PROMPT_FOOTER = """
+If the question is not about any tracked habit above, or you cannot \
+confidently tell what's being asked, use category "unknown" (pick any valid \
+metric/timeframe in that case -- they are ignored whenever category is \
+"unknown").
+
+Examples (follow this exact shape -- three keys, always present, no extras):"""
+
+_QUERY_UNKNOWN_EXAMPLE = (
+    'Message: what is the capital of France? -> '
+    '{"category": "unknown", "metric": "count", "timeframe": "today"}'
+)
+
+_QUERY_RESPONSE_INSTRUCTIONS = """
+Respond with JSON only, matching the given schema exactly (category, \
+metric, timeframe -- no extra keys, no missing keys). No prose, no \
+explanation, no markdown."""
+
+
+def _query_category_line(habit: "Habit") -> str:
+    if habit.type in ("numeric", "duration"):
+        unit_bit = f" (unit: {habit.unit_en})" if habit.unit_en else ""
+        return (
+            f'- "{habit.id}": {habit.label_en}{unit_bit} -- a {habit.type} habit; '
+            'can be asked as a total ("sum") or a number of times ("count").'
+        )
+    if habit.type == "boolean":
+        return f'- "{habit.id}": whether {habit.label_en} was done -- always metric "count" (days done).'
+    return f'- "{habit.id}" ({habit.label_en}): a free-text habit -- always metric "count" (number of entries).'
+
+
+def _query_examples_for_habit(habit: "Habit") -> list[str]:
+    if habit.type in ("numeric", "duration"):
+        return [
+            f'Message: how much {habit.label_en} this week? -> '
+            f'{{"category": "{habit.id}", "metric": "sum", "timeframe": "this_week"}}',
+            f'Message: how many times did I {habit.label_en} today? -> '
+            f'{{"category": "{habit.id}", "metric": "count", "timeframe": "today"}}',
+        ]
+    if habit.type == "boolean":
+        return [
+            f'Message: did I do {habit.label_en} yesterday? -> '
+            f'{{"category": "{habit.id}", "metric": "count", "timeframe": "yesterday"}}'
+        ]
+    return [
+        f'Message: how many {habit.label_en} entries in the last 7 days? -> '
+        f'{{"category": "{habit.id}", "metric": "count", "timeframe": "last_7_days"}}'
+    ]
+
+
+def build_query_intent_system_prompt(registry: "HabitRegistry") -> str:
+    """Generate the query-intent system prompt from the live `HabitRegistry`
+    (mirrors `build_extraction_system_prompt`'s shape): one category line +
+    1-2 few-shot examples per configured habit, plus the fixed "unknown"
+    category and its own example (a question about anything not tracked, or
+    one the model can't confidently classify, must resolve to "unknown" --
+    `core/query.py` fails closed on that, AC8.4)."""
+    category_lines = [_query_category_line(habit) for habit in registry]
+    category_lines.append(
+        '- "unknown": the question is not about any tracked habit above, or you cannot confidently tell.'
+    )
+
+    example_lines: list[str] = []
+    for habit in registry:
+        example_lines.extend(_query_examples_for_habit(habit))
+    example_lines.append(_QUERY_UNKNOWN_EXAMPLE)
+
+    return "\n".join(
+        [
+            _QUERY_SYSTEM_PROMPT_HEADER,
+            *category_lines,
+            _QUERY_SYSTEM_PROMPT_FOOTER,
+            *example_lines,
+            _QUERY_RESPONSE_INSTRUCTIONS,
+        ]
+    )
+
+
+def build_query_intent_user_prompt(text: str) -> str:
+    """Same shape as `build_extraction_user_prompt`, exposed as its own
+    function for symmetry and so `core/query.py` doesn't need to know the
+    literal wrapping format."""
+    return f"Message: {text}"

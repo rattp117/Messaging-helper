@@ -40,6 +40,7 @@ this file covers only the v0.5.0 additions (now generalized per v0.7.0).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime
 
@@ -584,6 +585,90 @@ async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands
 
     assert calls == ["500ml"]
     assert "logged" in channel.sent[-1]
+
+
+# ===========================================================================
+# ROADMAP.md v0.8.0 AC8.1-AC8.5 -- query-intent detection. dispatch() itself
+# is LLM-free: it only decides a message LOOKS like a question (anchored
+# bilingual interrogative markers). The actual {habit_id, metric, timeframe}
+# classification is tests/test_query.py's job (core/query.py). Checked
+# *after* undo/edit in dispatch()'s own routing order, and confirmed here
+# to never fire on the same adversarial corpus AC5.5 already guards (none
+# of those messages contain a query anchor).
+# ===========================================================================
+
+QUERY_MESSAGES = [
+    "how much water this week?",
+    "How Many times did I stretch today?",
+    "did I journal yesterday?",
+    "have I logged water today?",
+    "อาทิตย์นี้ยืดกี่ครั้ง",
+    "วันนี้ดื่มน้ำไปเท่าไหร่",
+    "ดื่มน้ำครบไหม",
+    "เขียนไดอารี่หรือยัง",
+    "what's my water total?",  # trailing "?" alone is sufficient
+]
+
+
+@pytest.mark.parametrize("message", QUERY_MESSAGES)
+def test_dispatch_classifies_interrogative_messages_as_query(message):
+    command = commands.dispatch(message, DEFAULT_REGISTRY)
+    assert command is not None
+    assert command.kind == "query"
+    assert command.category is None
+    assert command.value_num is None
+
+
+@pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)
+def test_query_matcher_never_fires_on_the_ac55_adversarial_corpus(message):
+    """The same normal-log corpus AC5.5 guards for undo/edit must also
+    never be misclassified as a query -- none of these messages end in
+    "?" or contain a Thai/English interrogative anchor."""
+    command = commands.dispatch(message, DEFAULT_REGISTRY)
+    assert command is None
+
+
+class _StaticQueryLLM:
+    """Unlike undo/edit, the query path DOES call the LLM (to classify
+    intent, core/query.py) -- this stub returns a canned, valid intent JSON
+    for chat_json, so this test isolates "does the message reach
+    parse_message" (it must not) without needing a real query answer."""
+
+    def __init__(self, category: str, metric: str = "sum", timeframe: str = "this_week"):
+        self._payload = json.dumps({"category": category, "metric": metric, "timeframe": timeframe})
+
+    async def chat_json(self, system_prompt, user_prompt, json_schema, valid_categories):
+        return self._payload
+
+    async def chat_text(self, *args, **kwargs):
+        raise AssertionError("not exercised by a query")
+
+
+async def test_query_message_does_not_reach_the_parser(db, fixed_clock, monkeypatch):
+    """A query-shaped message must be answered by the query path, not fall
+    through to parse_message (which would misfile it as an 'unknown' log
+    attempt)."""
+    channel = FakeChannel()
+    config = Config()
+    calls: list[str] = []
+
+    async def counting_parse_message(text, llm, registry, confidence_threshold=None):
+        calls.append(text)
+        return ExtractionResult.unknown()
+
+    monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
+
+    await handle_inbound_message(
+        "how much water this week?",
+        db=db,
+        llm=_StaticQueryLLM("water"),
+        channel=channel,
+        config=config,
+        clock=fixed_clock,
+    )
+
+    assert calls == []
+    assert channel.sent  # the query path (LLM-classify-then-answer) replied instead
 
 
 # ===========================================================================
