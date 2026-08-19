@@ -420,4 +420,38 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🤷 There's no recent reminder to snooze yet.",
         "th": "🤷 ยังไม่มีการเตือนล่าสุดให้เลื่อนนะ",
     },
+    # -----------------------------------------------------------------
+    # ROADMAP.md v0.10.0 "Streaks, Gentle Gamification & Daily Summary"
+    # (core/streaks.py, main.py). Milestone lines are warm, one-off, and
+    # never guilt-tripping (AC10.2); the daily summary is a plain factual
+    # recap (AC10.3).
+    # -----------------------------------------------------------------
+    "milestone_reached": {
+        "en": "🔥 {streak}-day {label} streak — nice work, keep it going!",
+        "th": "🔥 ต่อเนื่อง {streak} วันแล้วสำหรับ{label} — เก่งมากเลยนะ!",
+    },
+    "daily_summary_header": {
+        "en": "🌙 Today's Summary",
+        "th": "🌙 สรุปวันนี้",
+    },
+    "daily_summary_numeric_goal": {
+        "en": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · streak {streak}d",
+        "th": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · ต่อเนื่อง {streak} วัน",
+    },
+    "daily_summary_numeric_nogoal": {
+        "en": "  {label}: {total:g} {unit} today · streak {streak}d",
+        "th": "  {label}: {total:g} {unit} วันนี้ · ต่อเนื่อง {streak} วัน",
+    },
+    "daily_summary_duration_nogoal": {
+        "en": "  {label}: {total} session(s) today · streak {streak}d",
+        "th": "  {label}: {total} ครั้งวันนี้ · ต่อเนื่อง {streak} วัน",
+    },
+    "daily_summary_boolean": {
+        "en": "  {label}: {status} · streak {streak}d",
+        "th": "  {label}: {status} · ต่อเนื่อง {streak} วัน",
+    },
+    "daily_summary_text": {
+        "en": "  {label}: {total} entry(ies) today · streak {streak}d",
+        "th": "  {label}: บันทึกแล้ว {total} ครั้งวันนี้ · ต่อเนื่อง {streak} วัน",
+    },
 }

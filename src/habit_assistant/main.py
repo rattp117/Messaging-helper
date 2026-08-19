@@ -24,14 +24,14 @@ from apscheduler.triggers.date import DateTrigger
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
-from habit_assistant.core import commands, i18n, query
+from habit_assistant.core import commands, i18n, query, streaks
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
-from habit_assistant.core.reminders import ReminderState, schedule_reminders, send_reminder
+from habit_assistant.core.reminders import ReminderState, is_quiet_hours_now, schedule_reminders, send_reminder
 from habit_assistant.core.review import run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
 from habit_assistant.llm.prompts import (
@@ -460,7 +460,20 @@ async def handle_inbound_message(
     `send_reminder` job `minutes` from now on `scheduler` for the habit
     whose reminder most recently actually fired (`reminder_state`, AC9.3)
     -- both new, optional, default-`None` params so every pre-v0.9 caller
-    that doesn't care about snooze (tests, `--dry-run`) is unaffected."""
+    that doesn't care about snooze (tests, `--dry-run`) is unaffected.
+
+    ROADMAP.md v0.10.0 "Streaks, Gentle Gamification & Daily Summary"
+    (AC10.2/AC10.4): when `config.gamification.enabled`, a normal habit log
+    (below, after the command/deferral branches) checks whether writing
+    this entry just made *today* newly satisfy the habit's streak
+    condition (`core/streaks.py:day_qualifies`, read once before the
+    insert and once after) and, if the resulting streak lands on a
+    configured milestone, appends one `milestone_reached` line to the
+    confirmation that's about to be sent -- exactly once per crossing,
+    never repeated for further logs the same day (see
+    `streaks.crossed_milestone`'s docstring for why). `enabled = false`
+    skips this entirely -- zero milestone lines, and the pre/post
+    `day_qualifies` reads never happen (AC10.4)."""
     registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config)
     command = commands.dispatch(text, registry)
@@ -517,8 +530,24 @@ async def handle_inbound_message(
         await channel.send(i18n.t("clarifying_question", lang))
         return
 
+    # ROADMAP.md v0.10.0 AC10.2/AC10.4: snapshot whether today already
+    # satisfied this habit's streak condition BEFORE writing the new row --
+    # comparing this to the post-insert state is how `crossed_milestone`
+    # detects a genuine crossing without any persisted "already announced"
+    # flag (see its docstring). Skipped entirely when gamification is
+    # disabled, so a disabled install pays no extra DB reads for this.
+    was_qualified_before = (
+        streaks.day_qualifies(db, config, habit, today_str) if config.gamification.enabled else False
+    )
+
     entry = log_entry_from_result(habit, result, ts, text, source)
     db.insert_log(entry)
+
+    milestone_suffix = ""
+    if config.gamification.enabled:
+        crossed = streaks.crossed_milestone(db, config, habit, now.date(), was_qualified_before)
+        if crossed is not None:
+            milestone_suffix = "\n\n" + i18n.t("milestone_reached", lang, streak=crossed, label=habit.label(lang))
 
     if habit.id == "water":
         water_ml = int(result.value)  # type: ignore[arg-type]
@@ -527,6 +556,7 @@ async def handle_inbound_message(
         pct = round(100 * total / goal) if goal else 0
         await channel.send(
             i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
+            + milestone_suffix
         )
         return
 
@@ -535,6 +565,7 @@ async def handle_inbound_message(
         count = db.stretch_count(today_str)
         await channel.send(
             i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
+            + milestone_suffix
         )
         return
 
@@ -546,12 +577,12 @@ async def handle_inbound_message(
         )
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
-        await channel.send(i18n.t("diary_confirmation", lang, reflection=reflection))
+        await channel.send(i18n.t("diary_confirmation", lang, reflection=reflection) + milestone_suffix)
         return
 
     # Any other configured habit: type-generic confirmation (AC9).
     message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang)
-    await channel.send(message)
+    await channel.send(message + milestone_suffix)
 
 
 async def reparse_pending_unparsed(
@@ -829,6 +860,33 @@ async def async_main(args: argparse.Namespace) -> None:
             timezone=config.app.timezone,
         ),
         id="weekly_review",
+        replace_existing=True,
+    )
+
+    # ROADMAP.md v0.10.0 AC10.3/AC10.4: the end-of-day recap, gated by its
+    # own `config.gamification.daily_summary` flag (independent of
+    # `gamification.enabled`, which only affects milestone lines -- AC10.4
+    # "no behavioral leakage") and, like every other unprompted send,
+    # suppressed during a configured quiet-hours window.
+    summary_hour, summary_minute = (int(x) for x in config.gamification.daily_summary_time.split(":"))
+
+    async def daily_summary_job() -> None:
+        if not config.gamification.daily_summary:
+            return
+        if is_quiet_hours_now(config):
+            logger.info("Suppressing daily summary: inside a quiet-hours window")
+            return
+        text = streaks.run_daily_summary(db, config, registry)
+        await channel.send(text)
+
+    scheduler.add_job(
+        daily_summary_job,
+        trigger=CronTrigger(
+            hour=summary_hour,
+            minute=summary_minute,
+            timezone=config.app.timezone,
+        ),
+        id="daily_summary",
         replace_existing=True,
     )
 

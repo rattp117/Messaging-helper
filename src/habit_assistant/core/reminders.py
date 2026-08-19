@@ -110,6 +110,18 @@ def _today_str(config: Config) -> str:
     return datetime.now(ZoneInfo(config.app.timezone)).date().isoformat()
 
 
+def is_quiet_hours_now(config: Config) -> bool:
+    """ROADMAP.md v0.10.0: a plain "is right now inside a configured
+    quiet-hours window?" check, for callers outside this module (e.g.
+    `main.py`'s daily-summary job, which must also respect quiet hours)
+    that shouldn't have to duplicate `_in_quiet_hours`'s window-parsing
+    logic or reach into a private function."""
+    if not config.quiet_hours.windows:
+        return False
+    now_local = datetime.now(ZoneInfo(config.app.timezone)).time()
+    return _in_quiet_hours(now_local, config.quiet_hours.windows)
+
+
 def _goal_already_met(db: Database, habit: Habit, config: Config) -> bool:
     """ROADMAP.md v0.9.0 AC9.1/AC9.4/AC9.5: True only for a goal-bearing
     habit (`habit.goal is not None`) with adaptive skipping enabled

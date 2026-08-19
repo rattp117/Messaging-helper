@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, streaks
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
@@ -88,19 +88,16 @@ def _week_days(end_date: date) -> list[str]:
     return [(end_date - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
 
 
-def _water_goal_ml(config: Config) -> float:
-    """The built-in `water` habit keeps reading its goal from the legacy
-    `config.reminders.water.goal_ml` field, mirroring `main.py`'s water
-    confirmation branch exactly (both are the same "reuse v0.6 verbatim"
-    strategy) -- not `registry.get("water").goal`, so the two stay
-    byte-identical even if a config sets them differently."""
-    return config.reminders.water.goal_ml
-
-
-def _compute_habit_stats(db: Database, config: Config, habit: Habit, day_strs: list[str]) -> HabitStats:
+def _compute_habit_stats(
+    db: Database, config: Config, habit: Habit, day_strs: list[str], end_date: date
+) -> HabitStats:
     if habit.type == "numeric":
         values = [db.sum_value(habit.id, d) for d in day_strs]
-        goal = _water_goal_ml(config) if habit.id == "water" else habit.goal
+        # ROADMAP.md v0.10.0: `effective_goal` is the same helper
+        # `core/streaks.py`'s streak/milestone/daily-summary math reads,
+        # replacing this module's own (now-removed) `_water_goal_ml` --
+        # one place decides what a habit's "goal" is (AC10.5).
+        goal = streaks.effective_goal(habit, config)
         days = [DayValue(d, v, goal) for d, v in zip(day_strs, values)] if goal else []
         total = sum(values)
         avg = round(total / len(values), 1) if values else 0.0
@@ -109,12 +106,16 @@ def _compute_habit_stats(db: Database, config: Config, habit: Habit, day_strs: l
     if habit.type == "duration":
         counts = [db.count(habit.id, d) for d in day_strs]
         total = sum(counts)
-        streak = 0
-        for c in reversed(counts):
-            if c > 0:
-                streak += 1
-            else:
-                break
+        # ROADMAP.md v0.10.0 AC10.5: the weekly review's duration streak
+        # now comes from the SAME function `core/streaks.py` uses for
+        # milestone detection and the daily summary, instead of a
+        # second, window-local streak loop -- no divergent math. This is
+        # a superset of the old algorithm's behavior for any streak that
+        # fits inside the 7-day window (every existing test's seeded
+        # data does); it additionally looks further back than 7 days
+        # when the streak is actually longer, which the old
+        # window-clamped loop under-reported.
+        streak = streaks.compute_streak(db, config, habit, end_date)
         return HabitStats(habit=habit, days=[], total=total, avg=0.0, streak=streak)
 
     if habit.type == "text":
@@ -132,7 +133,7 @@ def compute_weekly_stats(db: Database, config: Config, registry: HabitRegistry, 
     """Aggregate the 7 days ending on end_date (inclusive), once per
     registered habit, in registry order."""
     day_strs = _week_days(end_date)
-    habits = [_compute_habit_stats(db, config, habit, day_strs) for habit in registry]
+    habits = [_compute_habit_stats(db, config, habit, day_strs, end_date) for habit in registry]
     return WeeklyStats(end_date=end_date, habits=habits)
 
 

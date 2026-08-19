@@ -159,6 +159,37 @@ _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _RESERVED_HABIT_IDS = {"unknown", "unparsed"}
 
 
+class GamificationConfig(BaseModel):
+    """ROADMAP.md v0.10.0 "Streaks, Gentle Gamification & Daily Summary".
+
+    `enabled` gates ONLY the milestone encouragement line appended to a
+    confirmation (AC10.2/AC10.4) -- streak computation itself is always
+    available (read-only, used unconditionally by the weekly review's
+    duration streak, AC10.5) and is never suppressed by this flag.
+    `daily_summary` is a separate, independent flag for the end-of-day
+    recap job -- AC10.4's "no behavioral leakage" means turning one off
+    must not silently affect the other."""
+
+    enabled: bool = True
+    milestones: list[int] = Field(default_factory=lambda: [3, 7, 30])
+    daily_summary: bool = True
+    daily_summary_time: str = "21:45"
+
+    @field_validator("milestones")
+    @classmethod
+    def _milestones_are_positive(cls, v: list[int]) -> list[int]:
+        if any(m <= 0 for m in v):
+            raise ValueError("gamification.milestones entries must be positive integers")
+        return sorted(set(v))
+
+    @field_validator("daily_summary_time")
+    @classmethod
+    def _daily_summary_time_is_hhmm(cls, v: str) -> str:
+        if not _HHMM_RE.match(v):
+            raise ValueError(f"gamification.daily_summary_time {v!r} must match HH:MM")
+        return v
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -266,6 +297,7 @@ class Config(BaseModel):
     i18n: I18nConfig = I18nConfig()
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
     snooze: SnoozeConfig = SnoozeConfig()
+    gamification: GamificationConfig = GamificationConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

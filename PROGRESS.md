@@ -1,8 +1,8 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 0.9.0
+- **Current version:** 0.10.0
 - **Repo:** local-only (user not asked yet — autonomous session; change on request)
-- **Status:** Roadmap program — v0.9.0 (Adaptive Reminders/Snooze/Quiet Hours) released; next: v0.10.0 Streaks, Gamification & Daily Summary
+- **Status:** Roadmap program — v0.10.0 (Streaks/Gamification/Daily Summary) released; next: v1.0.0 capstone — Charts + Garmin import (Garmin column map defaults to Date,Hydration(ml) — no sample CSV from user yet)
 - **Last updated:** 2026-08-19 · **Last commit:** (initial)
 
 ## Stack
@@ -29,6 +29,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 0.7.0 | 2026-08-19 | Multi-habit pivot: [[habits]] config, HabitRegistry, generic extraction/DB/review/reminders, migration 004; parallel build (shared surface + 3 modules); all ACs 7.1–7.5 PASS (463 tests) | core/habits.py, config.py, config.toml, llm/{ollama_client,prompts}.py, core/{parser,commands,reminders,review}.py, storage/*, main.py, SPEC-v0.7.md, tests (7 new/rewritten files) | v0.7.0 |
 | 0.8.0 | 2026-08-19 | NL queries: bilingual interrogative routing, LLM intent classification (fail-closed), read-only answers via registry-generic aggregations; ACs 8.1–8.5 PASS (534 tests) | core/query.py, core/commands.py, llm/prompts.py, core/i18n.py, main.py, tests/test_query.py, tests/test_v08_query_gaps.py | v0.8.0 |
 | 0.9.0 | 2026-08-19 | Adaptive reminders: goal-met skip (fail-open), quiet hours (opt-in, midnight-crossing), bilingual snooze one-shots; ACs 9.1–9.5 PASS (611 tests) | core/reminders.py, core/commands.py, core/habits.py, core/i18n.py, main.py, config.py, config.toml, tests/test_adaptive_reminders.py, tests/test_v09_gaps.py | v0.9.0 |
+| 0.10.0 | 2026-08-19 | Streaks (shared engine w/ review), gentle milestones 3/7/30 once-per-crossing, nightly 21:45 summary; ACs 10.1–10.5 PASS (650 tests) | core/streaks.py, core/review.py, core/reminders.py, core/i18n.py, main.py, config.py, config.toml, tests/test_streaks.py | v0.10.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.
