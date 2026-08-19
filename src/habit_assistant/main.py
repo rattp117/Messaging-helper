@@ -74,7 +74,9 @@ async def handle_inbound_message(
 ) -> None:
     """Parse -> validate -> (write row + confirm) OR (clarifying question).
     Confirmation formats are verbatim per SPEC.md §6."""
-    result = await parse_message(text, llm, config.units.glass_ml, config.units.bottle_ml)
+    result = await parse_message(
+        text, llm, config.units.glass_ml, config.units.bottle_ml, config.ollama.confidence_threshold
+    )
 
     if dry_run:
         print(asdict(result))
@@ -158,7 +160,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
     if args.dry_run is not None:
         db = Database(config.app.db_path)
-        llm = OllamaClient(config.ollama.base_url, config.ollama.model, config.ollama.timeout_seconds)
+        llm = OllamaClient(config.ollama.base_url, config.ollama.model_chain, config.ollama.timeout_seconds)
         await handle_inbound_message(args.dry_run, db=db, llm=llm, channel=None, config=config, dry_run=True)
         await llm.aclose()
         db.close()
@@ -171,7 +173,7 @@ async def async_main(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     db = Database(config.app.db_path)
-    llm = OllamaClient(config.ollama.base_url, config.ollama.model, config.ollama.timeout_seconds)
+    llm = OllamaClient(config.ollama.base_url, config.ollama.model_chain, config.ollama.timeout_seconds)
     channel = TelegramChannel(secrets.telegram_bot_token, secrets.telegram_chat_id, config.telegram.poll_timeout)
 
     if args.test_reminder:
@@ -187,6 +189,15 @@ async def async_main(args: argparse.Namespace) -> None:
         await llm.aclose()
         db.close()
         return
+
+    # AC2.1: probe each configured model's schema conformance once at
+    # startup, purely for operator visibility (logged inside the client).
+    # Never allowed to crash startup -- probe_schema_support() itself never
+    # raises, but this is belt-and-suspenders against a future change to it.
+    try:
+        await llm.probe_schema_support()
+    except Exception:
+        logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
 
     scheduler = AsyncIOScheduler()
     schedule_reminders(scheduler, channel, config)

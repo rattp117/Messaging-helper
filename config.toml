@@ -9,7 +9,9 @@ poll_timeout = 30
 [ollama]
 base_url = "http://mac-mini:11434"
 model = "qwen3.5:9b-mlx"
+models = ["qwen3.5:9b-mlx", "qwen3:8b"]
 timeout_seconds = 30
+confidence_threshold = 0.55
 
 [reminders.water]
 times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]

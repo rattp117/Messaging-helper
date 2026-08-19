@@ -63,7 +63,7 @@ def db(tmp_path):
 
 
 def patch_parse_message(monkeypatch, result: ExtractionResult):
-    async def fake_parse_message(text, llm, glass_ml, bottle_ml):
+    async def fake_parse_message(text, llm, glass_ml, bottle_ml, confidence_threshold=None):
         return result
 
     monkeypatch.setattr("habit_assistant.main.parse_message", fake_parse_message)

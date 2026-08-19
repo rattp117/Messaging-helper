@@ -51,7 +51,17 @@ class UnitsConfig(BaseModel):
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     model: str = "qwen3.5:9b-mlx"
+    models: list[str] | None = None
     timeout_seconds: float = 30.0
+    confidence_threshold: float = 0.55
+
+    @property
+    def model_chain(self) -> list[str]:
+        """Ordered fallback chain for OllamaClient (AC2.2). `models` wins
+        when set; a config carrying only `model` (v0.1.0 shape) falls back
+        to a single-element chain, so old configs behave identically
+        (AC2.4)."""
+        return list(self.models) if self.models else [self.model]
 
 
 class TelegramConfig(BaseModel):
