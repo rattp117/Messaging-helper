@@ -1,6 +1,7 @@
 """Wiring: load config, start the scheduler + Telegram inbound loop.
 
-Also the CLI entry point: --test-reminder, --seed, --dry-run (SPEC.md §10).
+Also the CLI entry point: --test-reminder, --seed, --dry-run (SPEC.md §10),
+plus --migrate, --backup, --restore (ROADMAP.md v0.3.0).
 """
 
 from __future__ import annotations
@@ -20,6 +21,9 @@ from apscheduler.triggers.cron import CronTrigger
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
+from habit_assistant.core.backup import BackupError
+from habit_assistant.core.backup import backup as backup_db
+from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.parser import parse_message
 from habit_assistant.core.reminders import REMINDER_TEXTS, schedule_reminders, send_reminder
 from habit_assistant.core.review import run_weekly_review
@@ -166,6 +170,43 @@ async def async_main(args: argparse.Namespace) -> None:
         db.close()
         return
 
+    # --migrate / --backup / --restore are dev/ops affordances -- like
+    # --seed and --dry-run, they never touch Telegram (ROADMAP v0.3.0).
+    # getattr(...) defaults keep this compatible with hand-built
+    # argparse.Namespace-alikes (pre-existing test fixtures) that predate
+    # these flags and don't set them.
+    if getattr(args, "migrate", False):
+        db = Database(config.app.db_path)  # Database.__init__ runs the migration runner
+        print(f"Migrated schema {db.schema_version_before} -> {db.schema_version}")
+        db.close()
+        return
+
+    if getattr(args, "backup", False):
+        try:
+            dest = backup_db(config.app.db_path, config.backup.dir, retain=config.backup.retain)
+        except BackupError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Backup written: {dest}")
+        return
+
+    restore_arg = getattr(args, "restore", None)
+    if restore_arg:
+        if not getattr(args, "yes", False):
+            print(
+                "ERROR: --restore is destructive (it replaces the live DB). "
+                "Re-run with --yes to confirm.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            restored = restore_db(restore_arg, config.app.db_path, config.backup.dir, retain=config.backup.retain)
+        except BackupError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Restored {restore_arg} -> {restored}")
+        return
+
     try:
         secrets = load_secrets()
     except ConfigError as exc:
@@ -249,6 +290,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="MESSAGE",
         default=None,
         help="Parse MESSAGE and print structured output without writing DB or sending a confirmation",
+    )
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Apply pending schema migrations and exit (prints from -> to version)",
+    )
+    parser.add_argument(
+        "--backup",
+        action="store_true",
+        help="Back up the DB to [backup].dir and exit",
+    )
+    parser.add_argument(
+        "--restore",
+        metavar="FILE",
+        default=None,
+        help="Restore the DB from FILE (destructive; requires --yes)",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm a destructive operation (required with --restore)",
     )
     return parser
 

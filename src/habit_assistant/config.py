@@ -73,6 +73,11 @@ class WeeklyReviewConfig(BaseModel):
     time: str = "20:00"
 
 
+class BackupConfig(BaseModel):
+    dir: str = "data/backups"
+    retain: int = 14
+
+
 class AppConfig(BaseModel):
     timezone: str = "Asia/Bangkok"
     db_path: str = "data/habits.db"
@@ -86,6 +91,7 @@ class Config(BaseModel):
     reminders: RemindersConfig = RemindersConfig()
     units: UnitsConfig = UnitsConfig()
     weekly_review: WeeklyReviewConfig = WeeklyReviewConfig()
+    backup: BackupConfig = BackupConfig()
 
 
 class Secrets(BaseSettings):

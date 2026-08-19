@@ -1,8 +1,8 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 0.2.0
+- **Current version:** 0.3.0
 - **Repo:** local-only (user not asked yet — autonomous session; change on request)
-- **Status:** Roadmap program — v0.2.0 released; next: Migrations & Backup (shipping as v0.3.0 — reordered before Resilience per ROADMAP §3 so the deferral queue can be persistent)
+- **Status:** Roadmap program — v0.3.0 (Migrations & Backup) released; next: v0.4.0 Resilience & Self-Monitoring with persistent deferral queue
 - **Last updated:** 2026-08-19 · **Last commit:** (initial)
 
 ## Stack
@@ -22,6 +22,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 |---|---|---|---|---|
 | 0.1.0 | 2026-08-19 | MVP release: Telegram bot + Qwen extraction (bilingual) + SQLite + reminders + weekly review; all 11 ACs PASS | src/habit_assistant/*, tests/*, config.toml, README, plist, start-assistant.ps1 | v0.1.0 |
 | 0.2.0 | 2026-08-19 | Extraction reliability: model fallback chain, startup schema probe, confidence threshold 0.55; ACs 2.1–2.5 PASS (160 tests) | llm/ollama_client.py, config.py, config.toml, core/parser.py, main.py, tests/test_fallback.py | v0.2.0 |
+| 0.3.0 | 2026-08-19 | Migrations (user_version runner) + backup/restore/retention + --migrate/--backup/--restore CLI; ACs 4.1–4.5 PASS (186 tests) | storage/migrations.py, storage/db.py, core/backup.py, main.py, config.py, config.toml, tests/test_migrations.py, tests/test_backup.py | v0.3.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.

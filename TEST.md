@@ -166,3 +166,55 @@ All 5 match spec/AC5 exactly.
 ## Recommendation
 
 **Ready to ship.** All 11 acceptance criteria (AC1–AC11) pass. 132/133 tests green, 1 intentional skip, 0 failures, 0 regressions. The one gap found in the first pass (AC9 `--test-reminder` error handling) was fixed by Luna and independently re-verified against the exact test that caught it, plus a full clean suite run.
+
+---
+
+# Test Report — v0.3.0 (Migrations & Backup/Restore)
+
+Implements `ROADMAP.md`'s "v0.4.0 — Migrations & Backup/Restore" section, ACs 4.1–4.5 (Archi reordered it ahead of Runtime Resilience; ships as **v0.3.0** per `IMPL.md`'s note that ROADMAP §3 itself recommends this swap).
+
+## Summary
+- Total: 186 tests (160 baseline + 26 new)
+- Passed: 186
+- Failed: 0
+- Skipped: 1 (same pre-existing intentional skip as baseline, unrelated to this version)
+- Status: **PASS**
+
+Full suite run: `.venv\Scripts\python.exe -m pytest -q` → `186 passed, 1 skipped in 14.61s`, on Windows, fully offline (subprocess CLI tests spawn the local `python -m habit_assistant.main` entry point only — no Ollama/Telegram network calls). Baseline re-confirmed independently before writing any new test: `160 passed, 1 skipped`, matching Luna's `IMPL.md`-reported baseline exactly.
+
+**Live-environment compliance:** every test in `tests/test_migrations.py` and `tests/test_backup.py` operates exclusively on `tmp_path` (pytest's per-test scratch dir) or CLI subprocesses with `cwd=tmp_path` — `config.toml`'s relative `db_path`/`[backup].dir` resolve against the scratch dir, never the repo. `data/habits.db`'s mtime (17:35, before this session's test run) and the live bot process (PID 15804, `Responding: True`) were both confirmed unaffected after the full run. No `.env` was read or written by any new test. No commit was made.
+
+## Test files
+
+| Path | Tests added | Covers |
+|---|---|---|
+| `tests/test_migrations.py` | 9 | AC4.1, AC4.2 |
+| `tests/test_backup.py` | 17 | AC4.3, AC4.4, AC4.5 (+ CLI checks for `--migrate`/`--backup`/`--restore` across all three ACs) |
+
+## AC coverage
+
+| AC | Description | Tests | Result |
+|---|---|---|---|
+| AC4.1 | Fresh DB reports schema version 0→N after startup; migrations run exactly once and are idempotent (second startup applies nothing) | `tests/test_migrations.py`: `test_fresh_db_migrates_to_latest_version`, `test_second_open_of_migrated_db_applies_nothing` (also confirms the previously-inserted row survives the no-op reopen), `test_current_version_reports_pragma_user_version`, `test_run_migrations_on_bare_connection_returns_from_and_to_version` — plus runner-contract tests against synthetic migration lists (independent of `MIGRATIONS`' current content): `test_run_migrations_applies_only_pending_migrations`, `test_run_migrations_is_noop_when_already_at_target_version`, `test_run_migrations_rolls_back_failed_migration_and_reraises` (a failing migration rolls back cleanly, DB left at the last-good version, retry only re-runs the failed migration onward — matches `IMPL.md`'s documented per-migration rollback design) + CLI `tests/test_backup.py::test_cli_migrate_creates_db_and_is_idempotent` (`--migrate` twice via subprocess: first run creates `data/habits.db` and prints `0 -> N`, second prints `N -> N`) | **PASS** |
+| AC4.2 | A DB created by v0.1.0 (baseline schema) migrates forward with all existing `logs` rows intact (row count and values unchanged) | `tests/test_migrations.py::test_v010_shaped_db_migrates_forward_preserving_rows` (hand-built v0.1.0-shaped DB via the exact old inline `SCHEMA` DDL, raw `sqlite3.connect`/`executescript`, `user_version` left at SQLite's implicit default of 0; 3 seeded rows across all three categories; opened through the real `Database` class; asserts row count *and* every column value byte-identical before/after, not just count) + `test_v010_shaped_db_index_and_wal_still_correct_after_migration` (index + WAL mode intact post-migration) | **PASS** |
+| AC4.3 | `--backup` produces a restorable copy while the DB is in use (WAL); the copy opens and queries identically to the source | `tests/test_backup.py::test_backup_while_source_connection_open_includes_latest_committed_write` — real `Database` connection held open for the entire test (confirmed via `PRAGMA journal_mode` == `wal`), 3 rows inserted, `backup()` called from a second connection while the source stays open; backup contains all 3 rows byte-identical to source, including the most recent write; a 4th row inserted *after* the backup call is confirmed absent from the snapshot (proves point-in-time semantics, not a live view); source DB remains fully queryable/correct afterward; backup file reopens and queries identically through the real `Database` class + `test_backup_raises_when_source_db_does_not_exist` + CLI `test_cli_backup_runs_without_telegram_secrets_and_writes_restorable_file` (`--seed` then `--backup` via subprocess, no `.env`/secrets present, file contains the seeded rows) | **PASS** |
+| AC4.4 | `--restore <file>` replaces the live DB atomically; a corrupt/invalid file is rejected with a clear error and leaves the current DB untouched | `tests/test_backup.py::test_restore_swaps_db_and_creates_automatic_pre_restore_backup` (old data replaced by archive's new data; an automatic pre-restore backup containing the *old* data appears in `backup_dir` before the swap) + `test_restore_rejects_garbage_bytes_and_leaves_db_untouched` (junk bytes → `BackupError`, DB bytes byte-for-byte unchanged, no automatic backup triggered since validation fails first) + `test_restore_rejects_valid_sqlite_file_missing_logs_table` (syntactically valid SQLite, wrong schema → rejected, DB untouched) + `test_restore_rejects_missing_archive_file` + `test_restore_onto_nonexistent_db_skips_pre_restore_backup` (fresh install case) + CLI: `test_cli_restore_without_yes_refuses_and_leaves_db_untouched` (`--restore` without `--yes` → exit 1, stderr mentions `--yes`, DB bytes unchanged), `test_cli_restore_rejects_corrupt_file_leaving_live_db_untouched` (exit 1, stderr has `ERROR`, live DB unchanged), `test_cli_restore_valid_backup_with_yes_succeeds` (exit 0, restored row count matches the backup's) | **PASS** |
+| AC4.5 | `retain` prunes backups down to the configured count; never deletes the newest | `tests/test_backup.py::test_prune_backups_keeps_only_the_newest_retain_count` (6 fake backups with distinct sortable timestamps, `retain=3` → exactly the 3 newest survive) + `test_prune_backups_never_deletes_the_newest_even_at_retain_zero` + `test_prune_backups_never_deletes_the_newest_at_negative_retain` (pathological `retain` values still keep exactly 1, the newest) + `test_prune_backups_on_empty_or_missing_dir_is_a_noop` + `test_backup_auto_prunes_after_each_write_when_retain_given` (5 sequential `backup(..., retain=2)` calls → exactly 2 remain) | **PASS** |
+
+## BOM audit — `pyproject.toml`
+
+`IMPL.md`'s "Known limitations" flags a blocking, out-of-scope fix: `pyproject.toml` had a UTF-8 BOM (`EF BB BF`) at byte 0 (present since v0.2.0 per `git show v0.2.0:pyproject.toml`), which made `tomllib`/`pytest` fail to start at all. Luna stripped it byte-level.
+
+Verified directly against `git diff v0.2.0 -- pyproject.toml`: the only textual change is the BOM removal on line 1 (`-﻿[project]` → `+[project]`). Confirmed at the byte level: fetched `v0.2.0`'s `pyproject.toml` via `git show`, stripped its 3-byte BOM prefix in Python, and diffed line-by-line (`difflib.unified_diff`) against the current working-tree file — **zero content differences**; the only byte-count discrepancy (691 vs 723 bytes) is `git show`'s LF-normalized output vs. the working tree's CRLF line endings (this repo's `core.autocrlf`, unrelated to Luna's change and present on every other file in the diff). **Verdict: content-identical apart from the BOM, as claimed.**
+
+## Failures (if any)
+
+None.
+
+## Regressions detected
+
+None. All 160 baseline tests (v0.1.0 + v0.2.0) pass unmodified — same assertions, same count, same single intentional skip. No existing test file was touched; both new test files are additions only.
+
+## Recommendation
+
+**Ready to ship.** All 5 acceptance criteria (AC4.1–AC4.5) are covered and green. The full 186-test suite (160 baseline + 26 new) passes with the same single intentional skip as before — 0 failures, 0 regressions. The out-of-scope `pyproject.toml` BOM fix Luna made to unblock testing is audited as content-identical apart from the BOM. Production DB (`data/habits.db`, PID 15804) and `.env` were verified untouched throughout.

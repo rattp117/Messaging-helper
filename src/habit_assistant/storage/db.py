@@ -8,21 +8,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from habit_assistant.storage.migrations import run_migrations
 from habit_assistant.storage.models import LogEntry
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS logs (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts          TEXT NOT NULL,
-  category    TEXT NOT NULL,
-  value_num   REAL,
-  value_text  TEXT,
-  raw_message TEXT NOT NULL,
-  source      TEXT NOT NULL DEFAULT 'reply',
-  created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS idx_logs_ts_cat ON logs(ts, category);
-"""
 
 
 class Database:
@@ -37,8 +24,9 @@ class Database:
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        # ROADMAP v0.3.0: schema now evolves through storage/migrations.py's
+        # user_version-based runner instead of a single inline executescript.
+        self.schema_version_before, self.schema_version = run_migrations(self._conn)
 
     def close(self) -> None:
         self._conn.close()
