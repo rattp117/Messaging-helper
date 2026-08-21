@@ -13,5 +13,22 @@ if (-not (Test-Path $Python)) {
 }
 
 Set-Location $RepoRoot
-& $Python -m habit_assistant.main
+
+# Single-instance guard: kill leftover bot pythons before launching. A task
+# stop orphans the python tree (it outlives the task's powershell), and a
+# leftover poller fights the new one with Telegram 409s. This runs in the same
+# S4U session as those orphans, so it has the rights an unelevated shell lacks.
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+    $_.CommandLine -like "*habit_assistant*" -or $_.ExecutablePath -like "$RepoRoot*"
+} | ForEach-Object {
+    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+}
+Start-Sleep -Seconds 1
+
+# Append stdout/stderr to the log files ourselves — Task Scheduler discards
+# console output, so without this a scheduled run is invisible. cmd handles
+# the redirection to avoid PowerShell 5.1 stderr ErrorRecord wrapping.
+$OutLog = Join-Path $RepoRoot "data\assistant.out.log"
+$ErrLog = Join-Path $RepoRoot "data\assistant.err.log"
+& cmd.exe /c "`"$Python`" -m habit_assistant.main >> `"$OutLog`" 2>> `"$ErrLog`""
 exit $LASTEXITCODE
