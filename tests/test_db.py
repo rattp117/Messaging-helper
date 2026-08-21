@@ -43,6 +43,7 @@ def test_logs_table_created_with_expected_columns(tmp_path):
         "id", "ts", "category", "value_num", "value_text", "raw_message", "source", "created_at",
         "deleted_at",  # ROADMAP.md v0.5.0 migration 003: soft-delete for undo
         "habit_type",  # ROADMAP.md v0.7.0 migration 004: multi-habit extensibility (AC3)
+        "user_id",  # SPEC-v1.2.md migration 006: multi-user support
     }
     db.close()
 
@@ -70,13 +71,13 @@ def test_wal_mode_enabled(tmp_path):
 def test_schema_creation_is_idempotent_on_reopen(tmp_path):
     db_path = tmp_path / "habits.db"
     db1 = Database(db_path)
-    db1.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
+    db1.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
     db1.close()
 
     # Reopening must not error (CREATE TABLE/INDEX IF NOT EXISTS) and must
     # preserve previously written rows.
     db2 = Database(db_path)
-    rows = db2.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db2.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     db2.close()
 
@@ -90,6 +91,7 @@ def test_insert_log_roundtrip_all_fields(tmp_path):
     db = make_db(tmp_path)
     entry = LogEntry(
         id=None,
+        user_id="owner",
         ts="2026-08-19T14:30:00",
         category="water",
         value_num=500.0,
@@ -102,7 +104,7 @@ def test_insert_log_roundtrip_all_fields(tmp_path):
     assert isinstance(row_id, int)
     assert row_id > 0
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     row = rows[0]
     assert row["ts"] == "2026-08-19T14:30:00"
@@ -117,11 +119,11 @@ def test_insert_log_roundtrip_all_fields(tmp_path):
 
 def test_insert_log_diary_roundtrip(tmp_path):
     db = make_db(tmp_path)
-    entry = LogEntry(None, "2026-08-19T21:30:00", "diary", None, "a good day", "a good day", "reply")
+    entry = LogEntry(None, "owner", "2026-08-19T21:30:00", "diary", None, "a good day", "a good day", "reply")
 
     db.insert_log(entry)
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows[0]["value_num"] is None
     assert rows[0]["value_text"] == "a good day"
     db.close()
@@ -161,42 +163,42 @@ def test_raw_message_not_null_constraint_enforced(tmp_path):
 
 def test_water_total_ml_respects_day_boundary(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T23:59:59", "water", 500.0, None, "late glass", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-20T00:00:00", "water", 300.0, None, "next day glass", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 250.0, None, "morning glass", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T23:59:59", "water", 500.0, None, "late glass", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-20T00:00:00", "water", 300.0, None, "next day glass", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 250.0, None, "morning glass", "reply"))
 
-    assert db.water_total_ml("2026-08-19") == 750.0
-    assert db.water_total_ml("2026-08-20") == 300.0
-    assert db.water_total_ml("2026-08-21") == 0.0
+    assert db.water_total_ml("owner", "2026-08-19") == 750.0
+    assert db.water_total_ml("owner", "2026-08-20") == 300.0
+    assert db.water_total_ml("owner", "2026-08-21") == 0.0
     db.close()
 
 
 def test_water_total_ml_with_no_logs_returns_zero(tmp_path):
     db = make_db(tmp_path)
-    assert db.water_total_ml("2026-08-19") == 0.0
+    assert db.water_total_ml("owner", "2026-08-19") == 0.0
     db.close()
 
 
 def test_stretch_count_respects_day_boundary(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "stretch 1", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T16:00:00", "stretch", 5.0, None, "stretch 2", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-20T11:00:00", "stretch", 15.0, None, "stretch next day", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T11:00:00", "stretch", 10.0, None, "stretch 1", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T16:00:00", "stretch", 5.0, None, "stretch 2", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-20T11:00:00", "stretch", 15.0, None, "stretch next day", "reply"))
 
-    assert db.stretch_count("2026-08-19") == 2
-    assert db.stretch_count("2026-08-20") == 1
-    assert db.stretch_count("2026-08-21") == 0
+    assert db.stretch_count("owner", "2026-08-19") == 2
+    assert db.stretch_count("owner", "2026-08-20") == 1
+    assert db.stretch_count("owner", "2026-08-21") == 0
     db.close()
 
 
 def test_diary_count_respects_day_boundary(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T21:30:00", "diary", None, "entry 1", "entry 1", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-20T21:30:00", "diary", None, "entry 2", "entry 2", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T21:30:00", "diary", None, "entry 1", "entry 1", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-20T21:30:00", "diary", None, "entry 2", "entry 2", "reply"))
 
-    assert db.diary_count("2026-08-19") == 1
-    assert db.diary_count("2026-08-20") == 1
-    assert db.diary_count("2026-08-21") == 0
+    assert db.diary_count("owner", "2026-08-19") == 1
+    assert db.diary_count("owner", "2026-08-20") == 1
+    assert db.diary_count("owner", "2026-08-21") == 0
     db.close()
 
 
@@ -209,33 +211,33 @@ def test_diary_count_respects_day_boundary(tmp_path):
 
 def test_sum_value_matches_water_total_ml_and_excludes_soft_deleted(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 500.0, None, "a", "reply"))
-    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 300.0, None, "b", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 500.0, None, "a", "reply"))
+    row_id = db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 300.0, None, "b", "reply"))
     db.soft_delete(row_id)
 
-    assert db.sum_value("water", "2026-08-19") == 500.0
-    assert db.sum_value("water", "2026-08-19") == db.water_total_ml("2026-08-19")
+    assert db.sum_value("owner", "water", "2026-08-19") == 500.0
+    assert db.sum_value("owner", "water", "2026-08-19") == db.water_total_ml("owner", "2026-08-19")
     db.close()
 
 
 def test_count_matches_stretch_count_and_diary_count(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T21:30:00", "diary", None, "c", "c", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T21:30:00", "diary", None, "c", "c", "reply"))
 
-    assert db.count("stretch", "2026-08-19") == 2 == db.stretch_count("2026-08-19")
-    assert db.count("diary", "2026-08-19") == 1 == db.diary_count("2026-08-19")
+    assert db.count("owner", "stretch", "2026-08-19") == 2 == db.stretch_count("owner", "2026-08-19")
+    assert db.count("owner", "diary", "2026-08-19") == 1 == db.diary_count("owner", "2026-08-19")
     db.close()
 
 
 def test_count_excludes_soft_deleted_rows(tmp_path):
     db = make_db(tmp_path)
-    row_id = db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
+    row_id = db.insert_log(LogEntry(None, "owner", "2026-08-19T11:00:00", "stretch", 10.0, None, "a", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T16:00:00", "stretch", 5.0, None, "b", "reply"))
     db.soft_delete(row_id)
 
-    assert db.count("stretch", "2026-08-19") == 1
+    assert db.count("owner", "stretch", "2026-08-19") == 1
     db.close()
 
 
@@ -244,20 +246,20 @@ def test_count_true_counts_only_truthy_boolean_rows(tmp_path):
     (SPEC-v0.7.md §4 R10) -- count_true counts only the 1.0 rows, and
     excludes a soft-deleted truthy row."""
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "meds", 1.0, None, "took meds", "reply", habit_type="boolean"))
-    db.insert_log(LogEntry(None, "2026-08-19T10:00:00", "meds", 0.0, None, "no meds", "reply", habit_type="boolean"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "meds", 1.0, None, "took meds", "reply", habit_type="boolean"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "meds", 0.0, None, "no meds", "reply", habit_type="boolean"))
     deleted_id = db.insert_log(
-        LogEntry(None, "2026-08-19T11:00:00", "meds", 1.0, None, "took meds again", "reply", habit_type="boolean")
+        LogEntry(None, "owner", "2026-08-19T11:00:00", "meds", 1.0, None, "took meds again", "reply", habit_type="boolean")
     )
     db.soft_delete(deleted_id)
 
-    assert db.count_true("meds", "2026-08-19") == 1
+    assert db.count_true("owner", "meds", "2026-08-19") == 1
     db.close()
 
 
 def test_insert_log_writes_habit_type_column(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply", habit_type="numeric"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply", habit_type="numeric"))
 
     row = db._conn.execute("SELECT habit_type FROM logs WHERE category = 'water'").fetchone()
     assert row["habit_type"] == "numeric"
@@ -266,7 +268,7 @@ def test_insert_log_writes_habit_type_column(tmp_path):
 
 def test_reclassify_log_stamps_habit_type(tmp_path):
     db = make_db(tmp_path)
-    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
+    row_id = db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
 
     db.reclassify_log(row_id, "water", 500.0, None, habit_type="numeric")
 
@@ -281,7 +283,7 @@ def test_reclassify_log_habit_type_defaults_to_none_for_pre_v070_callers(tmp_pat
     """Backward compatibility: a caller that doesn't pass habit_type (the
     v0.6.0 call shape) still works, leaving the column NULL."""
     db = make_db(tmp_path)
-    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
+    row_id = db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "unparsed", None, None, "500ml", "reply"))
 
     db.reclassify_log(row_id, "water", 500.0, None)
 
@@ -294,21 +296,21 @@ def test_water_total_ml_only_counts_water_category(tmp_path):
     """A stretch/diary log on the same day/timestamp prefix must not leak
     into the water total (category filter correctness)."""
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 500.0, None, "500ml", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T10:05:00", "stretch", 10.0, None, "10 min", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T10:05:00", "stretch", 10.0, None, "10 min", "reply"))
 
-    assert db.water_total_ml("2026-08-19") == 500.0
+    assert db.water_total_ml("owner", "2026-08-19") == 500.0
     db.close()
 
 
 def test_logs_between_inclusive_bounds(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T00:00:00", "water", 250.0, None, "a", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T12:00:00", "water", 250.0, None, "b", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T23:59:59", "water", 250.0, None, "c", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-20T00:00:00", "water", 250.0, None, "d", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T00:00:00", "water", 250.0, None, "a", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T12:00:00", "water", 250.0, None, "b", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T23:59:59", "water", 250.0, None, "c", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-20T00:00:00", "water", 250.0, None, "d", "reply"))
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
 
     assert [r["raw_message"] for r in rows] == ["a", "b", "c"]
     db.close()
@@ -316,10 +318,10 @@ def test_logs_between_inclusive_bounds(tmp_path):
 
 def test_logs_between_orders_by_ts_ascending(tmp_path):
     db = make_db(tmp_path)
-    db.insert_log(LogEntry(None, "2026-08-19T15:00:00", "water", 250.0, None, "later", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 250.0, None, "earlier", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T15:00:00", "water", 250.0, None, "later", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 250.0, None, "earlier", "reply"))
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
 
     assert [r["raw_message"] for r in rows] == ["earlier", "later"]
     db.close()
@@ -356,11 +358,11 @@ def _seed_known_week(db: Database, end_date: date) -> None:
         day = end_date - timedelta(days=offset)
         day_str = day.isoformat()
         if water_ml:
-            db.insert_log(LogEntry(None, f"{day_str}T09:00:00", "water", float(water_ml), None, "seed water", "reply"))
+            db.insert_log(LogEntry(None, "owner", f"{day_str}T09:00:00", "water", float(water_ml), None, "seed water", "reply"))
         for i in range(stretch_n):
-            db.insert_log(LogEntry(None, f"{day_str}T11:{i:02d}:00", "stretch", 10.0, None, "seed stretch", "reply"))
+            db.insert_log(LogEntry(None, "owner", f"{day_str}T11:{i:02d}:00", "stretch", 10.0, None, "seed stretch", "reply"))
         for i in range(diary_n):
-            db.insert_log(LogEntry(None, f"{day_str}T21:30:00", "diary", None, "seed diary", "seed diary", "reply"))
+            db.insert_log(LogEntry(None, "owner", f"{day_str}T21:30:00", "diary", None, "seed diary", "seed diary", "reply"))
 
 
 # ROADMAP.md v0.7.0 integration: `compute_weekly_stats`/`format_stats_summary`
@@ -378,7 +380,7 @@ def test_compute_weekly_stats_totals_and_adherence(tmp_path):
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
     water = stats.get("water")
 
     assert len(water.days) == 7
@@ -407,7 +409,7 @@ def test_compute_weekly_stats_current_streak(tmp_path):
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
 
     assert stats.get("stretch").streak == 3
     db.close()
@@ -418,10 +420,10 @@ def test_compute_weekly_stats_streak_zero_when_last_day_has_no_stretch(tmp_path)
     config = Config()
     registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
     # No stretch logs at all this week.
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
 
     assert stats.get("stretch").streak == 0
     db.close()
@@ -433,7 +435,7 @@ def test_compute_weekly_stats_empty_week_is_all_zero(tmp_path):
     registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
 
     assert stats.get("water").total == 0
     assert stats.get("water").avg == 0.0
@@ -450,7 +452,7 @@ def test_format_stats_summary_contains_expected_figures(tmp_path):
     registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
 
     summary = format_stats_summary(stats, registry)
 
@@ -466,9 +468,9 @@ def test_compute_weekly_stats_respects_custom_goal(tmp_path):
     config = Config.model_validate({"reminders": {"water": {"goal_ml": 1000}}})
     registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
     water = stats.get("water")
 
     assert water.days[-1].goal == 1000

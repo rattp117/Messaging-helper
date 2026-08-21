@@ -50,7 +50,7 @@ from habit_assistant.channels.base import Channel
 from habit_assistant.channels.line import LineChannel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config
-from habit_assistant.core import charts
+from habit_assistant.core import charts, i18n
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.core.review import compute_weekly_stats, render_weekly_review_charts, run_weekly_review
 from habit_assistant.storage.db import Database
@@ -82,7 +82,7 @@ def _default_registry() -> HabitRegistry:
 
 
 def _seed(db: Database, ts: str, category: str, value_num: float | None, raw: str = "x") -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, raw, "reply"))
+    return db.insert_log(LogEntry(None, "owner", ts, category, value_num, None, raw, "reply"))
 
 
 def _seed_known_week(db: Database, end_date: date) -> None:
@@ -110,15 +110,19 @@ class FakeChannel(Channel):
         self.images: list[tuple[bytes, str]] = []
         self.calls: list[str] = []  # "send" / "send_image" in call order
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
         self.calls.append("send")
 
-    async def send_image(self, image: bytes, caption: str) -> None:
+    async def send_image(self, chat_id: str, image: bytes, caption: str) -> None:
         self.images.append((image, caption))
         self.calls.append("send_image")
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(
+        self,
+        on_message: Callable[[str, str], Awaitable[None]],
+        on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
+    ) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -129,10 +133,14 @@ class ImagelessChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(
+        self,
+        on_message: Callable[[str, str], Awaitable[None]],
+        on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
+    ) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -151,7 +159,7 @@ def db(tmp_path):
 def test_build_send_image_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
-    url, data, files = channel.build_send_image_request(b"fake-png-bytes", "a caption")
+    url, data, files = channel.build_send_image_request("999", b"fake-png-bytes", "a caption")
 
     assert url == "https://api.telegram.org/bot123456:ABC-fake/sendPhoto"
     assert data == {"chat_id": "999", "caption": "a caption"}
@@ -171,7 +179,7 @@ async def test_send_image_posts_multipart_to_send_photo_endpoint_with_mocked_tra
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("123456:ABC-fake", "999", client=client)
 
-    await channel.send_image(PNG_MAGIC + b"...rest-of-png...", "Water: 16400 ml this week")
+    await channel.send_image("999", PNG_MAGIC + b"...rest-of-png...", "Water: 16400 ml this week")
 
     assert len(captured) == 1
     req = captured[0]
@@ -194,7 +202,7 @@ async def test_send_image_raises_on_http_error_status():
     channel = TelegramChannel("bad-token", "999", client=client)
 
     with pytest.raises(httpx.HTTPStatusError):
-        await channel.send_image(b"x", "caption")
+        await channel.send_image("999", b"x", "caption")
     await channel.aclose()
 
 
@@ -205,7 +213,7 @@ async def test_channel_abc_default_send_image_degrades_to_plain_send_without_tou
     anywhere in this test."""
     channel = ImagelessChannel()
 
-    await channel.send_image(b"some-png-bytes", "caption text")
+    await channel.send_image("999", b"some-png-bytes", "caption text")
 
     assert channel.sent == ["caption text"]
 
@@ -252,7 +260,7 @@ def test_render_habit_chart_numeric_produces_real_png_bytes(db):
     end_date = date(2026, 8, 19)
     _seed(db, "2026-08-19T09:00:00", "water", 2500.0)
 
-    image = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+    image = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image is not None
     assert image[:8] == PNG_MAGIC
@@ -264,7 +272,7 @@ def test_render_habit_chart_duration_produces_real_png_bytes(db):
     end_date = date(2026, 8, 19)
     _seed(db, "2026-08-19T09:00:00", "stretch", 10.0)
 
-    image = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+    image = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image is not None
     assert image[:8] == PNG_MAGIC
@@ -275,7 +283,7 @@ def test_render_habit_chart_boolean_produces_real_png_bytes(db):
     end_date = date(2026, 8, 19)
     _seed(db, "2026-08-19T09:00:00", "meds", 1.0)
 
-    image = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+    image = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image is not None
     assert image[:8] == PNG_MAGIC
@@ -286,7 +294,7 @@ def test_render_habit_chart_text_habit_returns_none(db):
     habit = _synthetic_habit("diary", "text", unit_en=None, unit_th=None)
     end_date = date(2026, 8, 19)
 
-    image = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+    image = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image is None
 
@@ -296,7 +304,7 @@ def test_render_weekly_charts_skips_text_habits_but_charts_the_rest(db):
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
 
-    pairs = charts.render_weekly_charts(db, Config(), registry, end_date, "en")
+    pairs = charts.render_weekly_charts(db, Config(), registry, end_date, "en", user_id="owner")
 
     habit_ids = [h.id for h, _ in pairs]
     assert habit_ids == ["water", "stretch"]  # diary (text) skipped, registry order preserved
@@ -316,7 +324,7 @@ def test_render_habit_chart_render_failure_is_caught_and_returns_none(db, monkey
 
     monkeypatch.setattr(charts, "_render_bar_chart", boom)
 
-    image = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+    image = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image is None
 
@@ -336,9 +344,9 @@ def test_render_habit_chart_matplotlib_absent_returns_none_and_warns_once(db, mo
     import logging
 
     with caplog.at_level(logging.WARNING, logger="habit_assistant.core.charts"):
-        image1 = charts.render_habit_chart(db, Config(), habit, end_date, "en")
-        image2 = charts.render_habit_chart(db, Config(), habit, end_date, "en")
-        image3 = charts.render_habit_chart(db, Config(), habit, end_date, "en")
+        image1 = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
+        image2 = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
+        image3 = charts.render_habit_chart(db, Config(), habit, end_date, "en", user_id="owner")
 
     assert image1 is None
     assert image2 is None
@@ -378,7 +386,7 @@ def test_render_weekly_review_charts_disabled_returns_empty_list(db):
     _seed_known_week(db, date(2026, 8, 19))
     config = Config.model_validate({"charts": {"enabled": False}})
 
-    pairs = render_weekly_review_charts(db, config, registry, today=date(2026, 8, 19))
+    pairs = render_weekly_review_charts(db, config, registry, "en", "owner", today=date(2026, 8, 19))
 
     assert pairs == []
 
@@ -388,7 +396,7 @@ def test_render_weekly_review_charts_enabled_returns_captioned_real_pngs(db):
     _seed_known_week(db, date(2026, 8, 19))
     config = Config()  # charts.enabled=True by default
 
-    pairs = render_weekly_review_charts(db, config, registry, today=date(2026, 8, 19))
+    pairs = render_weekly_review_charts(db, config, registry, "en", "owner", today=date(2026, 8, 19))
 
     assert len(pairs) == 2  # water + stretch; diary (text) excluded
     for image, caption in pairs:
@@ -404,8 +412,8 @@ def test_render_weekly_review_charts_caption_numbers_agree_with_stats_block(db):
     _seed_known_week(db, end_date)
     config = Config()
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
-    pairs = render_weekly_review_charts(db, config, registry, today=end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id="owner")
+    pairs = render_weekly_review_charts(db, config, registry, "en", "owner", today=end_date)
     captions_by_habit = dict(zip(["water", "stretch"], [c for _, c in pairs]))
 
     water = stats.get("water")
@@ -426,7 +434,7 @@ def test_render_weekly_review_charts_matplotlib_absent_falls_back_to_empty_list(
     _seed_known_week(db, date(2026, 8, 19))
     config = Config()
 
-    pairs = render_weekly_review_charts(db, config, registry, today=date(2026, 8, 19))
+    pairs = render_weekly_review_charts(db, config, registry, "en", "owner", today=date(2026, 8, 19))
 
     assert pairs == []
 
@@ -449,11 +457,12 @@ async def test_weekly_review_job_sequence_sends_text_then_chart_images(db):
     config = Config()
     channel = FakeChannel()
     llm = FakeLLM()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, config, registry, llm, today=end_date)
-    await channel.send(text)
-    for image, caption in render_weekly_review_charts(db, config, registry, today=end_date):
-        await channel.send_image(image, caption)
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)
+    await channel.send("owner", text)
+    for image, caption in render_weekly_review_charts(db, config, registry, lang, "owner", today=end_date):
+        await channel.send_image("owner", image, caption)
 
     assert channel.calls[0] == "send"
     assert channel.calls.count("send_image") == 2  # water + stretch
@@ -472,11 +481,12 @@ async def test_weekly_review_job_sequence_charts_disabled_is_text_only(db):
     config = Config.model_validate({"charts": {"enabled": False}})
     channel = FakeChannel()
     llm = FakeLLM()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, config, registry, llm, today=end_date)
-    await channel.send(text)
-    for image, caption in render_weekly_review_charts(db, config, registry, today=end_date):
-        await channel.send_image(image, caption)
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)
+    await channel.send("owner", text)
+    for image, caption in render_weekly_review_charts(db, config, registry, lang, "owner", today=end_date):
+        await channel.send_image("owner", image, caption)
 
     assert channel.calls == ["send"]
     assert channel.images == []
@@ -502,7 +512,7 @@ class _FakeScheduler:
         self.jobs: dict[str, object] = {}
         _FakeScheduler.last_instance = self
 
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
         self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
 
     def start(self):
@@ -533,15 +543,15 @@ class _FakeTelegramChannel:
         self.calls: list[str] = []
         _FakeTelegramChannel.last_instance = self
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
         self.calls.append("send")
 
-    async def send_image(self, image: bytes, caption: str) -> None:
+    async def send_image(self, chat_id: str, image: bytes, caption: str) -> None:
         self.images.append((image, caption))
         self.calls.append("send_image")
 
-    async def send_actionable(self, text: str, buttons) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default
         # (send_image-style degradation) -- drop the buttons, record text.
         self.sent.append(text)
@@ -593,7 +603,7 @@ def _run_async_main_and_capture_scheduler(monkeypatch, config, invoke_weekly_rev
 
     monkeypatch.setattr(main_module, "load_config", lambda: config)
     monkeypatch.setattr(
-        main_module, "load_secrets", lambda: SimpleNamespace(telegram_bot_token="fake", telegram_chat_id="fake")
+        main_module, "load_secrets", lambda: SimpleNamespace(telegram_bot_token="fake", telegram_chat_id="owner")
     )
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _FakeTelegramChannel)

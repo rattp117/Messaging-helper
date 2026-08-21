@@ -46,18 +46,21 @@ def config_goal(habit: Habit, config: "Config") -> float | None:
     return habit.goal
 
 
-def effective_goal(db: "Database", habit: Habit, config: "Config") -> float | None:
+def effective_goal(db: "Database", habit: Habit, config: "Config", user_id: str) -> float | None:
     """R-T3: the goal actually used everywhere a goal is consulted -- a
-    DB-stored override (`habit_targets`, R-T1) for this habit if one
-    exists, else its `config_goal()`. An override may exist for ANY
-    goal-able habit, including one with no config goal (e.g. `stretch`) --
-    R-T5b: that habit becomes goal-bearing going forward, purely because
-    every caller here starts comparing against a non-None value. A
-    non-goalable habit (text/boolean) never consults the override store at
-    all (`is_goalable` gates the DB read), since none can exist for it by
-    construction (R-T10's `set` op refuses text/boolean)."""
+    DB-stored override (`habit_targets`, R-T1, per-user since SPEC-v1.2.md
+    R-D2) for this user+habit if one exists, else its `config_goal()`
+    (unchanged, global). An override may exist for ANY goal-able habit,
+    including one with no config goal (e.g. `stretch`) -- R-T5b: that
+    habit becomes goal-bearing going forward, purely because every caller
+    here starts comparing against a non-None value. A non-goalable habit
+    (text/boolean) never consults the override store at all (`is_goalable`
+    gates the DB read), since none can exist for it by construction
+    (R-T10's `set` op refuses text/boolean). SPEC-v1.2.md R-D2: `user_id`
+    scopes the override read -- two users' targets for the same habit are
+    fully independent (AC-U1)."""
     if is_goalable(habit):
-        override = db.get_target(habit.id)
+        override = db.get_target(user_id, habit.id)
         if override is not None:
             return override
     return config_goal(habit, config)

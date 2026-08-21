@@ -127,13 +127,20 @@ async def send_undo_confirmation(
 ) -> None:
     """R-U5/R-U8: soft-delete `row` and send the "removed + recomputed
     today total" confirmation -- the single formatter shared by the
-    button-undo path (below) and the text/command `/undo` path (once
-    `main.py`'s integration step delegates to this instead of its own
-    inline copy, per IMPL-v1.1-undo-ui.md's wiring notes).
+    button-undo path (below) and the text/command `/undo` path (`main.py`'s
+    `_execute_undo` delegates here).
 
     `row` is assumed live (not yet soft-deleted) -- callers that don't
     already know that (`handle_undo_callback` below) check first via
-    `db.get_log`."""
+    `db.get_log`. SPEC-v1.2.md R-D3: `row["user_id"]` -- the row's OWNER --
+    is both who every scoped DB read below is filtered by AND who the
+    confirmation is sent to. There is no separate `user_id` parameter: by
+    the time this function is called, ownership has already been
+    established (the text `/undo` path resolved `row` from the acting
+    user's own `last_log`; the button path verified `row["user_id"] ==`
+    the tapping chat, R-C3) -- `row["user_id"]` is simply that same,
+    already-verified value."""
+    user_id = row["user_id"]
     db.soft_delete(row["id"])
     description = describe_log(row, registry, lang)
     today_str = clock().date().isoformat()
@@ -141,26 +148,30 @@ async def send_undo_confirmation(
     habit = registry.get(category)
 
     if category == "water":
-        total = db.water_total_ml(today_str)
+        total = db.water_total_ml(user_id, today_str)
         # SPEC-v1.1.md R-T5/AC23: a stored `/target water …` override wins
         # over the legacy config default (byte-identical when none is set).
-        goal = targets.effective_goal(db, habit, config) if habit is not None else config.reminders.water.goal_ml
+        goal = (
+            targets.effective_goal(db, habit, config, user_id) if habit is not None else config.reminders.water.goal_ml
+        )
         pct = round(100 * total / goal) if goal else 0
         await channel.send(
-            i18n.t("undo_removed_water", lang, description=description, total=int(total), goal=goal, pct=pct)
+            user_id,
+            i18n.t("undo_removed_water", lang, description=description, total=int(total), goal=goal, pct=pct),
         )
         return
     if category == "stretch":
-        count = db.stretch_count(today_str)
-        await channel.send(i18n.t("undo_removed_stretch", lang, description=description, count=count))
+        count = db.stretch_count(user_id, today_str)
+        await channel.send(user_id, i18n.t("undo_removed_stretch", lang, description=description, count=count))
         return
 
     if habit is not None and habit.type == "numeric":
-        goal = targets.effective_goal(db, habit, config)
+        goal = targets.effective_goal(db, habit, config, user_id)
         if goal:
-            total = db.sum_value(habit.id, today_str)
+            total = db.sum_value(user_id, habit.id, today_str)
             pct = round(100 * total / goal) if goal else 0
             await channel.send(
+                user_id,
                 i18n.t(
                     "undo_removed_numeric",
                     lang,
@@ -169,20 +180,21 @@ async def send_undo_confirmation(
                     goal=goal,
                     unit=habit.unit(lang) or "",
                     pct=pct,
-                )
+                ),
             )
             return
     if habit is not None and habit.type == "duration":
-        count = db.count(habit.id, today_str)
+        count = db.count(user_id, habit.id, today_str)
         await channel.send(
-            i18n.t("undo_removed_duration", lang, description=description, count=count, label=habit.label(lang))
+            user_id,
+            i18n.t("undo_removed_duration", lang, description=description, count=count, label=habit.label(lang)),
         )
         return
     if habit is not None and habit.type == "boolean":
-        await channel.send(i18n.t("undo_removed_boolean", lang, description=description))
+        await channel.send(user_id, i18n.t("undo_removed_boolean", lang, description=description))
         return
 
-    await channel.send(i18n.t("undo_removed_generic", lang, description=description))
+    await channel.send(user_id, i18n.t("undo_removed_generic", lang, description=description))
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +203,7 @@ async def send_undo_confirmation(
 
 
 async def handle_undo_callback(
+    chat_id: str,
     data: str,
     source_text: str,
     callback_id: str,
@@ -206,15 +219,19 @@ async def handle_undo_callback(
     built) always calls `answerCallbackQuery(callback_id)` itself right
     after awaiting this -- R-U4 -- so this function never needs to call it
     (kept as a parameter only to match the `on_callback` callable shape
-    `Callable[[str, str, str], Awaitable[None]]` main.py wires it as).
+    `Callable[[str, str, str, str], Awaitable[None]]` main.py wires it as).
 
     R-U6: `data` that isn't `undo:<int>` is logged and ignored -- no DB
     read, no DB write, no send.
 
-    R-U5: a valid id that's missing or already soft-deleted gets the
-    friendly `already_undone` reply (idempotent re-tap); otherwise the row
-    is soft-deleted and confirmed via `send_undo_confirmation` (R-U8, same
-    formatter the command-path `/undo` uses)."""
+    SPEC-v1.2.md R-C3 (callback ownership, AC-C2): `chat_id` is the TAPPING
+    chat -- a valid id whose row is missing, already soft-deleted, OR
+    belongs to a DIFFERENT user than `chat_id` all get the same friendly
+    `already_undone` reply (no delete, spinner still dismissed by the
+    caller). Only when `row["user_id"] == chat_id` does the row actually
+    get soft-deleted -- a user can never undo another user's entry, and a
+    stranger tapping a stolen/guessed `callback_data` learns nothing about
+    whether the log id even exists."""
     match = _UNDO_CALLBACK_RE.match(data)
     if match is None:
         logger.info("Ignoring malformed undo callback_query data: %r", data)
@@ -228,8 +245,8 @@ async def handle_undo_callback(
     lang = i18n.resolve_reply_language(source_text, config)
 
     row = db.get_log(log_id)
-    if row is None or row["deleted_at"] is not None:
-        await channel.send(i18n.t("already_undone", lang))
+    if row is None or row["deleted_at"] is not None or row["user_id"] != chat_id:
+        await channel.send(chat_id, i18n.t("already_undone", lang))
         return
 
     await send_undo_confirmation(db, channel, config, clock, registry, lang, row)

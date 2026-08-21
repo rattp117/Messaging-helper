@@ -8,7 +8,7 @@ don't directly exercise:
   test_soft_deleted_rows_excluded_from_weekly_review_stats`, which is
   M1-owned and currently broken on the old 3-arg call signature -- this
   file covers the identical behavior directly against M3's own
-  `compute_weekly_stats(db, config, registry, end_date)` so the scenario
+  `compute_weekly_stats(db, config, registry, end_date, user_id="owner")` so the scenario
   has *a* passing, signature-correct test while integration fixes the
   M1-owned boundary file).
 - duration streak arithmetic across several hand-computed week patterns
@@ -41,7 +41,7 @@ from habit_assistant.storage.models import LogEntry
 
 
 def _seed(db: Database, ts: str, category: str, value_num: float | None, raw: str = "x") -> int:
-    entry = LogEntry(None, ts, category, value_num, None, raw, "reply")
+    entry = LogEntry(None, "owner", ts, category, value_num, None, raw, "reply")
     return db.insert_log(entry)
 
 
@@ -79,7 +79,7 @@ def test_soft_deleted_rows_excluded_from_weekly_review_stats(tmp_path):
     db.soft_delete(deleted_id)
     db.soft_delete(stretch_id)
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id="owner")
 
     assert stats.get("water").total == 500.0
     assert stats.get("stretch").total == 0
@@ -100,7 +100,7 @@ def test_soft_deleted_rows_excluded_for_a_generic_habit(tmp_path):
     deleted_id = _seed(db, "2026-08-19T23:00:00", "sleep", 5.0)
     db.soft_delete(deleted_id)
 
-    stats = compute_weekly_stats(db, config=Config(), registry=registry, end_date=end_date)
+    stats = compute_weekly_stats(db, config=Config(), registry=registry, end_date=end_date, user_id="owner")
 
     assert stats.get("sleep").total == 7.0
     assert kept_id != deleted_id
@@ -128,7 +128,7 @@ def test_duration_streak_all_seven_days_active(tmp_path):
     end_date = date(2026, 8, 19)
     _insert_duration_days(db, "yoga", end_date, {0, 1, 2, 3, 4, 5, 6})
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("yoga").streak == 7
     assert stats.get("yoga").total == 7
@@ -146,7 +146,7 @@ def test_duration_streak_breaks_on_first_gap_from_end_date(tmp_path):
     end_date = date(2026, 8, 19)
     _insert_duration_days(db, "yoga", end_date, {0, 1, 3, 4})  # gap at offset 2
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("yoga").streak == 2
     assert stats.get("yoga").total == 4  # total session count unaffected by the gap
@@ -163,7 +163,7 @@ def test_duration_streak_zero_when_end_date_itself_has_no_session(tmp_path):
     end_date = date(2026, 8, 19)
     _insert_duration_days(db, "yoga", end_date, {1, 2, 3})  # nothing at offset 0
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("yoga").streak == 0
     assert stats.get("yoga").total == 3
@@ -184,7 +184,7 @@ def test_duration_streak_multiple_sessions_same_day_counts_as_one_streak_day():
         yoga = _synthetic_habit("yoga", "duration")
         registry = HabitRegistry([yoga])
 
-        stats = compute_weekly_stats(db, Config(), registry, end_date)
+        stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
         assert stats.get("yoga").streak == 1
         assert stats.get("yoga").total == 2  # 2 sessions, but only 1 streak-day
@@ -216,7 +216,7 @@ def test_boolean_done_days_across_week_with_multiple_logs_on_several_days(tmp_pa
     d3 = end_date - timedelta(days=3)
     _seed(db, f"{d3.isoformat()}T09:00:00", "meds", 1.0)
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("meds").total == 3  # days 0, -1, -3 are done-days; -2 is not
     db.close()
@@ -255,7 +255,7 @@ def test_two_generic_habits_alongside_all_three_builtins_render_independently(tm
     _seed(db, f"{end_date.isoformat()}T08:00:00", "meds", 1.0)
     _seed(db, f"{end_date.isoformat()}T17:00:00", "yoga", 20.0)
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id="owner")
     summary_en = format_stats_summary(stats, registry, "en")
     summary_th = format_stats_summary(stats, registry, "th")
 

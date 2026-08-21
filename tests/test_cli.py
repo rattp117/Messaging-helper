@@ -157,10 +157,10 @@ class _FakeTelegramChannelForReminder:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         _FakeTelegramChannelForReminder.sent.append(text)
 
-    async def run(self, on_message):
+    async def run(self, on_message, on_callback=None):
         raise NotImplementedError
 
     async def aclose(self) -> None:
@@ -202,12 +202,12 @@ class _FakeTelegramChannelUnauthorized:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         request = httpx.Request("POST", "https://api.telegram.org/botfake/sendMessage")
         response = httpx.Response(401, request=request, json={"ok": False, "description": "Unauthorized"})
         raise httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
 
-    async def run(self, on_message):
+    async def run(self, on_message, on_callback=None):
         raise NotImplementedError
 
     async def aclose(self) -> None:

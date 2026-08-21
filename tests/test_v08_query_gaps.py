@@ -63,10 +63,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message) -> None:
+    async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -95,7 +95,7 @@ def fixed_clock():
 
 
 def _seed(db: Database, ts: str, category: str, value_num: float, habit_type: str = "numeric") -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, ts, "reply", habit_type=habit_type))
+    return db.insert_log(LogEntry(None, "owner", ts, category, value_num, None, ts, "reply", habit_type=habit_type))
 
 
 def _raw_row_count(db: Database) -> int:
@@ -150,13 +150,13 @@ async def test_log_at_2350_yesterday_and_0010_today_bucket_correctly(db, fixed_c
 
     llm_today = make_llm({"category": "water", "metric": "sum", "timeframe": "today"})
     await handle_inbound_message(
-        "how much water today?", db=db, llm=llm_today, channel=channel, config=config, clock=fixed_clock
+        "how much water today?", db=db, user_id="owner", llm=llm_today, channel=channel, config=config, clock=fixed_clock
     )
     assert channel.sent[-1] == "📊 water: 222 ml today"
 
     llm_yesterday = make_llm({"category": "water", "metric": "sum", "timeframe": "yesterday"})
     await handle_inbound_message(
-        "how much water yesterday?", db=db, llm=llm_yesterday, channel=channel, config=config, clock=fixed_clock
+        "how much water yesterday?", db=db, user_id="owner", llm=llm_yesterday, channel=channel, config=config, clock=fixed_clock
     )
     assert channel.sent[-1] == "📊 water: 111 ml yesterday"
 
@@ -179,7 +179,7 @@ async def test_clock_injection_makes_the_boundary_deterministic_across_repeated_
     for _ in range(3):
         llm = make_llm({"category": "water", "metric": "sum", "timeframe": "today"})
         await handle_inbound_message(
-            "how much water today?", db=db, llm=llm, channel=channel, config=config, clock=fixed_clock
+            "how much water today?", db=db, user_id="owner", llm=llm, channel=channel, config=config, clock=fixed_clock
         )
     assert channel.sent == ["📊 water: 50 ml today"] * 3
 
@@ -195,7 +195,7 @@ async def test_transport_exception_yields_cant_answer_not_a_crash(db, fixed_cloc
     llm = make_erroring_llm()
 
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
@@ -210,7 +210,7 @@ async def test_llm_returns_a_json_array_instead_of_object_yields_cant_answer(db,
     llm = make_llm(["water", "sum", "this_week"])
 
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
@@ -222,7 +222,7 @@ async def test_llm_returns_extra_and_missing_keys_yields_cant_answer(db, fixed_c
     llm = make_llm({"foo": "bar"})
 
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
@@ -235,7 +235,7 @@ async def test_thai_unconfigured_habit_question_yields_thai_cant_answer(db, fixe
     llm = make_llm({"category": "unknown", "metric": "count", "timeframe": "today"})
 
     await handle_inbound_message(
-        "วันนี้กินกาแฟไปกี่แก้ว", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "วันนี้กินกาแฟไปกี่แก้ว", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [i18n.t("query_cant_answer", "th")]
@@ -268,7 +268,7 @@ async def test_successful_query_never_calls_a_write_method(write_spy_db, fixed_c
     # No exception means none of insert_log/soft_delete/update_value/
     # reclassify_log were ever invoked.
     await handle_inbound_message(
-        "how much water today?", db=write_spy_db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water today?", db=write_spy_db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
     assert channel.sent == ["📊 water: 0 ml today"]
 
@@ -278,7 +278,7 @@ async def test_failed_query_never_calls_a_write_method(write_spy_db, fixed_clock
     llm = make_llm({"category": "unknown", "metric": "count", "timeframe": "today"})
 
     await handle_inbound_message(
-        "what's the meaning of life?", db=write_spy_db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "what's the meaning of life?", db=write_spy_db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
 
@@ -288,7 +288,7 @@ async def test_transport_error_query_never_calls_a_write_method(write_spy_db, fi
     llm = make_erroring_llm()
 
     await handle_inbound_message(
-        "how much water this week?", db=write_spy_db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=write_spy_db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
 
@@ -297,7 +297,7 @@ async def test_direct_answer_question_call_never_calls_a_write_method(write_spy_
     llm = make_llm({"category": "stretch", "metric": "count", "timeframe": "today"})
     answer = await answer_question(
         "how many times did I stretch today?",
-        db=write_spy_db,
+        db=write_spy_db, user_id="owner",
         llm=llm,
         registry=DEFAULT_REGISTRY,
         config=Config(),
@@ -397,7 +397,7 @@ async def test_trailing_question_mark_diary_reflection_is_answered_or_declined_n
     llm = make_llm({"category": "unknown", "metric": "count", "timeframe": "today"})
 
     await handle_inbound_message(
-        "should I go for a run tomorrow?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "should I go for a run tomorrow?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [i18n.t("query_cant_answer", "en")]
@@ -426,7 +426,7 @@ async def test_query_is_answered_not_deferred_while_ollama_is_reported_down(db, 
 
     await handle_inbound_message(
         "how much water today?",
-        db=db,
+        db=db, user_id="owner",
         llm=llm,
         channel=channel,
         config=config,
@@ -452,7 +452,7 @@ async def test_query_answers_successfully_while_ollama_is_reported_down_if_llm_c
 
     await handle_inbound_message(
         "how much water today?",
-        db=db,
+        db=db, user_id="owner",
         llm=llm,
         channel=channel,
         config=config,

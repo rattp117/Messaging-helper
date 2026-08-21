@@ -52,10 +52,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -109,7 +109,7 @@ async def test_water_english_plain_ml_byte_identical(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("water", 500))
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
 
@@ -121,8 +121,7 @@ async def test_water_thai_glass_alias_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("water", 500))  # 2 glasses x 250 ml, resolved by the (mocked) LLM
 
     await handle_inbound_message(
-        "ดื่มน้ำ 2 แก้ว", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ดื่มน้ำ 2 แก้ว", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ บันทึกน้ำ 500 มล. แล้ว — วันนี้ดื่มไป 500 / 2500 มล. (20%)"]
 
@@ -132,8 +131,7 @@ async def test_water_english_bottle_alias_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("water", 600))  # 1 bottle = 600 ml
 
     await handle_inbound_message(
-        "1 bottle of water", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "1 bottle of water", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 600 ml logged — today 600 / 2500 ml (24%)"]
 
@@ -142,7 +140,7 @@ async def test_water_thai_bottle_alias_byte_identical(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("water", 600))
 
-    await handle_inbound_message("1 ขวดน้ำ", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("1 ขวดน้ำ", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ บันทึกน้ำ 600 มล. แล้ว — วันนี้ดื่มไป 600 / 2500 มล. (24%)"]
 
@@ -157,8 +155,7 @@ async def test_stretch_english_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("stretch", 10))
 
     await handle_inbound_message(
-        "did 10 min stretch", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "did 10 min stretch", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 10 min stretch logged — 1st today"]
 
@@ -170,8 +167,7 @@ async def test_stretch_thai_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("stretch", 10))
 
     await handle_inbound_message(
-        "ยืดเส้น 10 นาที", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ยืดเส้น 10 นาที", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ บันทึกยืดเส้น 10 นาที แล้ว — ครั้งที่ 1 ของวันนี้"]
 
@@ -189,8 +185,7 @@ async def test_diary_english_wrapper_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("diary", "today was a good day, felt productive"), reflection_text="Glad to hear it.")
 
     await handle_inbound_message(
-        "today was a good day, felt productive", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "today was a good day, felt productive", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ Saved. Glad to hear it."]
 
@@ -200,8 +195,7 @@ async def test_diary_thai_wrapper_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("diary", "วันนี้เหนื่อยแต่ก็ดี"), reflection_text="วันนี้เก่งมากเลยนะ")
 
     await handle_inbound_message(
-        "วันนี้เหนื่อยแต่ก็ดี", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "วันนี้เหนื่อยแต่ก็ดี", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ บันทึกแล้วนะ วันนี้เก่งมากเลยนะ"]
 
@@ -218,8 +212,7 @@ async def test_unknown_english_clarifying_question_byte_identical(db, fixed_cloc
     llm = make_llm(extraction("unknown", None, confidence=0.1))
 
     await handle_inbound_message(
-        "purple elephants dance sideways", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "purple elephants dance sideways", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [
         "🤔 I couldn't quite tell what you meant — was that about water, a stretch "
@@ -232,8 +225,7 @@ async def test_unknown_thai_clarifying_question_byte_identical(db, fixed_clock):
     llm = make_llm(extraction("unknown", None, confidence=0.1))
 
     await handle_inbound_message(
-        "ช้างสีม่วงเต้นระบำ", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ช้างสีม่วงเต้นระบำ", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [
         "🤔 เอ๊ะ ยังไม่แน่ใจว่าหมายถึงอะไรนะ เกี่ยวกับน้ำ ยืดเส้น หรือไดอารี่วันนี้หรือเปล่า "
@@ -251,9 +243,9 @@ async def test_unknown_thai_clarifying_question_byte_identical(db, fixed_clock):
 async def test_undo_water_byte_identical(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("water", 500))
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
-    await handle_inbound_message("/undo", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent[-1] == "↩️ Undone — removed 500 ml water. Today: 0 / 2500 ml (0%)"
 
@@ -261,10 +253,9 @@ async def test_undo_water_byte_identical(db, fixed_clock):
 async def test_edit_water_byte_identical(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("water", 500))
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     await handle_inbound_message(
-        "make that 300ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
-    )
+        "make that 300ml", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent[-1] == "✏️ Updated to 300 ml — today 300 / 2500 ml (12%)"

@@ -10,7 +10,16 @@ a poll succeeds again. `self._offset` is only ever advanced inside the
 per-update loop below, which only runs after a *successful* poll -- so a
 run of consecutive failures, however long, never drops or duplicates an
 update: the next successful `getUpdates` call still asks for the same
-offset it would have asked for had the failures never happened."""
+offset it would have asked for had the failures never happened.
+
+SPEC-v1.2.md "Multi-user support" (R-C1): every send now takes an explicit
+`chat_id` instead of a pinned `self._chat_id` -- the constructor's second
+positional arg is renamed `owner_chat_id` and kept only as a public
+attribute for callers that need "the owner's chat" (health alerts,
+`--test-reminder`), never used internally to address a send. `run()`
+extracts `chat_id` from each update's `message.chat.id` (or
+`callback_query.message.chat.id` for a button tap) and passes it first to
+the caller's handler."""
 
 from __future__ import annotations
 
@@ -31,14 +40,18 @@ class TelegramChannel(Channel):
     def __init__(
         self,
         bot_token: str,
-        chat_id: str,
+        owner_chat_id: str,
         poll_timeout: int = 30,
         client: httpx.AsyncClient | None = None,
         backoff_initial_seconds: float = 1.0,
         backoff_max_seconds: float = 60.0,
     ):
         self._token = bot_token
-        self._chat_id = chat_id
+        # SPEC-v1.2.md R-C1: kept only for defaulting/health (main.py wires
+        # this into HealthMonitor and --test-reminder) -- never read inside
+        # send()/send_image()/send_actionable() below, which all take an
+        # explicit chat_id now.
+        self.owner_chat_id = owner_chat_id
         self._poll_timeout = poll_timeout
         self._base_url = f"{TELEGRAM_API_ROOT}/bot{bot_token}"
         self._client = client or httpx.AsyncClient(timeout=poll_timeout + 10)
@@ -46,17 +59,17 @@ class TelegramChannel(Channel):
         self._backoff_initial = backoff_initial_seconds
         self._backoff_max = backoff_max_seconds
 
-    def build_send_request(self, text: str) -> tuple[str, dict[str, Any]]:
+    def build_send_request(self, chat_id: str, text: str) -> tuple[str, dict[str, Any]]:
         """Exposed for testing: returns (url, json_payload) without sending."""
-        return f"{self._base_url}/sendMessage", {"chat_id": self._chat_id, "text": text}
+        return f"{self._base_url}/sendMessage", {"chat_id": chat_id, "text": text}
 
-    async def send(self, text: str) -> None:
-        url, payload = self.build_send_request(text)
+    async def send(self, chat_id: str, text: str) -> None:
+        url, payload = self.build_send_request(chat_id, text)
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
     def build_send_image_request(
-        self, image: bytes, caption: str
+        self, chat_id: str, image: bytes, caption: str
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
         """Exposed for testing: returns (url, data, files) without sending.
         ROADMAP.md v1.0.0 AC1.0.2: `sendPhoto` is a multipart upload (not
@@ -64,28 +77,30 @@ class TelegramChannel(Channel):
         and the image bytes are a file part."""
         return (
             f"{self._base_url}/sendPhoto",
-            {"chat_id": self._chat_id, "caption": caption},
+            {"chat_id": chat_id, "caption": caption},
             {"photo": ("chart.png", image, "image/png")},
         )
 
-    async def send_image(self, image: bytes, caption: str) -> None:
-        url, data, files = self.build_send_image_request(image, caption)
+    async def send_image(self, chat_id: str, image: bytes, caption: str) -> None:
+        url, data, files = self.build_send_image_request(chat_id, image, caption)
         resp = await self._client.post(url, data=data, files=files)
         resp.raise_for_status()
 
-    def build_send_actionable_request(self, text: str, buttons: list[Button]) -> tuple[str, dict[str, Any]]:
+    def build_send_actionable_request(
+        self, chat_id: str, text: str, buttons: list[Button]
+    ) -> tuple[str, dict[str, Any]]:
         """Exposed for testing: `sendMessage` + a one-row inline keyboard
         (SPEC-v1.1.md §5) -- each `(label, callback_data)` pair becomes one
         button in the row."""
-        url, payload = self.build_send_request(text)
+        url, payload = self.build_send_request(chat_id, text)
         payload = dict(payload)
         payload["reply_markup"] = {
             "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
         }
         return url, payload
 
-    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
-        url, payload = self.build_send_actionable_request(text, buttons)
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
+        url, payload = self.build_send_actionable_request(chat_id, text, buttons)
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
@@ -96,7 +111,7 @@ class TelegramChannel(Channel):
         code in `commands` (SPEC-v1.1.md §5) -- `"en"` is the Bot API's
         default set (no `language_code` field); any other code (e.g.
         `"th"`) is sent with `language_code` so it only applies to clients
-        in that language."""
+        in that language. Global, not per-chat (R-C1)."""
         requests: list[tuple[str, dict[str, Any]]] = []
         url = f"{self._base_url}/setMyCommands"
         for lang_code, cmds in commands.items():
@@ -121,10 +136,32 @@ class TelegramChannel(Channel):
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
+    @staticmethod
+    def _chat_id_of(message: dict[str, Any]) -> str:
+        """SPEC-v1.2.md §2.1: `message.chat.id` as a string -- Telegram
+        sends it as a JSON int; every scoped db call in this app expects a
+        `str` user_id, so the conversion happens once, here, at the
+        channel boundary."""
+        chat = message.get("chat") or {}
+        return str(chat.get("id", ""))
+
+    @staticmethod
+    def _display_name_of(message: dict[str, Any]) -> str | None:
+        """Integration step (IMPL-v1.2-access.md's own documented "Known
+        limitations" #1): SPEC-v1.2.md §2.1 lists `message.from.first_name`
+        as available inbound data -- `access.handle_gate`'s own
+        `display_name` param (R-A2) was always built to accept it, but
+        nothing extracted it from the update until now. Absent/blank ->
+        `None` (the ABC's own documented "safe fallback to the chat id"
+        contract; `access.py` already handles `None` correctly)."""
+        sender = message.get("from") or {}
+        name = sender.get("first_name")
+        return name if name else None
+
     async def run(
         self,
-        on_message: Callable[[str], Awaitable[None]],
-        on_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
+        on_message: Callable[[str, str], Awaitable[None]],
+        on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         backoff = self._backoff_initial
         while True:
@@ -150,18 +187,21 @@ class TelegramChannel(Channel):
 
                 callback_query = update.get("callback_query")
                 if callback_query is not None:
-                    # SPEC-v1.1.md R-U4: a callback (inline-button tap) is
-                    # routed to on_callback, then the client's spinner is
+                    # SPEC-v1.1.md R-U4 / SPEC-v1.2.md R-C2: a callback
+                    # (inline-button tap) is routed to on_callback with the
+                    # tapping chat id first, then the client's spinner is
                     # ALWAYS dismissed via answerCallbackQuery -- even when
                     # on_callback is absent, raises, or the data is
                     # malformed (that validation lives in on_callback
                     # itself; this loop never inspects `data`).
                     cb_id = callback_query.get("id", "")
                     data = callback_query.get("data") or ""
-                    source_text = (callback_query.get("message") or {}).get("text") or ""
+                    message = callback_query.get("message") or {}
+                    source_text = message.get("text") or ""
+                    chat_id = self._chat_id_of(message)
                     if on_callback is not None:
                         try:
-                            await on_callback(data, source_text, cb_id)
+                            await on_callback(chat_id, data, source_text, cb_id)
                         except Exception:
                             logger.exception("on_callback handler raised; continuing inbound loop")
                     try:
@@ -174,8 +214,10 @@ class TelegramChannel(Channel):
                 text = message.get("text")
                 if not text:
                     continue
+                chat_id = self._chat_id_of(message)
+                display_name = self._display_name_of(message)
                 try:
-                    await on_message(text)
+                    await on_message(chat_id, text, display_name)
                 except Exception:
                     logger.exception("on_message handler raised; continuing inbound loop")
 

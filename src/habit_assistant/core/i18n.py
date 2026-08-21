@@ -52,24 +52,47 @@ def detect_language(text: str) -> Language:
     return "th" if _THAI_CHAR_RE.search(text) else "en"
 
 
-def resolve_reply_language(inbound_text: str, config: "Config") -> Language:
+def resolve_reply_language(inbound_text: str, config: "Config", user_pref: str = "auto") -> Language:
     """AC6.3: `language` = "th"/"en" forces that language regardless of
     the inbound text; "auto" matches the detected language of the
-    message being replied to (AC6.1)."""
+    message being replied to (AC6.1).
+
+    SPEC-v1.2.md R-P1 (the READ side of per-user language; the `/lang`
+    WRITE is module `preferences`): `user_pref` is the acting user's
+    stored `users.language_pref` (`"auto"`/`"th"`/`"en"`), consulted
+    AFTER the global `config.i18n.language` force (which still wins
+    outright -- an operator-level override beats any individual
+    preference) but BEFORE auto-detecting from the inbound text. Defaults
+    to `"auto"`, which is a complete no-op here (falls through to
+    detection exactly as every pre-v1.2 call site already does) --
+    every call site in this codebase that doesn't yet look up a stored
+    per-user preference is therefore byte-identical to v1.1 (AC-M3): the
+    owner's own default preference is `"auto"` too (R-P1), so even a call
+    site that DOES thread a real value through is a no-op for the owner
+    until they run `/lang`."""
     forced = config.i18n.language
     if forced in ("th", "en"):
         return forced
+    if user_pref in ("th", "en"):
+        return user_pref
     return detect_language(inbound_text)
 
 
-def resolve_unprompted_language(config: "Config") -> Language:
+def resolve_unprompted_language(config: "Config", user_pref: str = "auto") -> Language:
     """Same forced-language override as `resolve_reply_language`, but for
     sends with no triggering inbound message (reminders, health alerts,
     the weekly review): "auto" uses the configured primary language
-    (default Thai) instead of detecting from anything."""
+    (default Thai) instead of detecting from anything.
+
+    SPEC-v1.2.md R-P1: `user_pref` follows the same precedence as
+    `resolve_reply_language`'s own (see its docstring) -- global force,
+    then this user's stored preference, then the primary-language
+    fallback."""
     forced = config.i18n.language
     if forced in ("th", "en"):
         return forced
+    if user_pref in ("th", "en"):
+        return user_pref
     return config.i18n.primary_language
 
 
@@ -645,6 +668,29 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🌙 No quiet hours are currently configured.",
         "th": "🌙 ตอนนี้ยังไม่ได้ตั้งช่วงเวลางดแจ้งเตือน",
     },
+    # Integration step (IMPL-v1.2-preferences.md's own documented "Known
+    # limitations" #3): `/help` predates the `access`/`preferences`/
+    # `schedules` modules, so it had no mention of `/lang`/`/quiet`/
+    # `/remind` at all. Added here, one line each, same "short imperative
+    # + example" shape as help_snooze/help_target just above.
+    "help_lang": {
+        "en": '🌐 Set your reply language: /lang en, /lang th, or /lang auto (Thai: "ภาษา en|th|auto").',
+        "th": '🌐 ตั้งภาษาที่ใช้ตอบ: /lang en, /lang th หรือ /lang auto (หรือ "ภาษา en|th|auto")',
+    },
+    "help_quiet_cmd": {
+        "en": '🌙 Set your own quiet hours: /quiet 22:00-07:00, or /quiet off to clear (Thai: "เงียบ ...").',
+        "th": '🌙 ตั้งช่วงเวลางดแจ้งเตือนของคุณเอง: /quiet 22:00-07:00 หรือ /quiet off เพื่อล้าง (หรือ "เงียบ ...")',
+    },
+    "help_remind_cmd": {
+        "en": (
+            '⏰ Set your own reminder times per habit: /remind water 08:00 12:00 (Thai: "เตือน ..."). '
+            "Show: /remind water. Reset: /remind water default. Off: /remind water off."
+        ),
+        "th": (
+            '⏰ ตั้งเวลาแจ้งเตือนของคุณเองรายกิจกรรม: /remind water 08:00 12:00 (หรือ "เตือน ...") '
+            "ดู: /remind water รีเซ็ต: /remind water default ปิด: /remind water off"
+        ),
+    },
     "habits_overview_header": {
         "en": "📋 Your habits:",
         "th": "📋 กิจกรรมของคุณ:",
@@ -688,5 +734,179 @@ CATALOG: dict[str, dict[Language, str]] = {
     "habit_kind_boolean": {
         "en": "yes/no",
         "th": "ทำ/ไม่ทำ",
+    },
+    # ===================================================================
+    # SPEC-v1.2.md "Multi-user support" -- shared-surface key-block
+    # skeletons (§11: "the i18n key-block skeletons are created in the
+    # shared surface first; each module then fills only its own disjoint
+    # kinds/keys", so the three parallel modules below never collide on
+    # this file). Each section is reserved for exactly one module; no key
+    # is added here yet -- only the section marker.
+    # ===================================================================
+
+    # -----------------------------------------------------------------
+    # Module `access` (onboarding/allowlist/admin: /start, /approve,
+    # /block, /users, /invite -- R-A1-R-A5). SPEC-v1.2.md §3.2 gives the
+    # illustrative copy for the unknown-first-contact reply, the
+    # owner-notification, and the just-approved reply verbatim; R-A2/R-A3
+    # both literally say "reply access_pending" for BOTH the unknown-
+    # first-contact case (R-A2) and the pending-repeat case (R-A3) -- one
+    # catalog id, one string, `i18n.t()` returns the identical text both
+    # times by construction. `access_denied` (blocked, R-A3) reuses
+    # §3.2's "not-yet-approved user messaging again" example text, since
+    # that is the only denial-flavored copy the spec provides.
+    # -----------------------------------------------------------------
+    "access_pending": {
+        "en": (
+            "👋 Hi! This is a private habit bot. I've asked the owner to "
+            "approve you — you'll hear back soon."
+        ),
+        "th": (
+            "👋 สวัสดีค่ะ! นี่คือบอทติดตามกิจกรรมส่วนตัว ได้แจ้งเจ้าของบอทให้อนุมัติคุณแล้วนะ "
+            "รอฟังผลอีกสักครู่"
+        ),
+    },
+    "access_denied": {
+        "en": "⏳ You're not approved to use this bot yet.",
+        "th": "⏳ ยังไม่ได้รับอนุญาตให้ใช้บอทนี้นะ",
+    },
+    "access_request": {
+        "en": "🔔 {name} (chat {chat_id}) asked for access. Approve with: /approve {chat_id}",
+        "th": "🔔 {name} (แชท {chat_id}) ขอสิทธิ์เข้าใช้งาน อนุมัติด้วย: /approve {chat_id}",
+    },
+    "access_granted": {
+        "en": '✅ You\'re in! Just type things like "500ml" or "10 min stretch". Send /help to see everything.',
+        "th": '✅ เข้าใช้งานได้แล้ว! พิมพ์แบบนี้ได้เลย เช่น "500ml" หรือ "ยืดเส้น 10 นาที" พิมพ์ /help เพื่อดูทุกอย่างที่ทำได้',
+    },
+    "start_welcome": {
+        "en": "👋 Welcome back! Send /help to see everything I can do.",
+        "th": "👋 ยินดีต้อนรับกลับมา! พิมพ์ /help เพื่อดูทุกอย่างที่ทำได้",
+    },
+    "admin_usage": {
+        "en": "🤔 Usage: /approve <chat_id>, /block <chat_id>, /invite <chat_id>, or /users to list everyone.",
+        "th": "🤔 วิธีใช้: /approve <chat_id>, /block <chat_id>, /invite <chat_id> หรือ /users เพื่อดูรายชื่อผู้ใช้ทั้งหมด",
+    },
+    "admin_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "admin_approved_ack": {
+        "en": "✅ {chat_id} approved.",
+        "th": "✅ อนุมัติ {chat_id} แล้ว",
+    },
+    "admin_blocked_ack": {
+        "en": "🚫 {chat_id} blocked.",
+        "th": "🚫 บล็อก {chat_id} แล้ว",
+    },
+    "users_list_header": {
+        "en": "👥 Users:",
+        "th": "👥 รายชื่อผู้ใช้:",
+    },
+    "users_list_line": {
+        "en": "• {chat_id} — {role} · {status}{lang_suffix}",
+        "th": "• {chat_id} — {role} · {status}{lang_suffix}",
+    },
+
+    # -----------------------------------------------------------------
+    # Module `preferences` (/lang, /quiet -- R-P1/R-P2, core/preferences.py).
+    # `lang_set`'s {value} is the raw code the user just typed ("en"/"th"/
+    # "auto") -- shown verbatim rather than translated to a language NAME,
+    # same "echo the token back" convention `remind_set`'s {times} uses for
+    # HH:MM lists. `preferences_save_failed` mirrors `target_save_failed`/
+    # `admin_save_failed`/`remind_save_failed`'s identical text -- one key
+    # per module by convention (SPEC-v1.2.md §11: "each module then fills
+    # only its own disjoint kinds/keys"), not a shared id.
+    # -----------------------------------------------------------------
+    "lang_set": {
+        "en": "✅ Got it — I'll reply in \"{value}\" from now on.",
+        "th": "✅ ได้เลย ต่อไปนี้จะตอบเป็น \"{value}\" นะ",
+    },
+    "lang_usage": {
+        "en": '🤔 Usage: "/lang en", "/lang th", or "/lang auto" (Thai: "ภาษา en|th|auto").',
+        "th": '🤔 วิธีใช้: "/lang en", "/lang th" หรือ "/lang auto" (หรือ "ภาษา en|th|auto")',
+    },
+    "quiet_set": {
+        "en": "🌙 Quiet hours set: {windows}. No reminders will be sent to you during that time.",
+        "th": "🌙 ตั้งช่วงเวลางดแจ้งเตือนแล้ว: {windows} จะไม่มีการแจ้งเตือนส่งถึงคุณในช่วงนี้นะ",
+    },
+    "quiet_cleared": {
+        "en": "🌙 Quiet hours cleared for you — reminders can be sent at any time now.",
+        "th": "🌙 ล้างช่วงเวลางดแจ้งเตือนของคุณแล้ว — ตอนนี้จะได้รับการแจ้งเตือนได้ตลอดเวลา",
+    },
+    "quiet_usage": {
+        "en": (
+            '🤔 Usage: "/quiet 22:00-07:00" (comma-separate for more than one window), '
+            'or "/quiet off" to clear (Thai: "เงียบ ...").'
+        ),
+        "th": (
+            '🤔 วิธีใช้: "/quiet 22:00-07:00" (คั่นด้วยจุลภาคถ้ามีหลายช่วง) '
+            'หรือ "/quiet off" เพื่อล้าง (หรือ "เงียบ ...")'
+        ),
+    },
+    "quiet_invalid_window": {
+        "en": (
+            '🤔 Each quiet-hours window must look like "22:00-07:00" (24-hour HH:MM). '
+            'Separate multiple windows with commas, or use "off" to clear.'
+        ),
+        "th": (
+            '🤔 แต่ละช่วงเวลาต้องอยู่ในรูปแบบ "22:00-07:00" (HH:MM 24 ชั่วโมง) '
+            'ถ้ามีหลายช่วงให้คั่นด้วยจุลภาค หรือใช้ "off" เพื่อล้าง'
+        ),
+    },
+    "preferences_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+
+    # -----------------------------------------------------------------
+    # Module `schedules` (/remind -- R-S5). Keys go here.
+    # -----------------------------------------------------------------
+    "remind_set": {
+        "en": "✅ {label} reminders set: {times}.",
+        "th": "✅ ตั้งเวลาแจ้งเตือน{label}เป็น: {times} แล้ว",
+    },
+    "remind_off": {
+        "en": "🔕 {label} reminders turned off for you.",
+        "th": "🔕 ปิดการแจ้งเตือน{label}ให้คุณแล้ว",
+    },
+    "remind_cleared": {
+        "en": "↩️ {label} reminders reset to default: {times}.",
+        "th": "↩️ รีเซ็ตเวลาแจ้งเตือน{label}กลับเป็นค่าเริ่มต้น: {times} แล้ว",
+    },
+    "remind_show": {
+        "en": "⏰ {label} reminders: {times} ({source})",
+        "th": "⏰ เวลาแจ้งเตือน{label}: {times} ({source})",
+    },
+    "remind_show_off": {
+        "en": "🔕 {label} reminders: off (no reminders for you)",
+        "th": "🔕 การแจ้งเตือน{label}: ปิดอยู่ (ไม่มีการแจ้งเตือนให้คุณ)",
+    },
+    "remind_source_custom": {
+        "en": "custom",
+        "th": "กำหนดเอง",
+    },
+    "remind_source_default": {
+        "en": "default",
+        "th": "ค่าเริ่มต้น",
+    },
+    "remind_no_default_times": {
+        "en": "no default times configured",
+        "th": "ไม่มีเวลาเริ่มต้นที่ตั้งไว้",
+    },
+    "remind_invalid_time": {
+        "en": '🤔 "{token}" isn\'t a valid time — use 24-hour HH:MM, e.g. "08:00".',
+        "th": '🤔 "{token}" ไม่ใช่เวลาที่ถูกต้องนะ ใช้รูปแบบ HH:MM 24 ชั่วโมง เช่น "08:00"',
+    },
+    "remind_too_many_times": {
+        "en": "🤔 That's too many times — please list at most {max} per habit.",
+        "th": "🤔 ตั้งเวลาเยอะเกินไปนะ ใส่ได้สูงสุด {max} เวลาต่อกิจกรรม",
+    },
+    "remind_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "remind_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
     },
 }

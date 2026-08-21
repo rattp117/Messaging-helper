@@ -1,9 +1,9 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 1.1.0
+- **Current version:** 1.2.0
 - **Repo:** remote: git@github.com:rattp117/Messaging-helper.git (origin; push every release — user decision 2026-08-21)
-- **Status:** ✅ v1.1.0 RELEASED — undo button+menu, per-habit targets (deterministic + full-NL fail-closed), /help + /habits discoverability. All 40 ACs PASS; suite fully green 959/0/1 (date-drift flakes repaired). Deployed via service bounce. Garmin: off until user sets `[garmin] csv_path`.
-- **Last updated:** 2026-08-21 · **Last commit:** v1.1.0
+- **Status:** ✅ v1.2.0 RELEASED — multi-user: chat-ID identity, /start onboarding + owner-approval allowlist, full per-user isolation (logs/streaks/targets/reminders/quiet/lang), per-user reminder schedules (/remind, minutely tick), /lang + /quiet. All 29 ACs PASS; suite 1325/0/1; integration Vera verdict PASS incl. migration rehearsal. Deployed via service bounce (migration 006 + owner attribution on live DB). Garmin: off until user sets `[garmin] csv_path`.
+- **Last updated:** 2026-08-21 · **Last commit:** v1.2.0
 
 ## Stack
 Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · httpx (Telegram long-poll + Ollama) · stdlib sqlite3 (WAL) · pydantic-settings · pytest. Stack dictated by user spec — Irine skipped.
@@ -33,6 +33,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 1.0.0 | 2026-08-19 | Capstone: weekly-review chart PNGs (optional matplotlib, graceful fallback), Channel.send_image (sendPhoto), Garmin CSV import (off by default); ACs 1.0.1–1.0.5 PASS (701 tests); stability declared | channels/{base,telegram}.py, core/{charts,garmin,review,i18n}.py, main.py, config.py, config.toml, pyproject.toml, README.md, tests/test_charts.py, tests/test_garmin.py | v1.0.0 |
 | 1.0.1 | 2026-08-21 | Ops: Task Scheduler persistence (task "Habit Assistant", boot+logon, S4U, restart-on-failure); launcher now self-logs + single-instance guard (kills orphan pollers → no 409s); elevated bounce script | start-assistant.ps1, bounce-assistant.ps1 | v1.0.1 |
 | 1.1.0 | 2026-08-21 | Undo inline button on every confirmation + Telegram command menu (/undo /target /help /habits); per-habit targets: DB override via migration 005, deterministic /target + full-NL fail-closed LLM intent (2.5L→2500ml, EN/TH); /help + /habits discoverability; goal source consolidated into core/targets.effective_goal; all 40 ACs PASS, 959/0/1 incl. 6 repaired legacy flakes | channels/*, core/{targets,targets_command,target_nl,undo_ui,discoverability,commands,i18n,streaks,review,charts,reminders}.py, storage/{db,migrations}.py, llm/prompts.py, main.py, 12 test files | v1.1.0 |
+| 1.2.0 | 2026-08-21 | Multi-user: users table + migration 006 (sanctioned schema break: habit_targets rebuilt UNIQUE(user_id,habit_id)) + startup owner attribution; access gate (pending/approve/block, owner admin cmds, polite denial, notify-once); per-chat channel + callback ownership; per-user targets/streaks/review/summary/undo isolation (U-ISO); per-user reminder times (/remind + minutely tick, no-restart); /lang + /quiet (Thai aliases hardened: whitelist/registry-anchored after 2 Vera rounds); menu → 8 public cmds; all 29 ACs PASS, 1325/0/1 | storage/*, channels/*, core/{access,preferences,schedules,reminders,commands,i18n,...}.py, main.py, config.toml, 20+ test files | v1.2.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.

@@ -111,12 +111,15 @@ class HabitRegistry:
 
 
 def log_entry_from_result(
-    habit: Habit, result: "ExtractionResult", ts: str, raw_message: str, source: str
+    habit: Habit, result: "ExtractionResult", ts: str, raw_message: str, source: str, user_id: str
 ) -> LogEntry:
     """Map a validated `ExtractionResult` to a `LogEntry` per the matched
     habit's type (SPEC-v0.7.md §4 R10): numeric/duration -> `value_num`;
     text -> `value_text`; boolean -> `value_num` of 1.0/0.0. `habit_type`
-    is always stamped from the habit's own config, not inferred."""
+    is always stamped from the habit's own config, not inferred.
+    SPEC-v1.2.md R-D1: `user_id` is the owning chat id, stamped onto every
+    new row -- the caller (`main.py`) is the acting user for a live log,
+    or the deferred row's own `user_id` for a recovery re-parse."""
     if habit.type in ("numeric", "duration"):
         value_num: float | None = float(result.value)  # type: ignore[arg-type]
         value_text: str | None = None
@@ -129,6 +132,7 @@ def log_entry_from_result(
 
     return LogEntry(
         id=None,
+        user_id=user_id,
         ts=ts,
         category=habit.id,
         value_num=value_num,

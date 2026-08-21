@@ -186,22 +186,23 @@ def date_range_for_timeframe(timeframe: str, today: date) -> list[str]:
     raise ValueError(f"unknown timeframe: {timeframe!r}")  # unreachable past _validate_intent
 
 
-def _aggregate(db: "Database", habit: "Habit", day_strs: list[str]) -> tuple[float, int]:
-    """(total, count) over `day_strs`, both computed generically from the
-    existing read-only `Database` helpers (AC8.5: no write method is ever
-    called anywhere in this module). `total` is meaningful for numeric/
-    duration habits; `count` means "log rows" for numeric/duration/text,
-    and "done days" (not raw rows) for boolean, matching
-    `core/review.py._compute_habit_stats`'s own boolean semantics."""
+def _aggregate(db: "Database", habit: "Habit", day_strs: list[str], user_id: str) -> tuple[float, int]:
+    """(total, count) over `day_strs` for `user_id`, both computed
+    generically from the existing read-only `Database` helpers (AC8.5: no
+    write method is ever called anywhere in this module). `total` is
+    meaningful for numeric/duration habits; `count` means "log rows" for
+    numeric/duration/text, and "done days" (not raw rows) for boolean,
+    matching `core/review.py._compute_habit_stats`'s own boolean
+    semantics. SPEC-v1.2.md R-D3: scoped throughout (AC-U-ISO)."""
     if habit.type in ("numeric", "duration"):
-        total = sum(db.sum_value(habit.id, d) for d in day_strs)
-        count = sum(db.count(habit.id, d) for d in day_strs)
+        total = sum(db.sum_value(user_id, habit.id, d) for d in day_strs)
+        count = sum(db.count(user_id, habit.id, d) for d in day_strs)
         return total, count
     if habit.type == "boolean":
-        done_days = sum(1 for d in day_strs if db.count_true(habit.id, d) > 0)
+        done_days = sum(1 for d in day_strs if db.count_true(user_id, habit.id, d) > 0)
         return 0.0, done_days
     # text
-    count = sum(db.count(habit.id, d) for d in day_strs)
+    count = sum(db.count(user_id, habit.id, d) for d in day_strs)
     return 0.0, count
 
 
@@ -236,12 +237,15 @@ async def answer_question(
     registry: "HabitRegistry",
     config: "Config",
     lang: i18n.Language,
+    user_id: str,
     clock=datetime.now,
 ) -> str:
     """Top-level entry point `main.py` calls once `core/commands.dispatch`
     has flagged a message as query-shaped. Always returns a string (the
     answer, or the bilingual `query_cant_answer` fallback) -- never raises,
-    never writes to the DB (AC8.5)."""
+    never writes to the DB (AC8.5). SPEC-v1.2.md R-D3: `user_id` scopes
+    every aggregation -- a query only ever answers from the asking user's
+    own data (AC-U-ISO)."""
     try:
         intent = await classify_query_intent(text, llm, registry)
         if intent is None:
@@ -252,7 +256,7 @@ async def answer_question(
 
         today = _today_in_timezone(clock, config.app.timezone)
         day_strs = date_range_for_timeframe(intent.timeframe, today)
-        total, count = _aggregate(db, habit, day_strs)
+        total, count = _aggregate(db, habit, day_strs, user_id)
         timeframe_label = i18n.t(_TIMEFRAME_LABEL_MSG_ID[intent.timeframe], lang)
         return _format_answer(habit, intent.metric, total, count, lang, timeframe_label)
     except Exception:

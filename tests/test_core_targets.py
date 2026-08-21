@@ -17,6 +17,9 @@ from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
 
+OWNER = "owner"
+
+
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "targets.db")
@@ -82,23 +85,23 @@ def test_config_goal_non_water_reads_habit_goal():
 def test_effective_goal_falls_back_to_config_goal_with_no_override(db):
     config = Config()  # water default 2500
     water = _habit("water", "numeric", goal=2500)
-    assert targets.effective_goal(db, water, config) == 2500
+    assert targets.effective_goal(db, water, config, OWNER) == 2500
 
 
 def test_effective_goal_prefers_db_override_over_config_default(db):
     config = Config()
     water = _habit("water", "numeric", goal=2500)
-    db.set_target("water", 2000.0)
-    assert targets.effective_goal(db, water, config) == 2000.0
+    db.set_target(OWNER, "water", 2000.0)
+    assert targets.effective_goal(db, water, config, OWNER) == 2000.0
 
 
 def test_effective_goal_clearing_override_reverts_to_config_default(db):
     config = Config()
     water = _habit("water", "numeric", goal=2500)
-    db.set_target("water", 2000.0)
-    assert targets.effective_goal(db, water, config) == 2000.0
-    db.clear_target("water")
-    assert targets.effective_goal(db, water, config) == 2500
+    db.set_target(OWNER, "water", 2000.0)
+    assert targets.effective_goal(db, water, config, OWNER) == 2000.0
+    db.clear_target(OWNER, "water")
+    assert targets.effective_goal(db, water, config, OWNER) == 2500
 
 
 def test_effective_goal_override_on_previously_goalless_duration_habit(db):
@@ -107,11 +110,11 @@ def test_effective_goal_override_on_previously_goalless_duration_habit(db):
     becomes goal-bearing purely because callers now see a non-None value."""
     config = Config()
     stretch = _habit("stretch", "duration", goal=None)
-    assert targets.effective_goal(db, stretch, config) is None
-    db.set_target("stretch", 20.0)
-    assert targets.effective_goal(db, stretch, config) == 20.0
-    db.clear_target("stretch")
-    assert targets.effective_goal(db, stretch, config) is None
+    assert targets.effective_goal(db, stretch, config, OWNER) is None
+    db.set_target(OWNER, "stretch", 20.0)
+    assert targets.effective_goal(db, stretch, config, OWNER) == 20.0
+    db.clear_target(OWNER, "stretch")
+    assert targets.effective_goal(db, stretch, config, OWNER) is None
 
 
 def test_effective_goal_never_consults_db_for_non_goalable_habit(db):
@@ -120,17 +123,17 @@ def test_effective_goal_never_consults_db_for_non_goalable_habit(db):
     read for it, let alone honor a stray override row."""
     config = Config()
     diary = _habit("diary", "text", goal=None)
-    assert targets.effective_goal(db, diary, config) is None
+    assert targets.effective_goal(db, diary, config, OWNER) is None
 
     # Even if a row somehow existed under this id, is_goalable must gate
     # the read -- prove the DB is never consulted by using a Database
     # stand-in whose get_target would raise if ever called.
     class _ExplodingGetTarget(Database):
-        def get_target(self, habit_id: str) -> float | None:
+        def get_target(self, user_id: str, habit_id: str) -> float | None:
             raise AssertionError("effective_goal must not read the DB for a non-goalable habit")
 
     exploding = _ExplodingGetTarget(db.db_path)
     try:
-        assert targets.effective_goal(exploding, diary, config) is None
+        assert targets.effective_goal(exploding, diary, config, OWNER) is None
     finally:
         exploding.close()

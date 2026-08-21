@@ -61,10 +61,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -112,7 +112,7 @@ async def test_english_water_confirmation_byte_identical_to_v050(db, fixed_clock
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     channel = FakeChannel()
 
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
 
@@ -122,8 +122,7 @@ async def test_english_stretch_confirmation_byte_identical_to_v050(db, fixed_clo
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "10 min stretch", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "10 min stretch", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 10 min stretch logged — 1st today"]
 
@@ -135,7 +134,7 @@ async def test_english_diary_confirmation_byte_identical_to_v050(db, fixed_clock
     await handle_inbound_message(
         "today was a good day", db=db, llm=FakeLLM("Glad to hear it."), channel=channel, config=Config(),
         clock=fixed_clock,
-    )
+    user_id="owner")
 
     assert channel.sent == ["✅ Saved. Glad to hear it."]
 
@@ -145,8 +144,7 @@ async def test_english_diary_confirmation_uses_v050_fallback_when_llm_empty(db, 
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "today was a good day", db=db, llm=FakeLLM(None), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "today was a good day", db=db, llm=FakeLLM(None), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ Saved. Thanks for sharing — noted."]
 
@@ -156,8 +154,7 @@ async def test_english_clarifying_question_byte_identical_to_v050(db, fixed_cloc
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [
         "🤔 I couldn't quite tell what you meant — was that about water, a stretch "
@@ -166,10 +163,10 @@ async def test_english_clarifying_question_byte_identical_to_v050(db, fixed_cloc
 
 
 async def test_english_undo_water_confirmation_byte_identical_to_v050(db, fixed_clock):
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
     channel = FakeChannel()
 
-    await handle_inbound_message("/undo", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["↩️ Undone — removed 500 ml water. Today: 0 / 2500 ml (0%)"]
 
@@ -177,18 +174,17 @@ async def test_english_undo_water_confirmation_byte_identical_to_v050(db, fixed_
 async def test_english_undo_nothing_message_byte_identical_to_v050(db, fixed_clock):
     channel = FakeChannel()
 
-    await handle_inbound_message("/undo", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["🤷 Nothing to undo — you don't have any logged entries yet."]
 
 
 async def test_english_edit_water_confirmation_byte_identical_to_v050(db, fixed_clock):
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "make that 300ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "make that 300ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✏️ Updated to 300 ml — today 300 / 2500 ml (12%)"]
 
@@ -197,8 +193,7 @@ async def test_english_edit_nothing_message_byte_identical_to_v050(db, fixed_clo
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "make that 300ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "make that 300ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["🤷 Nothing to edit — I couldn't find a matching entry to update."]
 
@@ -212,34 +207,32 @@ async def test_english_edit_nothing_message_byte_identical_to_v050(db, fixed_clo
 
 
 async def test_thai_undo_confirmation_has_correct_numbers(db, fixed_clock):
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 500.0, None, "500ml", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 300.0, None, "แก้เป็น 300 มล.", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 300.0, None, "แก้เป็น 300 มล.", "reply"))
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ยกเลิกอันล่าสุด", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ยกเลิกอันล่าสุด", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     sent = channel.sent[0]
     assert i18n.detect_language(sent) == "th"
     assert "300" in sent  # names the removed (most recent, 300ml) row
     assert "500" in sent  # remaining total after removal is 500/2500 (20%)
     assert "20%" in sent
-    assert db.water_total_ml("2026-08-19") == 500.0
+    assert db.water_total_ml("owner", "2026-08-19") == 500.0
 
 
 async def test_thai_edit_confirmation_has_correct_numbers(db, fixed_clock):
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "แก้เป็น 300 มล.", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "แก้เป็น 300 มล.", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     sent = channel.sent[0]
     assert i18n.detect_language(sent) == "th"
     assert "300" in sent
-    assert db.water_total_ml("2026-08-19") == 300.0
+    assert db.water_total_ml("owner", "2026-08-19") == 300.0
     assert "12%" in sent  # 300/2500
 
 
@@ -266,7 +259,7 @@ class _AlwaysDownClient:
 async def test_health_monitor_default_language_ollama_alert_matches_english_catalog_entry():
     channel = FakeChannel()
     monitor = HealthMonitor(
-        "http://mac-mini:11434", "fake-token", client=_AlwaysDownClient(), channel=channel
+        "http://mac-mini:11434", "fake-token", "owner", client=_AlwaysDownClient(), channel=channel
     )  # language defaults to "en"
 
     await monitor.run_once()
@@ -278,7 +271,7 @@ async def test_health_monitor_default_language_ollama_alert_matches_english_cata
 async def test_health_monitor_thai_language_ollama_alert_is_localized():
     channel = FakeChannel()
     monitor = HealthMonitor(
-        "http://mac-mini:11434", "fake-token", client=_AlwaysDownClient(), channel=channel, language="th"
+        "http://mac-mini:11434", "fake-token", "owner", client=_AlwaysDownClient(), channel=channel, language="th"
     )
 
     await monitor.run_once()
@@ -291,7 +284,7 @@ async def test_health_monitor_thai_language_ollama_alert_is_localized():
 async def test_health_monitor_thai_language_telegram_alert_is_localized():
     channel = FakeChannel()
     monitor = HealthMonitor(
-        "http://mac-mini:11434", "fake-token", client=_AlwaysDownClient(), channel=channel, language="th"
+        "http://mac-mini:11434", "fake-token", "owner", client=_AlwaysDownClient(), channel=channel, language="th"
     )
 
     await monitor.run_once()  # ollama alert first, then telegram alert (both DOWN on first check)
@@ -403,7 +396,7 @@ def test_known_limitation_variable_indirection_is_not_caught_by_either_scanner(t
 @pytest.fixture
 def review_db(tmp_path):
     database = Database(tmp_path / "habits.db")
-    database.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 2500.0, None, "seed", "reply"))
+    database.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 2500.0, None, "seed", "reply"))
     yield database
     database.close()
 
@@ -421,11 +414,18 @@ class RecordingLLM:
 async def test_weekly_review_system_prompt_carries_thai_directive_by_default(review_db):
     """CHANGED (ROADMAP.md v0.7.0 integration): run_weekly_review gains a
     required `registry` param (SPEC-v0.7.md §5, module M3) -- registry-
-    wiring edit only, no assertion changed."""
+    wiring edit only, no assertion changed.
+    CHANGED (SPEC-v1.2.md): `run_weekly_review` now takes `lang` pre-resolved
+    (main.py's per-user fan-out resolves it) instead of resolving internally
+    -- the test now does what main.py's own call site does:
+    `i18n.resolve_unprompted_language(config)` before calling. Same
+    assertion, same semantics (default primary language is Thai)."""
     llm = RecordingLLM()
-    registry = HabitRegistry.from_config(Config())
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    lang = i18n.resolve_unprompted_language(config)
 
-    await run_weekly_review(review_db, Config(), registry, llm, today=date(2026, 8, 19))
+    await run_weekly_review(review_db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     assert len(llm.calls) == 1
     system_prompt, _user_prompt = llm.calls[0]
@@ -436,8 +436,9 @@ async def test_weekly_review_system_prompt_carries_english_directive_when_forced
     llm = RecordingLLM()
     config = Config.model_validate({"i18n": {"language": "en"}})
     registry = HabitRegistry.from_config(config)
+    lang = i18n.resolve_unprompted_language(config)
 
-    await run_weekly_review(review_db, config, registry, llm, today=date(2026, 8, 19))
+    await run_weekly_review(review_db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     system_prompt, _user_prompt = llm.calls[0]
     assert i18n.language_instruction("en") in system_prompt
@@ -474,8 +475,7 @@ async def test_mixed_thai_english_input_produces_thai_reply_end_to_end(db, fixed
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ดื่มน้ำ 500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ดื่มน้ำ 500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert len(channel.sent) == 1
     assert i18n.detect_language(channel.sent[0]) == "th"

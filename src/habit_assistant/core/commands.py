@@ -91,7 +91,88 @@ other anchored commands, after target and before query (R-D1's own stated
 precedence: "... -> target -> help/habits -> query -> extractor") -- neither
 kind carries any payload (`Command(kind="help")`/`Command(kind="habits")`
 is the whole of it); the actual reply text is `core/discoverability.py`'s
-job, dispatched by `main.py`."""
+job, dispatched by `main.py`.
+
+v1.2.0 (SPEC-v1.2.md §4 R-S5, module `schedules`, parallel track landed
+after the v1.2 shared surface): one more LLM-free kind, `"remind"` --
+slash form `/remind <habit> [<HH:MM>...|off|default|reset|clear]` plus
+the Thai alias `เตือน`. `Command.times` carries the parsed-but-UNVALIDATED
+shape (`[]`=show, `["off"]`=off, `["default"]`=reset, else the raw HH:MM
+token list for "set") -- `core/schedules.execute_remind` is where HH:MM
+validation, de-dupe, and the <=24 cap actually happen (R-S5), mirroring
+`target`'s own recognize-shape/execute split.
+
+v1.2.0 audit fix (post-landing, prompted by sibling module `preferences`'s
+own Vera-caught false-positive class on `ภาษา`/`เงียบ`): the Thai alias
+`เตือน` originally used the same "mandatory space, then anything" gate as
+the slash form -- too permissive, since `เตือน` (unlike "/remind") is a
+real word that opens ordinary Thai prose ("เตือน ๆ หน่อยนะ", "เตือน
+ฉันด้วยนะ" all mis-dispatched as `kind="remind"`). Fixed by requiring, for
+the Thai form ONLY, (1) the habit token resolve to a real registry habit
+via an alternation built from live `Habit.id`/`label_th` (mirrors
+`_build_target_th_set_pattern`'s own precedent) and (2) any tail have the
+SHAPE of a valid remind argument (clear/off word, or HH:MM-shaped
+tokens) -- so a real habit word followed by ordinary prose ("เตือน น้ำ
+ท่วมด้วย") also falls through. The slash form is untouched -- it was
+never at risk (nobody types "/remind" by accident). See
+`_match_remind`'s own docstring-comment block for the full analysis.
+
+v1.2.0 (SPEC-v1.2.md §4 R-A1-R-A5, module `access`, parallel track landed
+after the v1.2 shared surface): five more LLM-free kinds, English-only
+slash forms -- `"start"` (`/start`), `"users"` (`/users`), and
+`"approve"`/`"block"`/`"invite"` (`/approve|/block|/invite [<chat_id>]`,
+`Command.target_chat` carrying the raw, unvalidated first token). No Thai
+aliases (SPEC-v1.2.md §2.3 only gives Thai aliases for `/lang`/`/quiet`/
+`/remind`, not these five). This layer only recognizes *shape* -- whether
+the acting chat is actually the owner (R-A4), and whether `target_chat`
+is a well-formed chat id, are `core/access.py:execute_admin`'s job, same
+recognize-shape/execute split as `target`/`remind`.
+
+v1.2.0 (SPEC-v1.2.md §4 R-P1/R-P2, module `preferences`, parallel track
+landed after the v1.2 shared surface): two more LLM-free kinds, `"lang"`
+(`/lang en|th|auto`, Thai alias `ภาษา en|th|auto`) and `"quiet"`
+(`/quiet HH:MM-HH:MM[,...]|off`, Thai alias `เงียบ HH:MM-HH:MM[,...]|off`).
+Both reuse `/remind`'s slash-form/Thai-alias split: the slash form
+permits a bare `/lang`/`/quiet` with no value (so `core/preferences.py`'s
+`execute_lang`/`execute_quiet` can reply with a usage message instead of
+the message silently falling through) and stays fully permissive for any
+non-empty tail otherwise (near-zero false-positive surface -- an
+explicit "/" prefix no normal sentence starts with).
+
+The Thai-alias form went through two hardening rounds (TEST-v1.2-
+preferences.md) because `ภาษา`/`เงียบ` are ordinary Thai WORDS
+("language"/"quiet") that legitimately open real sentences, unlike a
+"/"-prefixed slash command. Round 1: the original mitigation (a
+mandatory single whitespace before a non-empty value, mirroring
+`/remind`'s Thai alias `เตือน`) only protected against the trigger glued
+to more text with NO space -- a legitimate space-separated continuation
+(the standard mai-yamok reduplication "เงียบ ๆ หน่อยนะ", or a natural
+clause "ภาษา นี้ยากมาก") still misfired. Fixed by requiring the
+Thai-alias value to be a single whitespace-free token, PLUS (at the
+time) a curated Thai-prose-marker blacklist for `ภาษา` and a shape
+whitelist for `เงียบ`. Round 2: Vera's follow-up audit found the `ภาษา`
+blacklist structurally could not cover every ordinary Thai word -- 6
+more realistic single-word messages ("ภาษา อังกฤษ"/"จีน"/"ใหม่"/"ดี"/
+"สวย"/"อะไร", e.g. "which language?" or "[my] language [is] good") still
+misfired. `ภาษา` now uses the same WHITELIST strategy `เงียบ` already
+did: only `en`/`th`/`auto` (the valid value set, R-P1) plus the two
+reviewed near-miss names (`ไทย`, `english`) dispatch at all --
+`_LANG_TH_VALID_VALUES`, replacing the removed `_looks_like_th_prose`
+blacklist. Everything else, including any other Thai language name in
+prose, falls through to `None` -- SPEC-v1.2.md §2.3's zero-false-
+positive discipline prioritizes precision here (the deterministic
+`/lang en` always works, and free-form NL language-switching was
+consciously deferred with the rest of NL phrasing, §10), so a Thai word
+for a language name in ordinary prose must not be treated as a command.
+See the comment block directly above `_match_lang`/`_match_quiet` for
+the full current rationale. The slash forms remain untouched by both
+rounds: an unrecognized language code or a malformed HH:MM window there
+is still carried through verbatim (lowercased) as `Command.pref_value`
+-- `core/preferences.py` is where the semantic validation, the `users`
+table write, and the bilingual reply happen (same recognize-shape/
+execute split as `target`/`remind`). Grouped with `remind`/`access` for
+readability -- disjoint trigger text from every other kind means exact
+placement doesn't change behavior."""
 
 from __future__ import annotations
 
@@ -102,7 +183,33 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from habit_assistant.core.habits import HabitRegistry
 
-CommandKind = Literal["undo", "edit", "query", "snooze", "target", "help", "habits"]
+# SPEC-v1.2.md §5/§11: the eight new kinds below are a SKELETON only --
+# added here (and the matching `Command` fields just below) so the three
+# parallel modules (`access`, `preferences`, `schedules`) never collide on
+# this file's shared enum/dataclass. `dispatch()` itself does not yet
+# recognize/produce any of them -- each module adds its own anchored
+# matching for its own disjoint kinds, exactly like `target`/`help`/
+# `habits` were added in earlier releases.
+CommandKind = Literal[
+    "undo",
+    "edit",
+    "query",
+    "snooze",
+    "target",
+    "help",
+    "habits",
+    # module `access` (R-A1-R-A5): onboarding + owner-only admin ops.
+    "start",
+    "approve",
+    "block",
+    "users",
+    "invite",
+    # module `preferences` (R-P1/R-P2): /lang, /quiet.
+    "lang",
+    "quiet",
+    # module `schedules` (R-S5): /remind.
+    "remind",
+]
 
 
 @dataclass(slots=True)
@@ -113,6 +220,21 @@ class Command:
     minutes: int | None = None  # explicit snooze minutes -- only set for "snooze"; None = use the configured default
     # SPEC-v1.1.md §5: which target operation -- only set for kind="target".
     target_action: Literal["set", "clear", "show", "show_all", "usage"] | None = None
+    # SPEC-v1.2.md §5 skeleton (module `access`): the chat id an admin op
+    # acts on -- "approve"/"block"/"invite". Not yet populated by dispatch().
+    target_chat: str | None = None
+    # SPEC-v1.2.md §5 (module `preferences`, R-P1/R-P2): the raw
+    # (lowercased) trigger tail for "lang" ("en"/"th"/"auto", or an
+    # unrecognized token -- `core/preferences.py:execute_lang` reports
+    # `lang_usage`) or "quiet" ("22:00-07:00[,...]"/"off", or a malformed
+    # token -- `execute_quiet` reports `quiet_invalid_window`); `None` for
+    # a bare "/lang"/"/quiet" (or Thai-alias-with-no-value, which doesn't
+    # match at all) with no value -- also `lang_usage`/`quiet_usage`.
+    pref_value: str | None = None
+    # SPEC-v1.2.md §5 skeleton (module `schedules`): "remind"'s parsed
+    # times -- [] = show, ["off"] = off, ["default"] = reset, else an
+    # HH:MM list to set. Not yet populated by dispatch().
+    times: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +476,137 @@ def _match_target(stripped: str, registry: "HabitRegistry") -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# remind -- SPEC-v1.2.md §4 R-S5 (module `schedules`). Slash form
+# `/remind <habit> [<HH:MM> [<HH:MM> ...]|off|default|reset|clear]` stays
+# fully permissive (an unresolved habit token or an arbitrary tail still
+# produces a Command, letting `execute_remind` report a friendly
+# `remind_invalid_habit`/`remind_invalid_time` -- mirrors `/target`'s own
+# slash-form behavior, AC16). Nobody types "/remind" by accident in prose,
+# so this form carries no false-positive risk.
+#
+# Unlike `/target`'s slash form, there is no bare `/remind` (no habit)
+# "show all" shape -- SPEC-v1.2.md §2.3 lists only per-habit forms -- so a
+# bare `/remind` with no habit token simply doesn't match (falls through
+# to `None`), same conservative posture as every other anchored command
+# here.
+#
+# The Thai alias `เตือน`, by contrast, IS a real Thai word that can open
+# ordinary prose -- audit finding (post-landing, prompted by sibling
+# module `preferences`'s own Vera-caught false-positive class on
+# `ภาษา`/`เงียบ`): a bare mandatory-`\s+`-then-anything gate is NOT enough.
+# Correctly-spelled Thai puts a space before particles like the
+# mai-yamok "ๆ" and other trailing words ("เตือน ๆ หน่อยนะ", "เตือน
+# ฉันด้วยนะ", "เตือน แล้วนะ" -- all ordinary sentences, none of them a
+# remind command), so the earlier "any token after a space" habit-token
+# lookup mis-dispatched every one of these as `kind="remind"` with an
+# unresolved/garbage category. Fixed the same way `preferences` fixed its
+# own two triggers: dispatch only on a VALID ARGUMENT SHAPE for this
+# bare-word form, prose falls through. Two restrictions, mirroring
+# `_build_target_th_set_pattern`'s own registry-anchored precedent:
+#   1. The habit token must resolve to a REAL configured habit (id or
+#      Thai label) via a registry-built alternation, not an arbitrary
+#      token -- "เตือน ๆ หน่อยนะ"/"เตือน ฉันด้วยนะ"/"เตือน แล้วนะ" name no
+#      configured habit at all, so none of them can match anymore.
+#   2. Even when the habit token IS real, a trailing tail must itself
+#      look like a valid remind argument (a clear/off word, or a
+#      whitespace-separated list of HH:MM-SHAPED tokens -- not yet
+#      validated as REAL times, that's still `execute_remind`'s job,
+#      R-S5) -- otherwise the match is rejected. This catches
+#      "เตือน น้ำ ท่วมด้วย" ("[a message about] water flooding" --
+#      "น้ำ" IS a real habit label, but "ท่วมด้วย" isn't a time/off/
+#      default shape, so this now falls through instead of misfiring).
+# The slash form is untouched by either restriction (see above).
+#
+# `Command.times` carries the UNVALIDATED tail exactly as SPEC-v1.2.md §5
+# describes it: `[]` = show, `["off"]` = off, `["default"]` = reset, else
+# the raw whitespace-split tokens for "set". HH:MM validation, de-dupe,
+# and the <=24 cap are `core/schedules.execute_remind`'s job (R-S5), not
+# this layer's -- mirrors `/target`'s own recognize-shape/execute split.
+# ---------------------------------------------------------------------------
+
+_REMIND_SLASH_RE = re.compile(r"^/remind\s+(?P<rest>\S.*)$", re.IGNORECASE)
+
+# A single valid remind-argument TOKEN shape (not yet a real time -- just
+# digits-and-a-colon, so an intentionally-malformed time like "25:99" can
+# still reach `execute_remind`'s own `remind_invalid_time` reply through
+# the Thai form too, symmetric with the slash form) -- used only to keep
+# ordinary Thai prose out of the Thai bare-word trigger's match, per the
+# audit finding above.
+_REMIND_TIME_TOKEN_SHAPE_RE = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+def _build_remind_command(category: str, tail: str | None) -> "Command":
+    if tail is None:
+        return Command(kind="remind", category=category, times=[])
+    if tail.lower() in _TARGET_CLEAR_WORDS:
+        return Command(kind="remind", category=category, times=["default"])
+    if tail.lower() == "off":
+        return Command(kind="remind", category=category, times=["off"])
+    return Command(kind="remind", category=category, times=tail.split())
+
+
+def _remind_tail_has_valid_shape(tail: str) -> bool:
+    """Gate for the Thai bare-word trigger ONLY (see the audit note
+    above) -- `tail` is a clear/off word, or every whitespace-separated
+    token in it has the digits-and-colon SHAPE of an HH:MM time (real
+    HH:MM validation is still `execute_remind`'s job, R-S5). Ordinary
+    Thai prose following a real habit word (e.g. "ท่วมด้วย" in "เตือน น้ำ
+    ท่วมด้วย") never has this shape."""
+    lowered = tail.lower()
+    if lowered in _TARGET_CLEAR_WORDS or lowered == "off":
+        return True
+    tokens = tail.split()
+    return bool(tokens) and all(_REMIND_TIME_TOKEN_SHAPE_RE.match(tok) for tok in tokens)
+
+
+def _build_remind_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "เตือน<habit>[<tail>]" (SPEC-v1.2.md §2.3's "Thai alias:
+    เตือน"), habit token built from the LIVE registry's ids/Thai labels --
+    same false-positive mitigation as `_build_target_th_set_pattern`
+    (only a message naming a habit this bot actually tracks can ever
+    match at all). Returns None if the registry has no matchable Thai/id
+    tokens (defensive; every shipped config has at least water's "น้ำ")."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    if not escaped:
+        return None
+    habit_alt = "|".join(escaped)
+    return re.compile(rf"^เตือน\s+(?P<habit>{habit_alt})(?:\s+(?P<tail>.+))?$")
+
+
+def _match_remind(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    slash_match = _REMIND_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        parts = slash_match.group("rest").strip().split(None, 1)
+        habit_token = parts[0]
+        tail = parts[1].strip() if len(parts) > 1 else None
+        # `_resolve_target_category` is a generic habit-token resolver
+        # (id / en label / th label -> id, else the raw lowercased token)
+        # despite its name -- shared verbatim with `/target` rather than
+        # duplicated here.
+        return _build_remind_command(_resolve_target_category(habit_token, registry), tail)
+
+    th_pattern = _build_remind_th_pattern(registry)
+    if th_pattern is not None:
+        th_match = th_pattern.match(stripped)
+        if th_match is not None:
+            tail_raw = th_match.group("tail")
+            tail = tail_raw.strip() if tail_raw else None
+            if tail is None or _remind_tail_has_valid_shape(tail):
+                # The habit token came straight out of the registry-built
+                # alternation above, so it is always resolvable -- the
+                # `or` fallback is defensive only, never actually hit.
+                category = _resolve_habit_token(th_match.group("habit"), registry) or th_match.group("habit").lower()
+                return _build_remind_command(category, tail)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # help / habits -- SPEC-v1.1.md §4 R-D1 (module `discoverability`). Anchored
 # to the whole stripped message, exactly the five literal strings R-D1
 # names -- no partial/prefix matching, so neither can ever fire on a real
@@ -370,6 +623,162 @@ def _match_help(stripped: str) -> bool:
 
 def _match_habits(stripped: str) -> bool:
     return _HABITS_RE.match(stripped) is not None
+
+
+# ---------------------------------------------------------------------------
+# onboarding + owner-only admin -- SPEC-v1.2.md §4 R-A1-R-A5 (module
+# `access`). English slash forms only -- SPEC-v1.2.md §2.3 gives Thai
+# aliases for `/lang`/`/quiet`/`/remind` (modules `preferences`/`schedules`)
+# but none for `/start`/`/approve`/`/block`/`/users`/`/invite`, so none are
+# added here. Each is anchored to the whole stripped message, same
+# conservatism as `/help`/`/habits` above -- none of these five literal
+# words can appear as a real habit log. `/approve`/`/block`/`/invite`
+# capture the FIRST whitespace-delimited token after the command word as
+# `target_chat` (raw, unvalidated -- `core/access.py:execute_admin` is
+# where a malformed/missing token becomes the R-A4/§3.5 usage reply, not
+# this shape-only layer); a bare `/approve` with no token still produces a
+# Command (target_chat=None), never a silent None fall-through, mirroring
+# `_match_target_slash`'s own "recognized shape -> always a Command" rule.
+# ---------------------------------------------------------------------------
+
+_START_RE = re.compile(r"^/start$", re.IGNORECASE)
+_USERS_RE = re.compile(r"^/users$", re.IGNORECASE)
+_APPROVE_RE = re.compile(r"^/approve(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_BLOCK_RE = re.compile(r"^/block(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_INVITE_RE = re.compile(r"^/invite(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+
+
+def _first_token(rest: str | None) -> str | None:
+    if rest is None:
+        return None
+    parts = rest.strip().split(None, 1)
+    return parts[0] if parts else None
+
+
+def _match_access(stripped: str) -> "Command | None":
+    if _START_RE.match(stripped):
+        return Command(kind="start")
+    if _USERS_RE.match(stripped):
+        return Command(kind="users")
+    match = _APPROVE_RE.match(stripped)
+    if match is not None:
+        return Command(kind="approve", target_chat=_first_token(match.group("rest")))
+    match = _BLOCK_RE.match(stripped)
+    if match is not None:
+        return Command(kind="block", target_chat=_first_token(match.group("rest")))
+    match = _INVITE_RE.match(stripped)
+    if match is not None:
+        return Command(kind="invite", target_chat=_first_token(match.group("rest")))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# lang / quiet -- SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`). Slash
+# forms `/lang [en|th|auto]` and `/quiet [HH:MM-HH:MM[,...]|off]` (bare, no
+# value, is a valid shape too -- `core/preferences.py`'s `execute_lang`/
+# `execute_quiet` reply with a usage message rather than this layer
+# silently returning None). The slash forms stay fully permissive (any
+# non-empty tail) -- an explicit "/" prefix is a near-zero false-positive
+# surface no normal sentence starts with, so `execute_lang`/`execute_quiet`
+# alone are trusted to validate the value.
+#
+# v1.2.0 hardening, round 1 (TEST-v1.2-preferences.md): the Thai aliases
+# `ภาษา`/`เงียบ` are ordinary Thai WORDS ("language"/"quiet") that
+# legitimately open plenty of real sentences, unlike a "/"-prefixed slash
+# command -- a mandatory single whitespace alone (the original mitigation)
+# only protects against the trigger glued to more text with NO space; it
+# does NOT protect against a legitimate space-separated continuation, e.g.
+# the standard mai-yamok reduplication "เงียบ ๆ หน่อยนะ" ("keep it down,
+# please") or a natural clause break like "ภาษา นี้ยากมาก" ("this language
+# is hard"). Fixed by requiring the Thai-alias value group to be a single
+# whitespace-free token (`\S+`, not `\S.*`) -- a multi-word continuation
+# never matches the Thai-alias regex at all -- PLUS, for the remaining
+# single-token case, a per-command plausibility check on the value.
+#
+# v1.2.0 hardening, round 2 (TEST-v1.2-preferences.md, Vera's follow-up
+# audit): round 1's plausibility check for `ภาษา` was a curated BLACKLIST
+# of common Thai discourse markers (reject the value if it contains one).
+# That structurally cannot cover every ordinary Thai word -- 6 more
+# realistic single-word messages ("ภาษา อังกฤษ"/"จีน"/"ใหม่"/"ดี"/"สวย"/
+# "อะไร", e.g. "which language?" or "[my] language [is] good") contained
+# none of the curated markers and still misfired. `ภาษา` now uses a
+# WHITELIST instead, `_LANG_TH_VALID_VALUES` -- exactly the tokens that
+# should dispatch: the valid value set SPEC-v1.2.md R-P1 defines
+# (`en`/`th`/`auto`) plus the two REVIEWED near-miss language-name
+# attempts `test_execute_lang_rejects_unsupported_codes_writes_nothing`
+# requires to still reach `execute_lang`'s `lang_usage` nudge rather than
+# vanish silently (`ไทย` -- the native Thai word for "Thai" -- and
+# `english`). Everything else, including any other Thai language name in
+# ordinary prose, now falls through to `None`. This mirrors `เงียบ`'s own
+# strategy below (`_QUIET_TH_VALUE_RE`, a shape whitelist rather than a
+# word blacklist) -- SPEC-v1.2.md §2.3's own zero-false-positive
+# discipline prioritizes precision here: the deterministic `/lang en`
+# always works regardless, and free-form NL language-switching was
+# consciously deferred along with the rest of NL phrasing (§10), so a
+# Thai word for a language name IN PROSE must not be treated as a
+# command. `เงียบ`'s check was never a blacklist (a quiet-hours value has
+# an unambiguous mechanical SHAPE -- digits/colons/hyphens/commas or the
+# literal word "off" -- a language name doesn't), so it was unaffected by
+# round 2 and needed no change.
+#
+# A tail that fails its guard falls through to `None` (the normal
+# parser), never partially committing to a `lang_usage`/`quiet_invalid_
+# window` reply. Neither the language code nor the quiet-hours windows
+# are semantically validated here (SLASH form or Thai alias alike) -- the
+# raw (lowercased) tail that DOES pass shape is carried through verbatim
+# as `Command.pref_value`; `core/preferences.py` is where semantic
+# validation, the `users` table write, and the bilingual reply happen
+# (R-T7's recognize-shape/execute split, reused verbatim by every v1.1/
+# v1.2 settings-style command above).
+# ---------------------------------------------------------------------------
+
+_LANG_SLASH_RE = re.compile(r"^/lang(?:\s+(?P<value>\S.*))?$", re.IGNORECASE)
+_LANG_TH_RE = re.compile(r"^ภาษา\s+(?P<value>\S+)$")
+_QUIET_SLASH_RE = re.compile(r"^/quiet(?:\s+(?P<value>\S.*))?$", re.IGNORECASE)
+_QUIET_TH_RE = re.compile(r"^เงียบ\s+(?P<value>\S+)$")
+
+# The ONLY values the Thai alias `ภาษา` may dispatch on (round 2 above):
+# the spec's own valid value set, plus the two reviewed near-miss names.
+# Comparison is case-insensitive (the caller lowercases first) -- matches
+# `_LANG_SLASH_RE`'s own `re.IGNORECASE`/`.lower()` posture.
+_LANG_TH_VALID_VALUES = {"en", "th", "auto", "ไทย", "english"}
+
+# A loose SHAPE check only (not full HH:MM range validation -- that stays
+# `execute_quiet`'s job via `_HHMM_RE`) so a shape-plausible but
+# out-of-range Thai-alias attempt (e.g. "เงียบ 25:99-07:00") still reaches
+# `execute_quiet`'s own `quiet_invalid_window` reply rather than silently
+# vanishing -- consistent with the slash form's own permissiveness.
+_QUIET_TH_VALUE_RE = re.compile(r"^(off|\d{1,2}:\d{2}-\d{1,2}:\d{2}(,\d{1,2}:\d{2}-\d{1,2}:\d{2})*)$", re.IGNORECASE)
+
+
+def _match_lang(stripped: str) -> "Command | None":
+    slash_match = _LANG_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        value = slash_match.group("value")
+        return Command(kind="lang", pref_value=value.strip().lower() if value else None)
+
+    th_match = _LANG_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    value = th_match.group("value").lower()
+    if value not in _LANG_TH_VALID_VALUES:
+        return None
+    return Command(kind="lang", pref_value=value)
+
+
+def _match_quiet(stripped: str) -> "Command | None":
+    slash_match = _QUIET_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        value = slash_match.group("value")
+        return Command(kind="quiet", pref_value=value.strip().lower() if value else None)
+
+    th_match = _QUIET_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    value = th_match.group("value")
+    if _QUIET_TH_VALUE_RE.match(value) is None:
+        return None
+    return Command(kind="quiet", pref_value=value.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +900,17 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     ROADMAP.md v0.9.0 / SPEC-v1.1.md §4 R-T7/R-D1: checked in order undo ->
     edit -> snooze -> target -> help -> habits -> query -> (fall through to
     the parser), matching this version's own required routing ("undo/edit ->
-    snooze -> target -> help/habits -> query -> extractor"). An edit-trigger
+    snooze -> target -> help/habits -> query -> extractor"). SPEC-v1.2.md §4
+    R-S5 (module `schedules`) inserts one more anchored, LLM-free check --
+    `remind` -- right after `target` and before `help`/`habits`: both are
+    deterministic "settings"-style slash commands with disjoint trigger
+    text (`/remind`/`เตือน` never overlaps `/target`'s own triggers or any
+    help/habits/query anchor), so exact placement relative to them doesn't
+    change behavior -- it's grouped with `target` for readability. SPEC-v1.2.md
+    §4 R-P1/R-P2 (module `preferences`) likewise inserts `lang`/`quiet`
+    (`/lang`/`ภาษา`, `/quiet`/`เงียบ`) right after `access`'s admin block and
+    before `help`/`habits` -- same disjoint-trigger reasoning, so exact
+    placement doesn't change behavior either. An edit-trigger
     phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
     immediately (pre-v0.8 behavior, unchanged) rather than also being
     offered to the snooze/target/help/habits/query matchers -- it already
@@ -518,6 +937,31 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     target_command = _match_target(stripped, registry)
     if target_command is not None:
         return target_command
+
+    remind_command = _match_remind(stripped, registry)
+    if remind_command is not None:
+        return remind_command
+
+    # SPEC-v1.2.md §4 R-A1-R-A5 (module `access`): `/start`/`/approve`/
+    # `/block`/`/users`/`/invite` -- disjoint literal trigger words from
+    # every pattern above/below, so exact placement doesn't change
+    # behavior; grouped here with the other v1.2 settings-style slash
+    # commands for readability.
+    access_command = _match_access(stripped)
+    if access_command is not None:
+        return access_command
+
+    # SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`): `/lang`/`ภาษา` and
+    # `/quiet`/`เงียบ` -- disjoint trigger text from every pattern above/
+    # below, grouped here with the other v1.2 settings-style slash commands
+    # for readability (same rationale as `remind`/`access` above).
+    lang_command = _match_lang(stripped)
+    if lang_command is not None:
+        return lang_command
+
+    quiet_command = _match_quiet(stripped)
+    if quiet_command is not None:
+        return quiet_command
 
     if _match_help(stripped):
         return Command(kind="help")

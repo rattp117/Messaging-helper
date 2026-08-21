@@ -31,10 +31,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -83,8 +83,7 @@ async def test_thai_input_produces_thai_water_confirmation(db, fixed_clock, monk
     config = Config()  # i18n.language="auto"
 
     await handle_inbound_message(
-        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
-    )
+        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     expected = i18n.t("water_confirmation", "th", water_ml=500, total=500, goal=2500, pct=20)
     assert channel.sent == [expected]
@@ -96,7 +95,7 @@ async def test_english_input_produces_english_water_confirmation(db, fixed_clock
     channel = FakeChannel()
     config = Config()
 
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     expected = i18n.t("water_confirmation", "en", water_ml=500, total=500, goal=2500, pct=20)
     assert channel.sent == [expected]
@@ -108,13 +107,12 @@ async def test_thai_and_english_input_yield_same_structured_data_different_copy(
     config = Config()
 
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     en_sent = channel.sent[-1]
 
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     await handle_inbound_message(
-        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
-    )
+        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     th_sent = channel.sent[-1]
 
     assert en_sent != th_sent  # different copy
@@ -126,8 +124,7 @@ async def test_thai_input_produces_thai_stretch_confirmation(db, fixed_clock, mo
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ยืดเส้น 10 นาที", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ยืดเส้น 10 นาที", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     expected = i18n.t("stretch_confirmation", "th", stretch_min=10, ordinal="1st", count=1)
     assert channel.sent == [expected]
@@ -138,8 +135,7 @@ async def test_thai_input_produces_thai_clarifying_question(db, fixed_clock, mon
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ช้างสีม่วงเต้นระบำ", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ช้างสีม่วงเต้นระบำ", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [i18n.t("clarifying_question", "th")]
 
@@ -154,7 +150,7 @@ async def test_forced_th_language_overrides_english_input(db, fixed_clock, monke
     channel = FakeChannel()
     config = Config.model_validate({"i18n": {"language": "th"}})
 
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     expected = i18n.t("water_confirmation", "th", water_ml=500, total=500, goal=2500, pct=20)
     assert channel.sent == [expected]
@@ -166,8 +162,7 @@ async def test_forced_en_language_overrides_thai_input(db, fixed_clock, monkeypa
     config = Config.model_validate({"i18n": {"language": "en"}})
 
     await handle_inbound_message(
-        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
-    )
+        "ดื่มน้ำ 2 แก้ว", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     expected = i18n.t("water_confirmation", "en", water_ml=500, total=500, goal=2500, pct=20)
     assert channel.sent == [expected]
@@ -179,8 +174,7 @@ async def test_forced_th_language_applies_to_clarifying_question_too(db, fixed_c
     config = Config.model_validate({"i18n": {"language": "th"}})
 
     await handle_inbound_message(
-        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
-    )
+        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [i18n.t("clarifying_question", "th")]
 
@@ -194,12 +188,11 @@ async def test_forced_th_language_applies_to_clarifying_question_too(db, fixed_c
 async def test_thai_undo_command_gets_thai_confirmation(db, fixed_clock, monkeypatch):
     from habit_assistant.storage.models import LogEntry
 
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ยกเลิกอันล่าสุด", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "ยกเลิกอันล่าสุด", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert i18n.detect_language(channel.sent[0]) == "th"
 
@@ -221,8 +214,7 @@ async def test_diary_reflection_prompt_carries_the_resolved_language_instruction
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "วันนี้เหนื่อยแต่ก็ดี", db=db, llm=RecordingLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "วันนี้เหนื่อยแต่ก็ดี", db=db, llm=RecordingLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert len(captured) == 1
     assert i18n.language_instruction("th") in captured[0]

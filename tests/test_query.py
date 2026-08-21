@@ -49,10 +49,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message) -> None:
+    async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -74,7 +74,7 @@ def fixed_clock():
 
 
 def _seed(db: Database, ts: str, category: str, value_num: float | None, habit_type: str, raw: str = "seed") -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, raw, "reply", habit_type=habit_type))
+    return db.insert_log(LogEntry(None, "owner", ts, category, value_num, None, raw, "reply", habit_type=habit_type))
 
 
 def make_llm(response_json: dict | None, *, status: int = 200) -> OllamaClient:
@@ -149,7 +149,7 @@ async def test_answer_uses_the_configured_timezone_not_utc(db, monkeypatch):
 
     llm = make_llm({"category": "water", "metric": "sum", "timeframe": "today"})
     await handle_inbound_message(
-        "how much water today?", db=db, llm=llm, channel=channel, config=config, clock=clock
+        "how much water today?", db=db, user_id="owner", llm=llm, channel=channel, config=config, clock=clock
     )
 
     assert channel.sent == ["📊 water: 500 ml today"]
@@ -177,7 +177,7 @@ async def test_ac81_how_much_water_this_week_english(db, fixed_clock):
 
     llm = make_llm({"category": "water", "metric": "sum", "timeframe": "this_week"})
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=config, clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=config, clock=fixed_clock
     )
 
     assert channel.sent == ["📊 water: 1650 ml this week"]  # 300+500+250+600, excludes the 08-12 row
@@ -198,7 +198,7 @@ async def test_ac82_weekly_stretch_count_thai(db, fixed_clock):
 
     llm = make_llm({"category": "stretch", "metric": "count", "timeframe": "this_week"})
     await handle_inbound_message(
-        "อาทิตย์นี้ยืดกี่ครั้ง", db=db, llm=llm, channel=channel, config=config, clock=fixed_clock
+        "อาทิตย์นี้ยืดกี่ครั้ง", db=db, user_id="owner", llm=llm, channel=channel, config=config, clock=fixed_clock
     )
 
     # 3 sessions, 30 minutes total (10+15+5) -- the 08-11 row excluded.
@@ -216,7 +216,7 @@ async def test_ac84_llm_says_unknown_category_yields_cant_answer(db, fixed_clock
     llm = make_llm({"category": "unknown", "metric": "count", "timeframe": "today"})
 
     await handle_inbound_message(
-        "what's the meaning of life?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "what's the meaning of life?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [
@@ -235,7 +235,7 @@ async def test_ac84_llm_names_an_unconfigured_habit_yields_cant_answer(db, fixed
     llm = make_llm({"category": "sleep", "metric": "sum", "timeframe": "today"})
 
     await handle_inbound_message(
-        "how much sleep did I get?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much sleep did I get?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [
@@ -254,7 +254,7 @@ async def test_ac84_malformed_json_yields_cant_answer_not_a_crash(db, fixed_cloc
     )
 
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [
@@ -267,7 +267,7 @@ async def test_ac84_ollama_unreachable_yields_cant_answer_not_a_crash(db, fixed_
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [
@@ -283,7 +283,7 @@ async def test_ac84_invalid_metric_or_timeframe_from_llm_fails_closed(db, fixed_
     llm = make_llm({"category": "water", "metric": "average", "timeframe": "this_week"})
 
     await handle_inbound_message(
-        "how much water on average?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water on average?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [
@@ -323,7 +323,7 @@ async def test_ac85_successful_query_writes_no_row(db, fixed_clock):
 
     llm = make_llm({"category": "water", "metric": "sum", "timeframe": "today"})
     await handle_inbound_message(
-        "how much water today?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how much water today?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert _raw_row_count(db) == before
@@ -336,7 +336,7 @@ async def test_ac85_failed_query_also_writes_no_row(db, fixed_clock):
 
     llm = make_llm({"category": "unknown", "metric": "count", "timeframe": "today"})
     await handle_inbound_message(
-        "what's the meaning of life?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "what's the meaning of life?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert _raw_row_count(db) == before
@@ -350,7 +350,7 @@ async def test_ac85_repeated_queries_never_accumulate_rows(db, fixed_clock):
     llm = make_llm({"category": "water", "metric": "sum", "timeframe": "this_week"})
     for _ in range(5):
         await handle_inbound_message(
-            "how much water this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+            "how much water this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
         )
 
     assert _raw_row_count(db) == before
@@ -370,7 +370,7 @@ async def test_numeric_count_metric_reports_log_count_not_sum(db, fixed_clock):
 
     llm = make_llm({"category": "water", "metric": "count", "timeframe": "today"})
     await handle_inbound_message(
-        "how many times did I log water today?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how many times did I log water today?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == ["📊 water: logged 2 time(s) today"]
@@ -398,7 +398,7 @@ async def test_boolean_habit_reports_done_days_not_raw_row_count(db, fixed_clock
     llm = make_llm({"category": "meds", "metric": "count", "timeframe": "this_week"})
     await handle_inbound_message(
         "did I take my meds this week?",
-        db=db,
+        db=db, user_id="owner",
         llm=llm,
         channel=channel,
         config=config,
@@ -411,12 +411,12 @@ async def test_boolean_habit_reports_done_days_not_raw_row_count(db, fixed_clock
 
 async def test_text_habit_reports_entry_count(db, fixed_clock):
     channel = FakeChannel()
-    db.insert_log(LogEntry(None, "2026-08-19T21:00:00", "diary", None, "good day", "good day", "reply", habit_type="text"))
-    db.insert_log(LogEntry(None, "2026-08-18T21:00:00", "diary", None, "ok day", "ok day", "reply", habit_type="text"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T21:00:00", "diary", None, "good day", "good day", "reply", habit_type="text"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-18T21:00:00", "diary", None, "ok day", "ok day", "reply", habit_type="text"))
 
     llm = make_llm({"category": "diary", "metric": "count", "timeframe": "this_week"})
     await handle_inbound_message(
-        "how many diary entries this week?", db=db, llm=llm, channel=channel, config=Config(), clock=fixed_clock
+        "how many diary entries this week?", db=db, user_id="owner", llm=llm, channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == ["📊 diary: 2 entry(ies) this week"]
@@ -454,7 +454,7 @@ async def test_answer_question_direct_call_end_to_end(db, fixed_clock):
 
     answer = await answer_question(
         "how many times did I stretch today?",
-        db=db,
+        db=db, user_id="owner",
         llm=llm,
         registry=DEFAULT_REGISTRY,
         config=Config(),

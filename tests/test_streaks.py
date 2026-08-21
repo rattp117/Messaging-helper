@@ -50,8 +50,11 @@ from habit_assistant.storage.models import LogEntry
 # ---------------------------------------------------------------------------
 
 
-def _seed(db: Database, ts: str, category: str, value_num: float | None, raw: str = "x") -> int:
-    entry = LogEntry(None, ts, category, value_num, None, raw, "reply")
+OWNER = "owner"
+
+
+def _seed(db: Database, ts: str, category: str, value_num: float | None, raw: str = "x", user_id: str = OWNER) -> int:
+    entry = LogEntry(None, user_id, ts, category, value_num, None, raw, "reply")
     return db.insert_log(entry)
 
 
@@ -75,10 +78,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -117,6 +120,7 @@ class _StepClock:
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -132,7 +136,7 @@ def test_goal_habit_day_exactly_at_goal_qualifies(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "juice", 1000.0)
 
-    assert streaks.day_qualifies(db, config, juice, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, juice, "2026-08-19", OWNER) is True
 
 
 def test_goal_habit_day_just_below_goal_does_not_qualify(db):
@@ -140,7 +144,7 @@ def test_goal_habit_day_just_below_goal_does_not_qualify(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "juice", 999.99)
 
-    assert streaks.day_qualifies(db, config, juice, "2026-08-19") is False
+    assert streaks.day_qualifies(db, config, juice, "2026-08-19", OWNER) is False
 
 
 def test_goal_habit_day_above_goal_qualifies(db):
@@ -148,7 +152,7 @@ def test_goal_habit_day_above_goal_qualifies(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "juice", 1500.0)
 
-    assert streaks.day_qualifies(db, config, juice, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, juice, "2026-08-19", OWNER) is True
 
 
 def test_nongoal_numeric_any_entry_qualifies_regardless_of_size(db):
@@ -156,7 +160,7 @@ def test_nongoal_numeric_any_entry_qualifies_regardless_of_size(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "steps", 1.0)  # tiny value, still "an entry"
 
-    assert streaks.day_qualifies(db, config, steps, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, steps, "2026-08-19", OWNER) is True
 
 
 def test_boolean_only_truthy_entry_counts_as_a_done_day(db):
@@ -164,11 +168,11 @@ def test_boolean_only_truthy_entry_counts_as_a_done_day(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "meds", 0.0)  # falsy -- "took no meds"
 
-    assert streaks.day_qualifies(db, config, meds, "2026-08-19") is False
+    assert streaks.day_qualifies(db, config, meds, "2026-08-19", OWNER) is False
 
     _seed(db, "2026-08-19T10:00:00", "meds", 1.0)  # truthy
 
-    assert streaks.day_qualifies(db, config, meds, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, meds, "2026-08-19", OWNER) is True
 
 
 def test_duration_any_entry_qualifies(db):
@@ -176,7 +180,7 @@ def test_duration_any_entry_qualifies(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "yoga", 10.0)
 
-    assert streaks.day_qualifies(db, config, yoga, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, yoga, "2026-08-19", OWNER) is True
 
 
 def test_text_type_any_entry_qualifies(db):
@@ -184,7 +188,7 @@ def test_text_type_any_entry_qualifies(db):
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "journal", None)
 
-    assert streaks.day_qualifies(db, config, journal, "2026-08-19") is True
+    assert streaks.day_qualifies(db, config, journal, "2026-08-19", OWNER) is True
 
 
 @pytest.mark.parametrize(
@@ -212,7 +216,7 @@ def test_compute_streak_gap_resets_across_all_habit_types(db, type_, goal, seed_
         d = end_date - timedelta(days=offset)
         _seed(db, f"{d.isoformat()}T09:00:00", "h", seed_value)
 
-    assert streaks.compute_streak(db, config, habit, end_date) == 3
+    assert streaks.compute_streak(db, config, habit, end_date, OWNER) == 3
 
 
 def test_goal_habit_partial_today_does_not_qualify_but_past_run_is_preserved(db):
@@ -235,8 +239,8 @@ def test_goal_habit_partial_today_does_not_qualify_but_past_run_is_preserved(db)
         _seed(db, f"{d.isoformat()}T09:00:00", "juice", 1000.0)
     _seed(db, f"{today.isoformat()}T09:00:00", "juice", 500.0)  # today: partial, below goal
 
-    assert streaks.compute_streak(db, config, juice, today) == 0
-    assert streaks.compute_streak(db, config, juice, yesterday) == 3
+    assert streaks.compute_streak(db, config, juice, today, OWNER) == 0
+    assert streaks.compute_streak(db, config, juice, yesterday, OWNER) == 3
 
 
 def test_nongoal_habit_partial_today_entry_still_qualifies(db):
@@ -251,7 +255,7 @@ def test_nongoal_habit_partial_today_entry_still_qualifies(db):
         _seed(db, f"{d.isoformat()}T09:00:00", "steps", 8000.0)
     _seed(db, f"{today.isoformat()}T23:50:00", "steps", 1.0)  # tiny, but present
 
-    assert streaks.compute_streak(db, config, steps, today) == 3
+    assert streaks.compute_streak(db, config, steps, today, OWNER) == 3
 
 
 def test_duration_multiple_sessions_same_day_counts_as_one_streak_day(db):
@@ -261,7 +265,7 @@ def test_duration_multiple_sessions_same_day_counts_as_one_streak_day(db):
     _seed(db, f"{end_date.isoformat()}T09:00:00", "yoga", 10.0)
     _seed(db, f"{end_date.isoformat()}T18:00:00", "yoga", 15.0)
 
-    assert streaks.compute_streak(db, config, yoga, end_date) == 1
+    assert streaks.compute_streak(db, config, yoga, end_date, OWNER) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +299,7 @@ async def test_milestone_crossing_sequence_3_then_no_repeat_then_7(db, monkeypat
     clock.set(datetime(2026, 8, 19, 9, 0, 0))
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
     expected = _water_confirmation("en", water_ml=2500, total=2500) + "\n\n" + _milestone_line("en", 3, "water")
     assert channel.sent[-1] == expected
@@ -304,7 +308,7 @@ async def test_milestone_crossing_sequence_3_then_no_repeat_then_7(db, monkeypat
     # it cannot flip day_qualifies again -- no milestone line, not repeated.
     patch_parse_message(monkeypatch, ExtractionResult("water", 100, 0.9))
     await handle_inbound_message(
-        "100ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "100ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
     assert "🔥" not in channel.sent[-1]
     assert channel.sent[-1] == _water_confirmation("en", water_ml=100, total=2600)
@@ -317,7 +321,7 @@ async def test_milestone_crossing_sequence_3_then_no_repeat_then_7(db, monkeypat
     clock.set(datetime(2026, 8, 23, 9, 0, 0))
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
     expected7 = _water_confirmation("en", water_ml=2500, total=2500) + "\n\n" + _milestone_line("en", 7, "water")
     assert channel.sent[-1] == expected7
@@ -338,10 +342,10 @@ async def test_streak_reaching_a_non_milestone_number_produces_no_line(db, monke
     clock.set(datetime(2026, 8, 20, 9, 0, 0))  # day 4 -> streak becomes 4, not a milestone
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
 
-    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 20)) == 4
+    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 20), OWNER) == 4
     assert "🔥" not in channel.sent[-1]
     assert channel.sent[-1] == _water_confirmation("en", water_ml=2500, total=2500)
 
@@ -361,7 +365,7 @@ async def test_milestone_line_is_thai_for_thai_input(db, monkeypatch):
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
 
     await handle_inbound_message(
-        "ดื่มน้ำ 2500 มล", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "ดื่มน้ำ 2500 มล", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
 
     expected = _water_confirmation("th", water_ml=2500, total=2500) + "\n\n" + _milestone_line("th", 3, "น้ำ")
@@ -383,10 +387,10 @@ def test_run_daily_summary_content_default_thai(db):
     _seed(db, f"{today.isoformat()}T11:00:00", "stretch", 10.0)  # duration, 2 sessions
     _seed(db, f"{today.isoformat()}T16:00:00", "stretch", 15.0)
     db.insert_log(
-        LogEntry(None, f"{today.isoformat()}T21:00:00", "diary", None, "good day", "good day", "reply")
+        LogEntry(None, OWNER, f"{today.isoformat()}T21:00:00", "diary", None, "good day", "good day", "reply")
     )  # text, 1 entry
 
-    text = streaks.run_daily_summary(db, config, registry, today=today)
+    text = streaks.run_daily_summary(db, config, registry, "th", OWNER, today=today)
     lines = text.splitlines()
 
     assert lines[0] == i18n.t("daily_summary_header", "th")
@@ -404,7 +408,7 @@ def test_run_daily_summary_respects_forced_language_english(tmp_path):
     today = date(2026, 8, 19)
     _seed(db, f"{today.isoformat()}T09:00:00", "water", 2500.0)
 
-    text = streaks.run_daily_summary(db, config, registry, today=today)
+    text = streaks.run_daily_summary(db, config, registry, "en", OWNER, today=today)
 
     assert text.splitlines()[0] == i18n.t("daily_summary_header", "en")
     assert i18n.t(
@@ -423,7 +427,7 @@ def test_daily_summary_includes_every_registered_habit_even_with_zero_entries(db
     _seed(db, f"{today.isoformat()}T09:00:00", "water", 500.0)
     # stretch and diary: zero entries today.
 
-    text = streaks.run_daily_summary(db, config, registry, today=today)
+    text = streaks.run_daily_summary(db, config, registry, "th", OWNER, today=today)
 
     assert i18n.t("daily_summary_duration_nogoal", "th", label="ยืดเส้น", total=0, streak=0) in text
     assert i18n.t("daily_summary_text", "th", label="ไดอารี่", total=0, streak=0) in text
@@ -443,7 +447,7 @@ class _FakeScheduler:
         self.jobs: dict[str, object] = {}
         _FakeScheduler.last_instance = self
 
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
         self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
 
     def start(self):
@@ -478,10 +482,10 @@ class _FakeTelegramChannel:
         self.sent: list[str] = []
         _FakeTelegramChannel.last_instance = self
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         self.sent.append(text)
 
     async def set_my_commands(self, commands) -> None:
@@ -574,6 +578,15 @@ async def test_daily_summary_job_suppressed_during_quiet_hours(tmp_path, monkeyp
 
 async def test_daily_summary_job_sends_when_not_quiet_hours(tmp_path, monkeypatch):
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})  # windows=[] by default
+    # SPEC-v1.2.md R-S3: daily_summary_job now skips a user with no logs
+    # today (per-user fan-out gate) -- seed one for "fake" (the mocked
+    # load_secrets().telegram_chat_id below, which async_main's own
+    # attribute_legacy_to_owner call registers as the active owner) before
+    # async_main reopens this same on-disk path, so the fan-out has
+    # something to find.
+    seed_db = Database(tmp_path / "habits.db")
+    _seed(seed_db, f"{date.today().isoformat()}T09:00:00", "water", 500.0, user_id="fake")
+    seed_db.close()
     main_module = _run_async_main_and_capture_scheduler(monkeypatch, config, tmp_path, invoke_daily_summary_job=True)
     _freeze_reminders_clock(monkeypatch, 12, 0)  # broad daylight, no windows configured anyway
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -610,13 +623,13 @@ async def test_gamification_disabled_suppresses_milestone_lines(db, monkeypatch)
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
 
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
 
     # The underlying streak DID reach a milestone (3) -- streak math itself
     # is never gated by `enabled` (AC10.5) -- but the confirmation carries
     # no milestone line because gamification is disabled.
-    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 19)) == 3
+    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 19), OWNER) == 3
     assert "🔥" not in channel.sent[-1]
     assert channel.sent[-1] == _water_confirmation("en", water_ml=2500, total=2500)
 
@@ -629,7 +642,7 @@ def test_gamification_disabled_does_not_affect_daily_summary_content(db):
     today = date(2026, 8, 19)
     _seed(db, f"{today.isoformat()}T09:00:00", "water", 2500.0)
 
-    text = streaks.run_daily_summary(db, config, registry, today=today)
+    text = streaks.run_daily_summary(db, config, registry, "th", OWNER, today=today)
 
     assert i18n.t("daily_summary_header", "th") in text
     assert "น้ำ" in text
@@ -662,7 +675,7 @@ async def test_milestones_still_fire_when_daily_summary_disabled(db, monkeypatch
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
 
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry
+        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=clock, registry=registry, user_id=OWNER
     )
 
     assert "🔥" in channel.sent[-1]
@@ -693,9 +706,9 @@ def test_review_and_streaks_module_agree_on_duration_streak_length(tmp_path, str
         d = end_date - timedelta(days=offset)
         _seed(db, f"{d.isoformat()}T09:00:00", "yoga", 10.0)
 
-    review_streak = compute_weekly_stats(db, config, registry, end_date).get("yoga").streak
-    direct_streak = streaks.compute_streak(db, config, yoga, end_date)
-    summary_streak = streaks.compute_daily_summary(db, config, registry, end_date)[0].streak
+    review_streak = compute_weekly_stats(db, config, registry, end_date, OWNER).get("yoga").streak
+    direct_streak = streaks.compute_streak(db, config, yoga, end_date, OWNER)
+    summary_streak = streaks.compute_daily_summary(db, config, registry, end_date, OWNER)[0].streak
 
     assert review_streak == direct_streak == summary_streak == streak_len
     db.close()
@@ -733,15 +746,15 @@ def test_streaks_module_is_provably_read_only(tmp_path):
 
     # Every public entry point in core/streaks.py, exercised against a DB
     # whose write methods would raise if called.
-    streaks.day_qualifies(guarded, config, water, today.isoformat())
-    streaks.compute_streak(guarded, config, water, today)
-    streaks.crossed_milestone(guarded, config, water, today, was_qualified_before=False)
-    streaks.compute_daily_summary(guarded, config, registry, today)
-    streaks.run_daily_summary(guarded, config, registry, today=today)
+    streaks.day_qualifies(guarded, config, water, today.isoformat(), OWNER)
+    streaks.compute_streak(guarded, config, water, today, OWNER)
+    streaks.crossed_milestone(guarded, config, water, today, was_qualified_before=False, user_id=OWNER)
+    streaks.compute_daily_summary(guarded, config, registry, today, OWNER)
+    streaks.run_daily_summary(guarded, config, registry, "en", OWNER, today=today)
     # Bonus: core/review.py's refactored duration branch also goes through
     # streaks.compute_streak -- confirm the whole review path stays
     # read-only too, now that it shares the function.
-    compute_weekly_stats(guarded, config, registry, today)
+    compute_weekly_stats(guarded, config, registry, today, OWNER)
 
     guarded.close()  # reached only if nothing above raised
 
@@ -781,10 +794,10 @@ def test_duration_streak_matches_v090_algorithm_when_streak_fits_in_7day_window(
         _seed(db, f"{d.isoformat()}T09:00:00", "yoga", 10.0)
 
     day_strs = [(end_date - timedelta(days=o)).isoformat() for o in range(6, -1, -1)]
-    counts = [db.count("yoga", d) for d in day_strs]
+    counts = [db.count(OWNER, "yoga", d) for d in day_strs]
     old_streak = _old_v09_duration_streak(counts)
 
-    new_streak = compute_weekly_stats(db, config, registry, end_date).get("yoga").streak
+    new_streak = compute_weekly_stats(db, config, registry, end_date, OWNER).get("yoga").streak
 
     assert old_streak == 3
     assert new_streak == old_streak
@@ -803,10 +816,10 @@ def test_duration_streak_beyond_7_days_is_a_documented_bugfix_not_a_regression(t
         _seed(db, f"{d.isoformat()}T09:00:00", "yoga", 10.0)
 
     day_strs = [(end_date - timedelta(days=o)).isoformat() for o in range(6, -1, -1)]
-    counts = [db.count("yoga", d) for d in day_strs]
+    counts = [db.count(OWNER, "yoga", d) for d in day_strs]
     old_streak = _old_v09_duration_streak(counts)  # clamped: all 7 window days active -> 7
 
-    new_streak = compute_weekly_stats(db, config, registry, end_date).get("yoga").streak
+    new_streak = compute_weekly_stats(db, config, registry, end_date, OWNER).get("yoga").streak
 
     assert old_streak == 7
     assert new_streak == 10  # true length, strictly more than the old clamp -- not a regression
@@ -832,7 +845,7 @@ async def test_reparse_pending_unparsed_does_not_check_milestones(db, monkeypatc
     # A row deferred while Ollama was down, as if by AC3.3's mechanism --
     # recovering it would be water's 3rd consecutive goal-met day, a
     # milestone crossing on the LIVE path.
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "2500ml", "reply"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-19T09:00:00", "unparsed", None, None, "2500ml", "reply"))
 
     patch_parse_message(monkeypatch, ExtractionResult("water", 2500, 0.9))
 
@@ -844,11 +857,11 @@ async def test_reparse_pending_unparsed_does_not_check_milestones(db, monkeypatc
     # reclassified despite the missing milestone check.
     assert channel.sent == [i18n.t("recovered_water", "en", water_ml=2500)]
     assert "🔥" not in channel.sent[0]
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between(OWNER, "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows[0]["category"] == "water"
     assert rows[0]["value_num"] == 2500.0
 
     # The streak itself was genuinely reached -- confirming the omission is
     # purely cosmetic (no in-the-moment line), not a data-correctness bug:
     # the next weekly review/daily summary will still report streak 3.
-    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 19)) == 3
+    assert streaks.compute_streak(db, config, registry.get("water"), date(2026, 8, 19), OWNER) == 3

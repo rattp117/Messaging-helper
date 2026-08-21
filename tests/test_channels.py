@@ -45,7 +45,7 @@ def test_telegram_channel_is_a_channel():
 def test_build_send_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
-    url, payload = channel.build_send_request("hello world")
+    url, payload = channel.build_send_request("999", "hello world")
 
     assert url == "https://api.telegram.org/bot123456:ABC-fake/sendMessage"
     assert payload == {"chat_id": "999", "text": "hello world"}
@@ -62,7 +62,7 @@ async def test_send_posts_to_send_message_endpoint_with_mocked_transport():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("123456:ABC-fake", "999", client=client)
 
-    await channel.send("✅ 500 ml logged")
+    await channel.send("999", "✅ 500 ml logged")
 
     assert len(captured) == 1
     assert captured[0].url.path == "/bot123456:ABC-fake/sendMessage"
@@ -78,7 +78,7 @@ async def test_send_raises_on_http_error_status():
     channel = TelegramChannel("bad-token", "999", client=client)
 
     with pytest.raises(httpx.HTTPStatusError):
-        await channel.send("hi")
+        await channel.send("999", "hi")
     await channel.aclose()
 
 
@@ -124,7 +124,7 @@ async def test_run_calls_on_message_for_each_inbound_text_and_advances_offset():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("token", "chat", client=client)
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         calls.append(text)
 
     with pytest.raises(StopPolling):
@@ -153,7 +153,7 @@ async def test_run_skips_updates_without_message_text():
 
     calls: list[str] = []
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         calls.append(text)
 
     with pytest.raises(StopPolling):
@@ -184,7 +184,7 @@ async def test_run_on_message_exception_does_not_crash_the_loop():
 
     calls: list[str] = []
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         calls.append(text)
         if text == "boom":
             raise RuntimeError("handler blew up")
@@ -252,16 +252,16 @@ class _BareChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message):
+    async def run(self, on_message, on_callback=None):
         raise NotImplementedError("not exercised in these tests")
 
 
 async def test_send_actionable_default_degrades_to_plain_send():
     channel = _BareChannel()
-    await channel.send_actionable("hello", [("↩️ Undo", "undo:1")])
+    await channel.send_actionable("chat1", "hello", [("↩️ Undo", "undo:1")])
     assert channel.sent == ["hello"]
 
 
@@ -287,10 +287,10 @@ async def test_line_channel_run_stub_accepts_on_callback_kwarg():
 
     instance = object.__new__(LineChannel)
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
-    async def on_callback(data: str, source_text: str, cb_id: str) -> None:
+    async def on_callback(chat_id: str, data: str, source_text: str, cb_id: str) -> None:
         pass
 
     with pytest.raises(NotImplementedError):
@@ -306,7 +306,7 @@ async def test_line_channel_run_stub_accepts_on_callback_kwarg():
 def test_build_send_actionable_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
-    url, payload = channel.build_send_actionable_request("500ml logged", [("↩️ Undo", "undo:42")])
+    url, payload = channel.build_send_actionable_request("999", "500ml logged", [("↩️ Undo", "undo:42")])
 
     assert url == "https://api.telegram.org/bot123456:ABC-fake/sendMessage"
     assert payload["chat_id"] == "999"
@@ -327,7 +327,7 @@ async def test_send_actionable_posts_with_reply_markup():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("123456:ABC-fake", "999", client=client)
 
-    await channel.send_actionable("500ml logged", [("↩️ Undo", "undo:42")])
+    await channel.send_actionable("999", "500ml logged", [("↩️ Undo", "undo:42")])
 
     assert len(captured) == 1
     body = json.loads(captured[0].content)
@@ -436,18 +436,18 @@ async def test_run_routes_callback_query_to_on_callback_and_answers_it():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("token", "chat", client=client)
 
-    callback_calls: list[tuple[str, str, str]] = []
+    callback_calls: list[tuple[str, str, str, str]] = []
 
-    async def on_callback(data: str, source_text: str, cb_id: str) -> None:
-        callback_calls.append((data, source_text, cb_id))
+    async def on_callback(chat_id: str, data: str, source_text: str, cb_id: str) -> None:
+        callback_calls.append((chat_id, data, source_text, cb_id))
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         raise AssertionError("on_message must not be called for a callback_query update")
 
     with pytest.raises(StopPolling):
         await channel.run(on_message, on_callback=on_callback)
 
-    assert callback_calls == [("undo:1234", "✅ 500 ml logged", "cbid-1")]
+    assert callback_calls == [("", "undo:1234", "✅ 500 ml logged", "cbid-1")]
     assert channel._offset == 11
     assert len(posts) == 1  # exactly one answerCallbackQuery call
     assert posts[0].url.path.endswith("/answerCallbackQuery")
@@ -485,10 +485,10 @@ async def test_run_answers_callback_query_even_when_on_callback_raises():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("token", "chat", client=client)
 
-    async def on_callback(data: str, source_text: str, cb_id: str) -> None:
+    async def on_callback(chat_id: str, data: str, source_text: str, cb_id: str) -> None:
         raise RuntimeError("boom")
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     with pytest.raises(StopPolling):
@@ -523,7 +523,7 @@ async def test_run_answers_callback_query_even_when_on_callback_is_none():
     client = httpx.AsyncClient(transport=transport)
     channel = TelegramChannel("token", "chat", client=client)
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     with pytest.raises(StopPolling):
@@ -559,10 +559,10 @@ async def test_run_offset_advances_past_a_mix_of_messages_and_callbacks():
 
     messages: list[str] = []
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         messages.append(text)
 
-    async def on_callback(data: str, source_text: str, cb_id: str) -> None:
+    async def on_callback(chat_id: str, data: str, source_text: str, cb_id: str) -> None:
         pass
 
     with pytest.raises(StopPolling):

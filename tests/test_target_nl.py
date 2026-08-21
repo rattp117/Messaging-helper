@@ -42,6 +42,7 @@ from habit_assistant.llm.prompts import build_target_intent_system_prompt, build
 from habit_assistant.storage.db import Database
 
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
+OWNER = "owner"
 
 
 @pytest.fixture
@@ -123,10 +124,10 @@ async def test_ac29_end_to_end_through_execute_target_sets_the_db_override(db, c
     assert intent is not None
 
     command = Command(kind="target", category=intent.habit_id, value_num=intent.goal_base_unit, target_action="set")
-    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en")
+    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
 
-    assert db.get_target("water") == 2500.0
-    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config) == 2500.0
+    assert db.get_target(OWNER, "water") == 2500.0
+    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config, OWNER) == 2500.0
     assert "2500" in reply
 
 
@@ -146,9 +147,9 @@ async def test_ac30_end_to_end_sets_water_target_no_log(db, config):
     intent = await classify_target_intent("ต่อไปอยากดื่มน้ำวันละ 2.5 ลิตร", llm, DEFAULT_REGISTRY, config)
     command = Command(kind="target", category=intent.habit_id, value_num=intent.goal_base_unit, target_action="set")
 
-    await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="th")
+    await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="th", user_id=OWNER)
 
-    assert db.get_target("water") == 2500.0
+    assert db.get_target(OWNER, "water") == 2500.0
     assert db._conn.execute("SELECT COUNT(*) AS n FROM logs").fetchone()["n"] == 0  # no log row from this path
 
 
@@ -163,7 +164,7 @@ async def test_ac30_end_to_end_sets_water_target_no_log(db, config):
 
 async def test_ac31_stretch_goalless_habit_gets_a_goal_from_nl_intent(db, config):
     stretch = DEFAULT_REGISTRY.get("stretch")
-    assert effective_goal(db, stretch, config) is None  # no config goal, no override yet
+    assert effective_goal(db, stretch, config, OWNER) is None  # no config goal, no override yet
 
     llm = make_llm({"category": "stretch", "goal": 20, "confidence": 0.9})
     intent = await classify_target_intent(
@@ -172,13 +173,13 @@ async def test_ac31_stretch_goalless_habit_gets_a_goal_from_nl_intent(db, config
     assert intent == TargetIntent(habit_id="stretch", goal_base_unit=20.0)
 
     command = Command(kind="target", category=intent.habit_id, value_num=intent.goal_base_unit, target_action="set")
-    await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en")
+    await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
 
-    assert effective_goal(db, stretch, config) == 20.0
+    assert effective_goal(db, stretch, config, OWNER) == 20.0
 
     # Clearing reverts to "no goal" (R-T5b's own reversibility clause).
-    db.clear_target("stretch")
-    assert effective_goal(db, stretch, config) is None
+    db.clear_target(OWNER, "stretch")
+    assert effective_goal(db, stretch, config, OWNER) is None
 
 
 # ===========================================================================
@@ -193,7 +194,7 @@ async def test_ac32_a_log_classified_as_unknown_returns_none(db, config):
     intent = await classify_target_intent("I drank 2.5L", llm, DEFAULT_REGISTRY, config)
 
     assert intent is None
-    assert db.all_targets() == {}  # nothing was ever written -- caller never calls execute_target on None
+    assert db.all_targets(OWNER) == {}  # nothing was ever written -- caller never calls execute_target on None
 
 
 async def test_ac32_low_confidence_valid_shaped_response_still_returns_none(config):

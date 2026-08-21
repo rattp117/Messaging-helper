@@ -137,19 +137,20 @@ def test_log_entry_from_result_numeric_sets_value_num():
     habit = _habit("numeric", goal=8)
     result = ExtractionResult("test_habit", 7, 0.9)
 
-    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "7h", "reply")
+    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "7h", "reply", "owner")
 
     assert entry.category == "test_habit"
     assert entry.habit_type == "numeric"
     assert entry.value_num == 7.0
     assert entry.value_text is None
+    assert entry.user_id == "owner"
 
 
 def test_log_entry_from_result_duration_sets_value_num():
     habit = _habit("duration")
     result = ExtractionResult("test_habit", 15, 0.9)
 
-    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "15 min", "reply")
+    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "15 min", "reply", "owner")
 
     assert entry.habit_type == "duration"
     assert entry.value_num == 15.0
@@ -160,7 +161,7 @@ def test_log_entry_from_result_text_sets_value_text():
     habit = _habit("text")
     result = ExtractionResult("test_habit", "a note", 0.9)
 
-    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "a note", "reply")
+    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "a note", "reply", "owner")
 
     assert entry.habit_type == "text"
     assert entry.value_num is None
@@ -171,7 +172,7 @@ def test_log_entry_from_result_boolean_true_sets_value_num_one():
     habit = _habit("boolean")
     result = ExtractionResult("test_habit", True, 0.9)
 
-    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "took meds", "reply")
+    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "took meds", "reply", "owner")
 
     assert entry.habit_type == "boolean"
     assert entry.value_num == 1.0
@@ -182,6 +183,6 @@ def test_log_entry_from_result_boolean_false_sets_value_num_zero():
     habit = _habit("boolean")
     result = ExtractionResult("test_habit", False, 0.9)
 
-    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "no meds yet", "reply")
+    entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "no meds yet", "reply", "owner")
 
     assert entry.value_num == 0.0

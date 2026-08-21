@@ -77,6 +77,15 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     else:
         lines.append(i18n.t("help_quiet_hours_off", lang))
 
+    # Integration step (IMPL-v1.2-preferences.md's own documented "Known
+    # limitations" #3): the three per-user settings commands, added after
+    # this module itself landed. Unconditional (unlike the two branches
+    # just above, which reflect a live config value) -- every user can
+    # always run all three regardless of the global config's own defaults.
+    lines.append(i18n.t("help_lang", lang))
+    lines.append(i18n.t("help_quiet_cmd", lang))
+    lines.append(i18n.t("help_remind_cmd", lang))
+
     return "\n\n".join(lines)
 
 
@@ -85,51 +94,57 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _goal_phrase(db: "Database", config: "Config", habit, lang: i18n.Language) -> str:
+def _goal_phrase(db: "Database", config: "Config", habit, lang: i18n.Language, user_id: str) -> str:
     """AC38: the goal shown comes from `targets.effective_goal`; the mark
     ("your target" vs. "default" vs. "no goal") comes from whether
-    `db.get_target(habit.id)` is set -- two independent reads, exactly as
-    R-D3 specifies, not inferred from one another."""
-    goal = targets.effective_goal(db, habit, config)
+    `db.get_target(user_id, habit.id)` is set -- two independent reads,
+    exactly as R-D3 specifies, not inferred from one another. SPEC-v1.2.md
+    R-D3: both scoped to `user_id`."""
+    goal = targets.effective_goal(db, habit, config, user_id)
     if goal is None:
         return i18n.t("habits_overview_goal_none", lang)
     unit = habit.unit(lang) or ""
-    msg_id = "habits_overview_goal_target" if db.get_target(habit.id) is not None else "habits_overview_goal_default"
+    msg_id = (
+        "habits_overview_goal_target" if db.get_target(user_id, habit.id) is not None else "habits_overview_goal_default"
+    )
     return i18n.t(msg_id, lang, goal=goal, unit=unit)
 
 
-def _today_phrase(db: "Database", habit, today_str: str, lang: i18n.Language) -> str:
-    """AC39: today's total -- `db.sum_value` for numeric/duration (a
-    quantity, "today 500 ml"), `db.count_true` for boolean, `db.count` for
-    text (both a plain count, "today 2 time(s)"), per R-D3."""
+def _today_phrase(db: "Database", habit, today_str: str, lang: i18n.Language, user_id: str) -> str:
+    """AC39: today's total for `user_id` -- `db.sum_value` for
+    numeric/duration (a quantity, "today 500 ml"), `db.count_true` for
+    boolean, `db.count` for text (both a plain count, "today 2 time(s)"),
+    per R-D3."""
     if habit.type in ("numeric", "duration"):
-        total = db.sum_value(habit.id, today_str)
+        total = db.sum_value(user_id, habit.id, today_str)
         unit = habit.unit(lang) or ""
         return i18n.t("habits_overview_today_quantity", lang, total=total, unit=unit)
     if habit.type == "boolean":
-        total = db.count_true(habit.id, today_str)
+        total = db.count_true(user_id, habit.id, today_str)
     else:  # text
-        total = db.count(habit.id, today_str)
+        total = db.count(user_id, habit.id, today_str)
     return i18n.t("habits_overview_today_count", lang, total=total)
 
 
 def build_habits_overview(
-    db: "Database", config: "Config", registry: "HabitRegistry", clock, lang: i18n.Language
+    db: "Database", config: "Config", registry: "HabitRegistry", clock, lang: i18n.Language, user_id: str
 ) -> str:
-    """One line per registered habit, in registry order (AC37): bilingual
-    label, kind + unit, effective goal (marked user-target/default/no-goal,
-    AC38), and today's total (AC39). `clock` (not a bare `datetime.now()`
-    call) matches every other testable "what day is it" call site in this
-    codebase (`main.py`'s own `_execute_undo`/`_execute_edit`/
-    `handle_inbound_message`, `core/undo_ui.py`'s `send_undo_confirmation`)
-    -- `config.app.timezone` correctness is the caller's responsibility via
-    what it passes as `clock`, exactly as for those existing call sites."""
+    """One line per registered habit, in registry order (AC37), for
+    `user_id`: bilingual label, kind + unit, effective goal (marked
+    user-target/default/no-goal, AC38), and today's total (AC39). `clock`
+    (not a bare `datetime.now()` call) matches every other testable "what
+    day is it" call site in this codebase (`main.py`'s own
+    `_execute_undo`/`_execute_edit`/`handle_inbound_message`,
+    `core/undo_ui.py`'s `send_undo_confirmation`) -- `config.app.timezone`
+    correctness is the caller's responsibility via what it passes as
+    `clock`, exactly as for those existing call sites. SPEC-v1.2.md R-D3:
+    every read scoped to `user_id` (AC-U-ISO)."""
     today_str = clock().date().isoformat()
     lines = [i18n.t("habits_overview_header", lang)]
     for habit in registry:
         kind_label = i18n.t(_HABIT_KIND_MSG_IDS[habit.type], lang)
-        goal_phrase = _goal_phrase(db, config, habit, lang)
-        today_phrase = _today_phrase(db, habit, today_str, lang)
+        goal_phrase = _goal_phrase(db, config, habit, lang, user_id)
+        today_phrase = _today_phrase(db, habit, today_str, lang, user_id)
         lines.append(
             i18n.t(
                 "habits_overview_line",

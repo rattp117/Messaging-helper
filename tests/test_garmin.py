@@ -38,7 +38,7 @@ from habit_assistant.storage.models import LogEntry
 
 
 def _seed(db: Database, ts: str, category: str, value_num: float | None, raw: str = "x") -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, raw, "reply"))
+    return db.insert_log(LogEntry(None, "owner", ts, category, value_num, None, raw, "reply"))
 
 
 def _write_csv(path: Path, header: str, rows: list[str]) -> None:
@@ -158,7 +158,7 @@ def test_parse_garmin_csv_non_iso_date_raises(tmp_path):
 
 def test_build_garmin_report_none_when_csv_path_unconfigured(db):
     config = Config()  # default garmin.csv_path == ""
-    report = garmin.build_garmin_report(db, config, date(2026, 8, 19))
+    report = garmin.build_garmin_report(db, config, date(2026, 8, 19), "owner")
     assert report is None
 
 
@@ -174,7 +174,7 @@ def test_build_garmin_report_joins_by_date_and_computes_correct_totals(db, tmp_p
         _seed(db, f"{d}T09:00:00", "water", v)
 
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     assert report is not None
     assert report.available is True
@@ -204,7 +204,7 @@ def test_build_garmin_report_flags_discrepancy_beyond_threshold_not_within(db, t
     _seed(db, f"{week_days[-1]}T09:00:00", "water", 400.0)  # net self-reported total 2400 that day
 
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path), "discrepancy_threshold_ml": 300}})
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     by_day = {c.day: c for c in report.comparisons}
     flagged_day = by_day[week_days[-2]]
@@ -236,7 +236,7 @@ def test_build_garmin_report_day_at_exact_threshold_is_not_flagged(db, tmp_path)
     _seed(db, f"{week_days[-1]}T09:00:00", "water", 300.0)  # exactly 300 above garmin's 2000
 
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path), "discrepancy_threshold_ml": 300}})
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     last_day = next(c for c in report.comparisons if c.day == week_days[-1])
     assert last_day.discrepancy_ml == pytest.approx(300.0)
@@ -255,7 +255,7 @@ def test_build_garmin_report_missing_garmin_day_defaults_to_zero(db, tmp_path):
     _seed(db, f"{end_date.isoformat()}T09:00:00", "water", 2000.0)
 
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     assert len(report.comparisons) == 7
     other_day = next(c for c in report.comparisons if c.day != end_date.isoformat())
@@ -276,7 +276,7 @@ def test_format_garmin_section_renders_in_both_languages(db, tmp_path):
         _seed(db, f"{d}T09:00:00", "water", 2000.0)
 
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     text_en = garmin.format_garmin_section(report, "en")
     text_th = garmin.format_garmin_section(report, "th")
@@ -320,7 +320,7 @@ def test_build_garmin_report_degrades_gracefully_for_every_broken_input(db, tmp_
     csv_path = make_broken_csv(tmp_path)
     config = Config.model_validate({"garmin": {"csv_path": csv_path}})
 
-    report = garmin.build_garmin_report(db, config, date(2026, 8, 19))  # must not raise
+    report = garmin.build_garmin_report(db, config, date(2026, 8, 19), "owner")  # must not raise
 
     assert report is not None
     assert report.available is False
@@ -351,7 +351,7 @@ def test_build_garmin_report_tolerates_individually_malformed_rows_in_an_otherwi
     )
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})
 
-    report = garmin.build_garmin_report(db, config, date(2026, 8, 19))  # must not raise
+    report = garmin.build_garmin_report(db, config, date(2026, 8, 19), "owner")  # must not raise
 
     assert report.available is True
     by_day = {c.day: c for c in report.comparisons}
@@ -389,8 +389,9 @@ async def test_run_weekly_review_still_sends_and_notes_garmin_unavailable_on_bro
     _seed(db, f"{end_date.isoformat()}T09:00:00", "water", 500.0)
     config = Config.model_validate({"garmin": {"csv_path": str(tmp_path / "nonexistent.csv")}})
     llm = FakeLLM()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, config, registry, llm, today=end_date)  # must not raise
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)  # must not raise
 
     assert i18n.t("garmin_unavailable", "th") in text  # default primary_language is th
 
@@ -403,7 +404,7 @@ def test_build_garmin_report_malformed_csv_does_not_raise_out_of_build_report(db
     _write_csv(csv_path, "Date,Hydration(ml)", ["2026-08-13,not-a-number"])
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})
 
-    report = garmin.build_garmin_report(db, config, date(2026, 8, 19))  # must not raise
+    report = garmin.build_garmin_report(db, config, date(2026, 8, 19), "owner")  # must not raise
 
     assert report.available is False
 
@@ -438,7 +439,7 @@ async def test_garmin_parse_and_join_never_invokes_http_transport(db, tmp_path):
     # change accidentally threads a client through; if it's never
     # constructed, the transport is simply unused, which is itself the
     # point (garmin.py takes no client parameter).
-    report = garmin.build_garmin_report(db, config, end_date)
+    report = garmin.build_garmin_report(db, config, end_date, "owner")
 
     assert report is not None
     assert report.available is True
@@ -492,13 +493,14 @@ async def test_full_weekly_review_with_charts_and_garmin_contacts_only_telegram_
     config = Config.model_validate({"garmin": {"csv_path": str(csv_path)}})  # charts.enabled=True default
     registry = HabitRegistry.from_config(Config())
     llm = FakeLLM()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, config, registry, llm, today=end_date)
-    await channel.send(text)
-    pairs = render_weekly_review_charts(db, config, registry, today=end_date)
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)
+    await channel.send("999", text)
+    pairs = render_weekly_review_charts(db, config, registry, lang, "owner", today=end_date)
     assert pairs  # sanity: charts were actually produced this run
     for image, caption in pairs:
-        await channel.send_image(image, caption)
+        await channel.send_image("999", image, caption)
 
     assert len(captured) == 1 + len(pairs)  # 1 sendMessage + N sendPhoto
     hosts = {req.url.host for req in captured}
@@ -531,13 +533,13 @@ async def test_run_weekly_review_byte_identical_to_v0100_when_garmin_unconfigure
     # v0.10.0:src/habit_assistant/core/review.py`'s run_weekly_review tail:
     #   header = i18n.t("weekly_review_header", lang)
     #   return f"{header}\n\n{summary}\n\n{narrative}"
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, "owner")
     lang = i18n_module.resolve_unprompted_language(config)
     summary = format_stats_summary(stats, registry, lang)
     narrative = "narrative"  # FakeLLM.chat_text's fixed return value
     expected_v0100_shape = f"{i18n_module.t('weekly_review_header', lang)}\n\n{summary}\n\n{narrative}"
 
-    actual = await run_weekly_review(db, config, registry, llm, today=end_date)
+    actual = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)
 
     assert actual == expected_v0100_shape
     assert "Garmin" not in actual  # zero footprint when unconfigured (bonus, not just byte-pin)

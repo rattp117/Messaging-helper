@@ -39,6 +39,7 @@ from habit_assistant.storage.migrations import MIGRATIONS, current_version, run_
 GLASS_ML = 250
 BOTTLE_ML = 600
 ANY_TIME_WINDOW = ("2000-01-01T00:00:00", "2100-01-01T00:00:00")
+OWNER = "owner"
 
 
 class _StopPolling(Exception):
@@ -54,15 +55,15 @@ class _RecordingChannel:
         self.sent: list[str] = []
         self._fail = fail
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         if self._fail:
             raise RuntimeError("simulated channel send failure")
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default -- drop
         # the buttons, same failure/recording behavior as send().
-        await self.send(text)
+        await self.send(chat_id, text)
 
 
 class _FrozenHealthMonitor:
@@ -120,6 +121,7 @@ def json_payload(**overrides) -> str:
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -160,7 +162,7 @@ async def test_backoff_grows_and_caps_across_consecutive_transport_errors(monkey
         "token", "chat", client=client, backoff_initial_seconds=1.0, backoff_max_seconds=4.0
     )
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     with pytest.raises(_StopPolling):
@@ -198,7 +200,7 @@ async def test_backoff_resets_to_initial_after_a_successful_poll(monkeypatch):
         "token", "chat", client=client, backoff_initial_seconds=1.0, backoff_max_seconds=60.0
     )
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     with pytest.raises(_StopPolling):
@@ -256,7 +258,7 @@ async def test_offset_never_advances_on_failure_and_recovery_resumes_from_correc
 
     received: list[str] = []
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         received.append(text)
 
     with pytest.raises(_StopPolling):
@@ -296,7 +298,7 @@ async def test_telegram_unreachable_is_logged_and_retried_without_crashing(monke
         "token", "chat", client=client, backoff_initial_seconds=0.0, backoff_max_seconds=0.0
     )
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     import logging
@@ -358,6 +360,7 @@ async def test_exactly_one_alert_per_up_to_down_transition_no_repeat_while_still
     monitor = HealthMonitor(
         "http://mac-mini:11434",
         "fake-token",
+        OWNER,
         client=client,
         channel=channel,
         on_ollama_recovered=on_recovered,
@@ -376,7 +379,7 @@ async def test_no_new_alert_while_still_down_new_alert_only_after_up_then_down_a
     transport = httpx.MockTransport(_health_handler(sequence, [True] * len(sequence)))
     client = httpx.AsyncClient(transport=transport)
     channel = _RecordingChannel()
-    monitor = HealthMonitor("http://mac-mini:11434", "fake-token", client=client, channel=channel)
+    monitor = HealthMonitor("http://mac-mini:11434", "fake-token", OWNER, client=client, channel=channel)
 
     for _ in sequence:
         await monitor.run_once()
@@ -393,7 +396,7 @@ async def test_alert_still_logged_when_channel_send_itself_fails(caplog):
     client = httpx.AsyncClient(transport=transport)
     failing_channel = _RecordingChannel(fail=True)
     monitor = HealthMonitor(
-        "http://mac-mini:11434", "fake-token", client=client, channel=failing_channel
+        "http://mac-mini:11434", "fake-token", OWNER, client=client, channel=failing_channel
     )
 
     with caplog.at_level(logging.WARNING, logger="habit_assistant"):
@@ -460,17 +463,17 @@ async def test_only_allowed_hosts_contacted_across_all_resilience_paths(monkeypa
         retry_backoff_seconds=0.01,
     )
     health = HealthMonitor(
-        "http://mac-mini:11434", "tok", client=shared_client, channel=telegram_channel
+        "http://mac-mini:11434", "tok", OWNER, client=shared_client, channel=telegram_channel
     )
 
     # Exercise every resilience path against the shared client/transport.
     # CHANGED (ROADMAP.md v0.7.0 integration): chat_json's 4th param
     # `valid_categories` is now required (shared-surface contract).
-    await telegram_channel.send("alert-style message")
+    await telegram_channel.send(OWNER, "alert-style message")
     await ollama_client.chat_json("sys", "usr", EXTRACTION_JSON_SCHEMA, {"water", "stretch", "diary", "unknown"})
     await health.run_once()
 
-    async def on_message(text: str) -> None:
+    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
         pass
 
     with pytest.raises(_StopPolling):
@@ -500,10 +503,11 @@ async def test_deferred_message_acks_writes_unparsed_row_and_never_calls_llm(db)
         channel=channel,
         config=config,
         health_monitor=health_monitor,
+        user_id=OWNER,
     )
 
     assert channel.sent == [DEFERRED_ACK_MESSAGE]
-    rows = db.logs_between(*ANY_TIME_WINDOW)
+    rows = db.logs_between(OWNER, *ANY_TIME_WINDOW)
     assert len(rows) == 1
     assert rows[0]["category"] == "unparsed"
     assert rows[0]["raw_message"] == "500ml please"
@@ -524,11 +528,12 @@ async def test_deferred_row_excluded_from_aggregations_while_pending(db):
         config=config,
         health_monitor=health_monitor,
         clock=lambda: __import__("datetime").datetime(2026, 8, 19, 10, 0, 0),
+        user_id=OWNER,
     )
 
-    assert db.water_total_ml("2026-08-19") == 0.0
-    assert db.stretch_count("2026-08-19") == 0
-    assert db.diary_count("2026-08-19") == 0
+    assert db.water_total_ml(OWNER, "2026-08-19") == 0.0
+    assert db.stretch_count(OWNER, "2026-08-19") == 0
+    assert db.diary_count(OWNER, "2026-08-19") == 0
 
 
 async def test_deferred_row_persists_across_database_close_and_reopen(tmp_path):
@@ -549,6 +554,7 @@ async def test_deferred_row_persists_across_database_close_and_reopen(tmp_path):
         channel=channel,
         config=config,
         health_monitor=health_monitor,
+        user_id=OWNER,
     )
     database.close()  # simulates process exit
 
@@ -574,8 +580,9 @@ async def test_reparse_on_recovery_reclassifies_confirms_and_reincludes_in_aggre
         config=config,
         health_monitor=health_monitor,
         clock=fixed_clock,
+        user_id=OWNER,
     )
-    assert db.water_total_ml("2026-08-19") == 0.0  # excluded while pending
+    assert db.water_total_ml(OWNER, "2026-08-19") == 0.0  # excluded while pending
 
     content = json_payload(category="water", value=500, confidence=0.9)
     recovering_llm = _StaticLLM(content)
@@ -586,13 +593,13 @@ async def test_reparse_on_recovery_reclassifies_confirms_and_reincludes_in_aggre
         DEFERRED_ACK_MESSAGE,
         "\U0001f501 Recovered: 500 ml logged from your earlier message.",
     ]
-    rows = db.logs_between(*ANY_TIME_WINDOW)
+    rows = db.logs_between(OWNER, *ANY_TIME_WINDOW)
     assert len(rows) == 1
     assert rows[0]["category"] == "water"
     assert rows[0]["value_num"] == 500.0
     assert rows[0]["raw_message"] == "500ml please"  # original text kept intact
     assert db.pending_unparsed() == []
-    assert db.water_total_ml("2026-08-19") == 500.0  # now counted
+    assert db.water_total_ml(OWNER, "2026-08-19") == 500.0  # now counted
 
 
 async def test_startup_backlog_reparsed_with_no_in_process_transition(db):
@@ -604,7 +611,7 @@ async def test_startup_backlog_reparsed_with_no_in_process_transition(db):
     from habit_assistant.storage.models import LogEntry
 
     db.insert_log(
-        LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "did 10 min stretch", "reply")
+        LogEntry(None, OWNER, "2026-08-19T09:00:00", "unparsed", None, None, "did 10 min stretch", "reply")
     )
     assert len(db.pending_unparsed()) == 1
 
@@ -616,7 +623,7 @@ async def test_startup_backlog_reparsed_with_no_in_process_transition(db):
     await reparse_pending_unparsed(db, recovering_llm, channel, config)
 
     assert db.pending_unparsed() == []
-    rows = db.logs_between(*ANY_TIME_WINDOW)
+    rows = db.logs_between(OWNER, *ANY_TIME_WINDOW)
     assert rows[0]["category"] == "stretch"
     assert rows[0]["value_num"] == 10.0
     assert channel.sent == ["\U0001f501 Recovered: 10 min stretch logged from your earlier message."]
@@ -629,7 +636,7 @@ async def test_reparse_leaves_genuinely_unparseable_row_as_unparsed(db):
     from habit_assistant.storage.models import LogEntry
 
     db.insert_log(
-        LogEntry(None, "2026-08-19T09:00:00", "unparsed", None, None, "asdkjhasd", "reply")
+        LogEntry(None, OWNER, "2026-08-19T09:00:00", "unparsed", None, None, "asdkjhasd", "reply")
     )
 
     channel = _RecordingChannel()

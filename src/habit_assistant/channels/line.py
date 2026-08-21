@@ -37,12 +37,17 @@ class LineChannel(Channel):
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError("LineChannel is a documented stub; see channels/line.py docstring.")
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         raise NotImplementedError
 
     async def run(
         self,
-        on_message: Callable[[str], Awaitable[None]],
-        on_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
+        on_message: Callable[[str, str], Awaitable[None]],
+        on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
     ) -> None:
+        # If/when implemented: `Channel.run`'s own docstring (base.py)
+        # documents an OPTIONAL third `display_name` argument LINE's
+        # webhook payload could supply here too (its events carry a
+        # `source.userId`, resolvable to a display name via a separate
+        # Profile API call) -- not needed for this still-unimplemented stub.
         raise NotImplementedError

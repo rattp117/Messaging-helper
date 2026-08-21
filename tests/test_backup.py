@@ -57,9 +57,9 @@ def test_backup_while_source_connection_open_includes_latest_committed_write(tmp
     backup_dir = tmp_path / "backups"
 
     db = Database(db_path)  # source connection stays open for the whole test
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 250.0, None, "glass 1", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 250.0, None, "glass 2", "reply"))
-    db.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 500.0, None, "the latest write", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 250.0, None, "glass 1", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 250.0, None, "glass 2", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "water", 500.0, None, "the latest write", "reply"))
 
     # Confirm we're actually exercising WAL, not a rollback journal.
     assert db._conn.execute("PRAGMA journal_mode;").fetchone()[0].lower() == "wal"
@@ -79,21 +79,21 @@ def test_backup_while_source_connection_open_includes_latest_committed_write(tmp
 
     # A write made *after* the backup call must not leak into the snapshot
     # (proves it's a real snapshot, not a live view over the same file).
-    db.insert_log(LogEntry(None, "2026-08-19T11:00:00", "water", 100.0, None, "after the backup", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T11:00:00", "water", 100.0, None, "after the backup", "reply"))
     backup_rows_again = _all_rows(dest)
     assert len(backup_rows_again) == 3
     assert "after the backup" not in [r[4] for r in backup_rows_again]
 
     # Source DB itself remains fully queryable/correct after backup+the extra write.
     assert _row_count(db_path) == 4
-    assert db.water_total_ml("2026-08-19") == 250.0 + 250.0 + 500.0 + 100.0
+    assert db.water_total_ml("owner", "2026-08-19") == 250.0 + 250.0 + 500.0 + 100.0
 
     db.close()
 
     # The backup file opens and queries identically through the real
     # Database class (not just raw sqlite3).
     reopened = Database(dest)
-    assert reopened.water_total_ml("2026-08-19") == 250.0 + 250.0 + 500.0
+    assert reopened.water_total_ml("owner", "2026-08-19") == 250.0 + 250.0 + 500.0
     reopened.close()
 
 
@@ -115,13 +115,13 @@ def test_restore_swaps_db_and_creates_automatic_pre_restore_backup(tmp_path):
 
     # Current live DB has "old" data.
     current = Database(db_path)
-    current.insert_log(LogEntry(None, "2026-08-01T09:00:00", "water", 111.0, None, "old data", "reply"))
+    current.insert_log(LogEntry(None, "owner", "2026-08-01T09:00:00", "water", 111.0, None, "old data", "reply"))
     current.close()
 
     # A restorable archive with "new" data, built independently.
     archive_db = Database(tmp_path / "archive.db")
-    archive_db.insert_log(LogEntry(None, "2026-08-10T09:00:00", "water", 222.0, None, "new data", "reply"))
-    archive_db.insert_log(LogEntry(None, "2026-08-10T10:00:00", "water", 333.0, None, "new data 2", "reply"))
+    archive_db.insert_log(LogEntry(None, "owner", "2026-08-10T09:00:00", "water", 222.0, None, "new data", "reply"))
+    archive_db.insert_log(LogEntry(None, "owner", "2026-08-10T10:00:00", "water", 333.0, None, "new data 2", "reply"))
     archive_db.close()
     archive_path = tmp_path / "archive.db"
 
@@ -145,7 +145,7 @@ def test_restore_rejects_garbage_bytes_and_leaves_db_untouched(tmp_path):
     backup_dir = tmp_path / "backups"
 
     current = Database(db_path)
-    current.insert_log(LogEntry(None, "2026-08-01T09:00:00", "water", 111.0, None, "must survive", "reply"))
+    current.insert_log(LogEntry(None, "owner", "2026-08-01T09:00:00", "water", 111.0, None, "must survive", "reply"))
     current.close()
     before_bytes = db_path.read_bytes()
 
@@ -167,7 +167,7 @@ def test_restore_rejects_valid_sqlite_file_missing_logs_table(tmp_path):
     backup_dir = tmp_path / "backups"
 
     current = Database(db_path)
-    current.insert_log(LogEntry(None, "2026-08-01T09:00:00", "water", 111.0, None, "must survive", "reply"))
+    current.insert_log(LogEntry(None, "owner", "2026-08-01T09:00:00", "water", 111.0, None, "must survive", "reply"))
     current.close()
     before_bytes = db_path.read_bytes()
 
@@ -201,7 +201,7 @@ def test_restore_onto_nonexistent_db_skips_pre_restore_backup(tmp_path):
     backup_dir = tmp_path / "backups"
 
     archive_db = Database(tmp_path / "archive.db")
-    archive_db.insert_log(LogEntry(None, "2026-08-10T09:00:00", "water", 222.0, None, "fresh install", "reply"))
+    archive_db.insert_log(LogEntry(None, "owner", "2026-08-10T09:00:00", "water", 222.0, None, "fresh install", "reply"))
     archive_db.close()
 
     restore(tmp_path / "archive.db", db_path, backup_dir)
@@ -284,7 +284,7 @@ def test_backup_auto_prunes_after_each_write_when_retain_given(tmp_path):
     db_path = tmp_path / "data" / "habits.db"
     backup_dir = tmp_path / "backups"
     db = Database(db_path)
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "water", 250.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", "2026-08-19T08:00:00", "water", 250.0, None, "x", "reply"))
 
     for _ in range(5):
         backup(db_path, backup_dir, retain=2)

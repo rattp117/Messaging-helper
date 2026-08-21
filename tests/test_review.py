@@ -72,9 +72,9 @@ class FakeLLM:
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
-    database.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 2500.0, None, "seed", "reply"))
-    database.insert_log(LogEntry(None, "2026-08-19T11:00:00", "stretch", 10.0, None, "seed", "reply"))
-    database.insert_log(LogEntry(None, "2026-08-19T21:30:00", "diary", None, "seed", "seed", "reply"))
+    database.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 2500.0, None, "seed", "reply"))
+    database.insert_log(LogEntry(None, "owner", "2026-08-19T11:00:00", "stretch", 10.0, None, "seed", "reply"))
+    database.insert_log(LogEntry(None, "owner", "2026-08-19T21:30:00", "diary", None, "seed", "seed", "reply"))
     yield database
     database.close()
 
@@ -92,8 +92,10 @@ async def test_run_weekly_review_includes_narrative_and_stats(db):
     narrative always passes through verbatim regardless of language."""
     llm = FakeLLM("Great week! Keep up the water habit.")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     assert i18n.t("weekly_review_header", LANG) in text
     assert "Great week! Keep up the water habit." in text
@@ -105,8 +107,10 @@ async def test_run_weekly_review_includes_narrative_and_stats(db):
 async def test_run_weekly_review_falls_back_when_llm_returns_none(db):
     llm = FakeLLM(None)
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     assert i18n.t("weekly_review_fallback_narrative", LANG) in text
     assert i18n.t("stats_water_total", LANG, water_total_ml=2500, water_avg_ml=357.1) in text  # stats block still present
@@ -115,8 +119,10 @@ async def test_run_weekly_review_falls_back_when_llm_returns_none(db):
 async def test_run_weekly_review_falls_back_when_llm_returns_empty_string(db):
     llm = FakeLLM("")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     assert i18n.t("weekly_review_fallback_narrative", LANG) in text
 
@@ -124,8 +130,10 @@ async def test_run_weekly_review_falls_back_when_llm_returns_empty_string(db):
 async def test_run_weekly_review_passes_stats_summary_to_llm_prompt(db):
     llm = FakeLLM("narrative")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
+    await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     assert len(llm.calls) == 1
     _system_prompt, user_prompt = llm.calls[0]
@@ -138,8 +146,10 @@ async def test_run_weekly_review_system_prompt_forbids_medical_advice(db):
     not model behavior we can unit test directly."""
     llm = FakeLLM("narrative")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
+    await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
 
     system_prompt, _user_prompt = llm.calls[0]
     assert "medical advice" in system_prompt.lower()
@@ -158,8 +168,10 @@ async def test_run_weekly_review_defaults_to_today_when_not_given(db, monkeypatc
     monkeypatch.setattr(review_module, "date", FixedDate)
     llm = FakeLLM("narrative")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, Config(), registry, llm, today=None)
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=None)
 
     assert i18n.t("stats_water_total", LANG, water_total_ml=2500, water_avg_ml=357.1) in text
 
@@ -175,18 +187,24 @@ async def test_weekly_review_job_sends_result_over_channel(db):
         def __init__(self) -> None:
             self.sent: list[str] = []
 
-        async def send(self, text: str) -> None:
+        async def send(self, chat_id: str, text: str) -> None:
             self.sent.append(text)
 
-        async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+        async def run(
+            self,
+            on_message: Callable[[str, str], Awaitable[None]],
+            on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
+        ) -> None:
             raise NotImplementedError
 
     channel = FakeChannel()
     llm = FakeLLM("Solid week overall.")
     registry = default_registry()
+    config = Config()
+    lang = i18n.resolve_unprompted_language(config)
 
-    text = await run_weekly_review(db, Config(), registry, llm, today=date(2026, 8, 19))
-    await channel.send(text)
+    text = await run_weekly_review(db, config, registry, llm, lang, "owner", today=date(2026, 8, 19))
+    await channel.send("owner", text)
 
     assert channel.sent == [text]
     assert "Solid week overall." in channel.sent[0]
@@ -199,12 +217,12 @@ def _seed_known_week(db: Database, end_date: date) -> None:
     for offset in range(6, -1, -1):
         d = end_date - timedelta(days=offset)
         day_str = d.isoformat()
-        db.insert_log(LogEntry(None, f"{day_str}T09:00:00", "water", 500.0, None, "seed water", "reply"))
+        db.insert_log(LogEntry(None, "owner", f"{day_str}T09:00:00", "water", 500.0, None, "seed water", "reply"))
         if offset <= 2:
-            db.insert_log(LogEntry(None, f"{day_str}T11:00:00", "stretch", 10.0, None, "seed stretch", "reply"))
+            db.insert_log(LogEntry(None, "owner", f"{day_str}T11:00:00", "stretch", 10.0, None, "seed stretch", "reply"))
     diary_days = [end_date - timedelta(days=6), end_date]
     for d in diary_days:
-        db.insert_log(LogEntry(None, f"{d.isoformat()}T21:30:00", "diary", None, "seed diary", "seed diary", "reply"))
+        db.insert_log(LogEntry(None, "owner", f"{d.isoformat()}T21:30:00", "diary", None, "seed diary", "seed diary", "reply"))
 
 
 def test_compute_weekly_stats_water_stretch_diary_math_matches_v060(tmp_path):
@@ -215,7 +233,7 @@ def test_compute_weekly_stats_water_stretch_diary_math_matches_v060(tmp_path):
     _seed_known_week(db, end_date)
     registry = default_registry()
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     water = stats.get("water")
     stretch = stats.get("stretch")
@@ -240,10 +258,10 @@ def test_compute_weekly_stats_water_stretch_diary_math_matches_v060(tmp_path):
 def test_compute_weekly_stats_stretch_streak_zero_when_last_day_has_no_stretch(tmp_path):
     db = Database(tmp_path / "habits.db")
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
     registry = default_registry()
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("stretch").streak == 0
     db.close()
@@ -254,7 +272,7 @@ def test_compute_weekly_stats_empty_week_is_all_zero(tmp_path):
     end_date = date(2026, 8, 19)
     registry = default_registry()
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     water = stats.get("water")
     assert water.total == 0
@@ -277,10 +295,10 @@ def test_compute_weekly_stats_water_goal_read_from_legacy_reminders_config(tmp_p
     db = Database(tmp_path / "habits.db")
     config = Config.model_validate({"reminders": {"water": {"goal_ml": 1000}}})
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
     registry = default_registry()
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id="owner")
 
     assert stats.get("water").days[-1].goal == 1000
     assert stats.get("water").days[-1].pct == 50.0
@@ -292,7 +310,7 @@ def test_format_stats_summary_contains_expected_figures(tmp_path):
     end_date = date(2026, 8, 19)
     _seed_known_week(db, end_date)
     registry = default_registry()
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     summary = format_stats_summary(stats, registry)  # default lang="en"
 
@@ -320,9 +338,9 @@ def test_generic_numeric_with_goal_gets_total_avg_and_goal_adherence(tmp_path):
     sleep = _synthetic_habit("sleep", "numeric", goal=8, unit_en="h", unit_th="ชม.", label_en="sleep", label_th="นอน")
     registry = HabitRegistry([sleep])
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T22:00:00", "sleep", 7.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T22:00:00", "sleep", 7.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
     sleep_stats = stats.get("sleep")
 
     assert len(sleep_stats.days) == 7
@@ -352,9 +370,9 @@ def test_generic_numeric_without_goal_gets_total_avg_only_no_per_day_lines(tmp_p
     steps = _synthetic_habit("steps", "numeric", goal=None, unit_en="steps", unit_th="ก้าว")
     registry = HabitRegistry([steps])
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T18:00:00", "steps", 8000.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T18:00:00", "steps", 8000.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
     steps_stats = stats.get("steps")
 
     assert steps_stats.days == []
@@ -374,10 +392,10 @@ def test_generic_duration_gets_count_and_streak(tmp_path):
     yoga = _synthetic_habit("yoga", "duration", unit_en="min", unit_th="นาที", label_en="yoga", label_th="โยคะ")
     registry = HabitRegistry([yoga])
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{(end_date - timedelta(days=1)).isoformat()}T09:00:00", "yoga", 20.0, None, "x", "reply"))
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "yoga", 15.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{(end_date - timedelta(days=1)).isoformat()}T09:00:00", "yoga", 20.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "yoga", 15.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
     yoga_stats = stats.get("yoga")
 
     assert yoga_stats.total == 2  # 2 sessions logged
@@ -393,9 +411,9 @@ def test_generic_text_gets_entry_count(tmp_path):
     gratitude = _synthetic_habit("gratitude", "text", label_en="gratitude", label_th="ขอบคุณ")
     registry = HabitRegistry([gratitude])
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T21:00:00", "gratitude", None, "grateful", "grateful", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T21:00:00", "gratitude", None, "grateful", "grateful", "reply"))
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
     gratitude_stats = stats.get("gratitude")
 
     assert gratitude_stats.total == 1
@@ -412,11 +430,11 @@ def test_generic_boolean_gets_done_day_count_not_raw_row_count(tmp_path):
     meds = _synthetic_habit("meds", "boolean", label_en="meds", label_th="ยา")
     registry = HabitRegistry([meds])
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "meds", 1.0, None, "x", "reply"))
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T20:00:00", "meds", 1.0, None, "x", "reply"))
-    db.insert_log(LogEntry(None, f"{(end_date - timedelta(days=1)).isoformat()}T09:00:00", "meds", 0.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "meds", 1.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T20:00:00", "meds", 1.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{(end_date - timedelta(days=1)).isoformat()}T09:00:00", "meds", 0.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
     meds_stats = stats.get("meds")
 
     assert meds_stats.total == 1  # one done day, despite 2 truthy rows + 1 falsy row
@@ -447,10 +465,10 @@ def test_config_added_habit_appears_alongside_builtins_with_no_code_change(tmp_p
     ]
     registry = HabitRegistry.from_config(config)
     end_date = date(2026, 8, 19)
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
-    db.insert_log(LogEntry(None, f"{end_date.isoformat()}T22:00:00", "sleep", 7.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T09:00:00", "water", 500.0, None, "x", "reply"))
+    db.insert_log(LogEntry(None, "owner", f"{end_date.isoformat()}T22:00:00", "sleep", 7.0, None, "x", "reply"))
 
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id="owner")
     summary = format_stats_summary(stats, registry, "en")
 
     assert i18n.t("stats_water_header", "en") in summary  # built-in unaffected
@@ -468,15 +486,15 @@ def test_pre_v070_rows_with_null_habit_type_aggregate_correctly(tmp_path):
     stamps `habit_type` for a new row)."""
     db = Database(tmp_path / "habits.db")
     db._conn.execute(
-        "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source, habit_type) "
-        "VALUES (?, 'water', 500.0, NULL, 'legacy row', 'reply', NULL)",
+        "INSERT INTO logs (user_id, ts, category, value_num, value_text, raw_message, source, habit_type) "
+        "VALUES ('owner', ?, 'water', 500.0, NULL, 'legacy row', 'reply', NULL)",
         ("2026-08-19T09:00:00",),
     )
     db._conn.commit()
     registry = default_registry()
     end_date = date(2026, 8, 19)
 
-    stats = compute_weekly_stats(db, Config(), registry, end_date)
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
     assert stats.get("water").total == 500.0
     db.close()

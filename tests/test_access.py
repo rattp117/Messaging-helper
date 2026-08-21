@@ -1,0 +1,430 @@
+"""SPEC-v1.2.md §4 "Access control & onboarding (module `access`)" -- module
+tests for the seven ACs this parallel module owns (SPEC-v1.2.md §11):
+AC-A1, AC-A2, AC-A3, AC-A4, AC-A5, AC-A6, AC-A7.
+
+This module is self-contained (does not touch `main.py` -- the access gate
+is not yet wired into `on_message`, per SPEC-v1.2.md §11's integration
+order), so tests exercise `core/access.py`'s public functions
+(`classify`/`handle_gate`/`execute_admin`) and `core/commands.py:dispatch`'s
+five new anchored kinds directly, against a real on-disk SQLite DB
+(tmp_path) -- no mocks for the DB, mirroring tests/test_undo_ui.py's own
+convention.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from habit_assistant.channels.base import Channel
+from habit_assistant.config import Config
+from habit_assistant.core import access, commands, i18n
+from habit_assistant.core.habits import HabitRegistry
+from habit_assistant.storage.db import Database
+
+OWNER = "1574572064"
+MEMBER = "88899900"
+STRANGER = "55544433"
+
+
+class FakeChannel(Channel):
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def send(self, chat_id: str, text: str) -> None:
+        self.sent.append((chat_id, text))
+
+    async def run(self, on_message, on_callback=None) -> None:
+        raise NotImplementedError("not exercised in these tests")
+
+    def sent_to(self, chat_id: str) -> list[str]:
+        return [text for cid, text in self.sent if cid == chat_id]
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "habits.db")
+    database.attribute_legacy_to_owner(OWNER)
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def config():
+    return Config()
+
+
+@pytest.fixture
+def channel():
+    return FakeChannel()
+
+
+@pytest.fixture
+def registry():
+    return HabitRegistry.from_config(Config())
+
+
+# ---------------------------------------------------------------------------
+# commands.dispatch -- shape recognition for the five new kinds. Not itself
+# an owned AC, but the seam AC-A1/AC-A4/AC-A5/AC-A6 build on.
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_start(registry):
+    assert commands.dispatch("/start", registry) == commands.Command(kind="start")
+
+
+def test_dispatch_users(registry):
+    assert commands.dispatch("/users", registry) == commands.Command(kind="users")
+
+
+def test_dispatch_approve_with_chat_id(registry):
+    cmd = commands.dispatch("/approve 88899900", registry)
+    assert cmd == commands.Command(kind="approve", target_chat="88899900")
+
+
+def test_dispatch_approve_no_chat_id(registry):
+    cmd = commands.dispatch("/approve", registry)
+    assert cmd == commands.Command(kind="approve", target_chat=None)
+
+
+def test_dispatch_block_with_chat_id(registry):
+    cmd = commands.dispatch("/block 88899900", registry)
+    assert cmd == commands.Command(kind="block", target_chat="88899900")
+
+
+def test_dispatch_invite_with_chat_id(registry):
+    cmd = commands.dispatch("/invite 88899900", registry)
+    assert cmd == commands.Command(kind="invite", target_chat="88899900")
+
+
+def test_dispatch_approve_extra_garbage_takes_first_token(registry):
+    cmd = commands.dispatch("/approve 88899900 please", registry)
+    assert cmd == commands.Command(kind="approve", target_chat="88899900")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/started",
+        "/approved of this",
+        "please /approve someone",
+        "start",
+        "users",
+        "I approve of this plan",
+    ],
+)
+def test_dispatch_does_not_false_positive_on_near_misses(text, registry):
+    """AC5.5's own conservatism, extended to the five new kinds: nothing
+    that merely resembles the trigger word (not anchored at the start, or
+    missing the leading slash) is swallowed."""
+    cmd = commands.dispatch(text, registry)
+    assert cmd is None or cmd.kind not in ("start", "users", "approve", "block", "invite")
+
+
+# ---------------------------------------------------------------------------
+# classify() -- R-A1, including AC-A7's fail-safe.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_owner(db):
+    assert access.classify(db, OWNER) == "owner"
+
+
+def test_classify_unknown(db):
+    assert access.classify(db, STRANGER) == "unknown"
+
+
+def test_classify_pending(db):
+    db.upsert_user(MEMBER, status="pending")
+    assert access.classify(db, MEMBER) == "pending"
+
+
+def test_classify_active_member(db):
+    db.upsert_user(MEMBER, status="active")
+    assert access.classify(db, MEMBER) == "active"
+
+
+def test_classify_blocked(db):
+    db.upsert_user(MEMBER, status="blocked")
+    assert access.classify(db, MEMBER) == "blocked"
+
+
+def _boom(chat_id):
+    raise RuntimeError("simulated DB failure")
+
+
+def test_classify_fails_safe_on_lookup_error(db, monkeypatch):
+    """AC-A7: a `users` lookup that raises must classify as not-active
+    (deny), never grant."""
+    monkeypatch.setattr(db, "get_user", _boom)
+    result = access.classify(db, MEMBER)
+    assert result not in ("owner", "active")
+
+
+# ---------------------------------------------------------------------------
+# handle_gate() -- R-A1/R-A2/R-A3, AC-A1, AC-A7.
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_gate_owner_proceeds(db, channel, config):
+    proceed = await access.handle_gate(db, channel, config, OWNER, OWNER, "Owner", "500ml", lang="en")
+    assert proceed is True
+    assert channel.sent == []  # nothing sent by the gate itself for an active caller
+
+
+async def test_handle_gate_active_member_proceeds(db, channel, config):
+    db.upsert_user(MEMBER, status="active")
+    proceed = await access.handle_gate(db, channel, config, OWNER, MEMBER, "Bob", "500ml", lang="en")
+    assert proceed is True
+    assert channel.sent == []
+
+
+async def test_handle_gate_unknown_creates_pending_and_notifies_owner(db, channel, config):
+    """AC-A1: an unknown chat's first message creates a pending row,
+    the sender gets `access_pending`, and the owner gets `access_request`
+    naming the chat id + how to approve. handle_gate itself never logs the
+    message or calls the LLM -- it has no access to either -- so a `False`
+    return is what the integration wiring uses to skip both (R-A2)."""
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Alice", "hi there", lang="en")
+
+    assert proceed is False
+
+    row = db.get_user(STRANGER)
+    assert row is not None
+    assert row["status"] == "pending"
+    assert row["display_name"] == "Alice"
+
+    assert channel.sent_to(STRANGER) == [i18n.t("access_pending", "en")]
+
+    owner_lang = i18n.resolve_unprompted_language(config, user_pref="auto")
+    owner_messages = channel.sent_to(OWNER)
+    assert len(owner_messages) == 1
+    assert "55544433" in owner_messages[0]
+    assert "/approve 55544433" in owner_messages[0]
+    assert owner_messages[0] == i18n.t("access_request", owner_lang, name="Alice", chat_id=STRANGER)
+
+
+async def test_handle_gate_unknown_no_display_name_falls_back_to_chat_id(db, channel, config):
+    await access.handle_gate(db, channel, config, OWNER, STRANGER, None, "hi", lang="en")
+    owner_lang = i18n.resolve_unprompted_language(config, user_pref="auto")
+    assert channel.sent_to(OWNER) == [i18n.t("access_request", owner_lang, name=STRANGER, chat_id=STRANGER)]
+
+
+async def test_handle_gate_pending_repeat_message(db, channel, config):
+    """R-A3: a pending chat's Nth message still gets `access_pending`
+    (no new owner notification -- they were already notified on first
+    contact) and does not proceed."""
+    db.upsert_user(STRANGER, status="pending", display_name="Alice")
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Alice", "are you there?", lang="en")
+    assert proceed is False
+    assert channel.sent_to(STRANGER) == [i18n.t("access_pending", "en")]
+    assert channel.sent_to(OWNER) == []  # no repeat owner notification
+
+
+async def test_handle_gate_blocked_chat_denied(db, channel, config):
+    """AC-A3 (second half): a blocked chat's next message gets
+    `access_denied` and is not processed."""
+    db.upsert_user(STRANGER, status="blocked")
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, None, "hello?", lang="en")
+    assert proceed is False
+    assert channel.sent_to(STRANGER) == [i18n.t("access_denied", "en")]
+
+
+async def test_handle_gate_thai_reply_language(db, channel, config):
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Alice", "สวัสดี", lang="th")
+    assert proceed is False
+    assert channel.sent_to(STRANGER) == [i18n.t("access_pending", "th")]
+
+
+async def test_handle_gate_fails_safe_on_lookup_error(db, channel, config, monkeypatch):
+    """AC-A7 end-to-end through the gate: a `users` lookup failure must
+    never let the caller proceed, and must not attempt to write a pending
+    row while the DB just failed to read."""
+    monkeypatch.setattr(db, "get_user", _boom)
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Alice", "hi", lang="en")
+    assert proceed is False
+    assert channel.sent_to(STRANGER) == [i18n.t("access_denied", "en")]
+
+
+# ---------------------------------------------------------------------------
+# execute_admin() -- R-A4/R-A5, AC-A2, AC-A3, AC-A4, AC-A5, AC-A6.
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_admin_start_active_user_gets_welcome(db, channel, config):
+    """AC-A6 (active branch). The unknown/pending/blocked `/start`
+    branches are covered by handle_gate's own tests above -- by the time
+    execute_admin is reached for kind="start", the caller is already
+    known active (R-A1 gates before any command work)."""
+    db.upsert_user(MEMBER, status="active")
+    await access.execute_admin(
+        commands.Command(kind="start"), db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=MEMBER, lang="en"
+    )
+    assert channel.sent_to(MEMBER) == [i18n.t("start_welcome", "en")]
+
+
+async def test_execute_admin_approve_grants_access_and_notifies_target(db, channel, config):
+    """AC-A2: /approve grants active status, sends access_granted to the
+    approved chat, and (this module's own added UX, see IMPL) acks the
+    owner too."""
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat=MEMBER),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    row = db.get_user(MEMBER)
+    assert row is not None
+    assert row["status"] == "active"
+
+    target_lang = i18n.resolve_unprompted_language(config, user_pref="auto")
+    assert channel.sent_to(MEMBER) == [i18n.t("access_granted", target_lang)]
+
+    # AC-A2's own "can subsequently log normally" clause.
+    assert access.classify(db, MEMBER) == "active"
+
+
+async def test_execute_admin_invite_is_an_alias_of_approve(db, channel, config):
+    """R-A4: /invite pre-authorizes a chat id before they ever message --
+    the row doesn't exist yet, and invite still creates it active."""
+    assert db.get_user(STRANGER) is None
+    await access.execute_admin(
+        commands.Command(kind="invite", target_chat=STRANGER),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    row = db.get_user(STRANGER)
+    assert row is not None
+    assert row["status"] == "active"
+
+
+async def test_execute_admin_block_revokes_access(db, channel, config):
+    """AC-A3 (first half): /block sets a user blocked."""
+    db.upsert_user(MEMBER, status="active")
+    await access.execute_admin(
+        commands.Command(kind="block", target_chat=MEMBER),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(MEMBER)["status"] == "blocked"
+    assert access.classify(db, MEMBER) == "blocked"
+
+
+async def test_execute_admin_users_lists_everyone(db, channel, config):
+    """AC-A5: /users lists every user with role + status, matching
+    SPEC-v1.2.md §3.3's shape (an active row shows its language, a
+    pending row doesn't)."""
+    db.upsert_user(MEMBER, status="active")
+    db.set_user_language(MEMBER, "th")
+    db.upsert_user(STRANGER, status="pending", display_name="Charlie")
+
+    await access.execute_admin(
+        commands.Command(kind="users"), db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en"
+    )
+    [reply] = channel.sent_to(OWNER)
+    lines = reply.splitlines()
+    assert lines[0] == i18n.t("users_list_header", "en")
+    assert f"• {OWNER} — owner · active · lang auto" in lines
+    assert f"• {MEMBER} — member · active · lang th" in lines
+    assert f"• {STRANGER} — member · pending" in lines
+    # a pending row must not carry a "· lang" suffix
+    assert not any(line.startswith(f"• {STRANGER}") and "lang" in line for line in lines)
+
+
+async def test_execute_admin_admin_commands_invisible_to_non_owner(db, channel, config):
+    """AC-A4: a non-owner's /approve (or /block//users/invite) is not
+    executed and reveals nothing -- no reply, no state change."""
+    db.upsert_user(MEMBER, status="active")  # an active, non-owner member
+    db.upsert_user(STRANGER, status="pending")
+
+    for command in (
+        commands.Command(kind="approve", target_chat=STRANGER),
+        commands.Command(kind="block", target_chat=OWNER),
+        commands.Command(kind="users"),
+        commands.Command(kind="invite", target_chat=STRANGER),
+    ):
+        await access.execute_admin(
+            command, db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=MEMBER, lang="en"
+        )
+
+    assert channel.sent == []
+    assert db.get_user(STRANGER)["status"] == "pending"  # not approved
+    assert db.get_user(OWNER)["status"] == "active"  # not blocked
+    assert db.get_user(OWNER)["role"] == "owner"
+
+
+async def test_execute_admin_approve_missing_chat_id_gets_usage_reply(db, channel, config):
+    """§3.5: a malformed/missing target chat id gets a friendly usage
+    message, not a crash or a silent no-op."""
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat=None),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert channel.sent_to(OWNER) == [i18n.t("admin_usage", "en")]
+
+
+async def test_execute_admin_approve_malformed_chat_id_gets_usage_reply(db, channel, config):
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat="not-a-chat-id"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert channel.sent_to(OWNER) == [i18n.t("admin_usage", "en")]
+    assert db.get_user("not-a-chat-id") is None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: dispatch -> handle_gate -> execute_admin, the shape the
+# integration wiring will glue together (SPEC-v1.2.md §11 integration
+# order step 1). Confirms the pieces actually compose.
+# ---------------------------------------------------------------------------
+
+
+async def test_end_to_end_owner_approves_a_stranger_who_can_then_proceed(db, channel, config, registry):
+    # 1. Stranger's first message is gated off.
+    gate_result = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Dana", "hello", lang="en")
+    assert gate_result is False
+
+    # 2. Owner runs /approve <chat_id>.
+    approve_cmd = commands.dispatch(f"/approve {STRANGER}", registry)
+    assert approve_cmd is not None
+    await access.execute_admin(
+        approve_cmd, db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en"
+    )
+
+    # 3. The formerly-unknown chat now gates through.
+    gate_result_after = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Dana", "500ml", lang="en")
+    assert gate_result_after is True
+
+
+async def test_end_to_end_start_from_unknown_runs_pending_flow(db, channel, config, registry):
+    """AC-A6: /start from an unknown user runs the same R-A2 pending flow
+    as any other message -- handled entirely by handle_gate before
+    command dispatch is even reached (R-A1)."""
+    command = commands.dispatch("/start", registry)
+    assert command == commands.Command(kind="start")
+
+    proceed = await access.handle_gate(db, channel, config, OWNER, STRANGER, "Dana", "/start", lang="en")
+    assert proceed is False
+    assert channel.sent_to(STRANGER) == [i18n.t("access_pending", "en")]
+    assert db.get_user(STRANGER)["status"] == "pending"

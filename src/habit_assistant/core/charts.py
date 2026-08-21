@@ -58,12 +58,14 @@ def _day_labels(day_strs: list[str]) -> list[str]:
 
 
 def render_habit_chart(
-    db: Database, config: Config, habit: Habit, end_date: date, lang: i18n.Language
+    db: Database, config: Config, habit: Habit, end_date: date, lang: i18n.Language, user_id: str
 ) -> bytes | None:
-    """One habit's weekly PNG, or None if there's nothing to render for it
-    (text habits, or matplotlib unavailable). Never raises: any matplotlib
-    failure is caught, logged, and treated as "no chart" so a single bad
-    render can't take down the whole weekly review (AC1.0.1)."""
+    """One habit's weekly PNG for `user_id`, or None if there's nothing to
+    render for it (text habits, or matplotlib unavailable). Never raises:
+    any matplotlib failure is caught, logged, and treated as "no chart" so
+    a single bad render can't take down the whole weekly review
+    (AC1.0.1). SPEC-v1.2.md R-D3: every DB read scoped to `user_id`
+    (AC-U-ISO)."""
     if not MATPLOTLIB_AVAILABLE:
         _warn_missing_once()
         return None
@@ -75,17 +77,17 @@ def render_habit_chart(
 
     try:
         if habit.type == "numeric":
-            values = [db.sum_value(habit.id, d) for d in day_strs]
+            values = [db.sum_value(user_id, habit.id, d) for d in day_strs]
             # SPEC-v1.1.md R-T5/AC22: a numeric habit's goal-line reflects a
             # DB target override the moment one is set (targets.effective_goal).
-            goal = targets.effective_goal(db, habit, config)
+            goal = targets.effective_goal(db, habit, config, user_id)
             unit = habit.unit(lang) or ""
             return _render_bar_chart(labels, values, habit.label(lang), unit, goal)
         if habit.type == "duration":
-            values = [float(db.count(habit.id, d)) for d in day_strs]
+            values = [float(db.count(user_id, habit.id, d)) for d in day_strs]
             return _render_bar_chart(labels, values, habit.label(lang), i18n.t("chart_ylabel_count", lang), None)
         # boolean
-        values = [float(db.count_true(habit.id, d)) for d in day_strs]
+        values = [float(db.count_true(user_id, habit.id, d)) for d in day_strs]
         return _render_bar_chart(labels, values, habit.label(lang), i18n.t("chart_ylabel_count", lang), None)
     except Exception:
         logger.exception("Chart rendering failed for habit %r; skipping its chart", habit.id)
@@ -111,17 +113,17 @@ def _render_bar_chart(
 
 
 def render_weekly_charts(
-    db: Database, config: Config, registry: HabitRegistry, end_date: date, lang: i18n.Language
+    db: Database, config: Config, registry: HabitRegistry, end_date: date, lang: i18n.Language, user_id: str
 ) -> list[tuple[Habit, bytes]]:
-    """One `(habit, png_bytes)` pair per chartable habit, in registry
-    order. Empty when matplotlib is unavailable or every habit is type
-    `text`. This function doesn't read `config.charts.enabled` itself --
-    that gate lives in `core/review.py`, so this stays a pure "render what
-    you can" helper other callers (tests, a future export command) can use
-    without threading the flag through."""
+    """One `(habit, png_bytes)` pair per chartable habit for `user_id`, in
+    registry order. Empty when matplotlib is unavailable or every habit is
+    type `text`. This function doesn't read `config.charts.enabled` itself
+    -- that gate lives in `core/review.py`, so this stays a pure "render
+    what you can" helper other callers (tests, a future export command)
+    can use without threading the flag through."""
     charts: list[tuple[Habit, bytes]] = []
     for habit in registry:
-        image = render_habit_chart(db, config, habit, end_date, lang)
+        image = render_habit_chart(db, config, habit, end_date, lang, user_id)
         if image is not None:
             charts.append((habit, image))
     return charts

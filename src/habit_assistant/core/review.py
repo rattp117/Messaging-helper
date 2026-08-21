@@ -84,22 +84,23 @@ def _week_days(end_date: date) -> list[str]:
 
 
 def _compute_habit_stats(
-    db: Database, config: Config, habit: Habit, day_strs: list[str], end_date: date
+    db: Database, config: Config, habit: Habit, day_strs: list[str], end_date: date, user_id: str
 ) -> HabitStats:
     if habit.type == "numeric":
-        values = [db.sum_value(habit.id, d) for d in day_strs]
+        values = [db.sum_value(user_id, habit.id, d) for d in day_strs]
         # SPEC-v1.1.md R-T5: `targets.effective_goal` is the same helper
         # every other goal-consuming module reads (streaks, reminders,
         # charts, main.py's confirmations) -- one place decides what a
         # habit's "goal" is, DB override included (AC10.5, R-T3).
-        goal = targets.effective_goal(db, habit, config)
+        # SPEC-v1.2.md R-D2: scoped to `user_id`.
+        goal = targets.effective_goal(db, habit, config, user_id)
         days = [DayValue(d, v, goal) for d, v in zip(day_strs, values)] if goal else []
         total = sum(values)
         avg = round(total / len(values), 1) if values else 0.0
         return HabitStats(habit=habit, days=days, total=total, avg=avg, streak=0)
 
     if habit.type == "duration":
-        counts = [db.count(habit.id, d) for d in day_strs]
+        counts = [db.count(user_id, habit.id, d) for d in day_strs]
         total = sum(counts)
         # ROADMAP.md v0.10.0 AC10.5: the weekly review's duration streak
         # now comes from the SAME function `core/streaks.py` uses for
@@ -110,25 +111,28 @@ def _compute_habit_stats(
         # data does); it additionally looks further back than 7 days
         # when the streak is actually longer, which the old
         # window-clamped loop under-reported.
-        streak = streaks.compute_streak(db, config, habit, end_date)
+        streak = streaks.compute_streak(db, config, habit, end_date, user_id)
         return HabitStats(habit=habit, days=[], total=total, avg=0.0, streak=streak)
 
     if habit.type == "text":
-        total = sum(db.count(habit.id, d) for d in day_strs)
+        total = sum(db.count(user_id, habit.id, d) for d in day_strs)
         return HabitStats(habit=habit, days=[], total=total, avg=0.0, streak=0)
 
     # boolean: "done-days" -- the number of days with at least one truthy
     # log, not the raw row count (a habit logged twice in one day still
     # counts as one done day).
-    done_days = sum(1 for d in day_strs if db.count_true(habit.id, d) > 0)
+    done_days = sum(1 for d in day_strs if db.count_true(user_id, habit.id, d) > 0)
     return HabitStats(habit=habit, days=[], total=done_days, avg=0.0, streak=0)
 
 
-def compute_weekly_stats(db: Database, config: Config, registry: HabitRegistry, end_date: date) -> WeeklyStats:
+def compute_weekly_stats(
+    db: Database, config: Config, registry: HabitRegistry, end_date: date, user_id: str
+) -> WeeklyStats:
     """Aggregate the 7 days ending on end_date (inclusive), once per
-    registered habit, in registry order."""
+    registered habit, in registry order, for `user_id` (SPEC-v1.2.md R-D3,
+    AC-U2/AC-U4)."""
     day_strs = _week_days(end_date)
-    habits = [_compute_habit_stats(db, config, habit, day_strs, end_date) for habit in registry]
+    habits = [_compute_habit_stats(db, config, habit, day_strs, end_date, user_id) for habit in registry]
     return WeeklyStats(end_date=end_date, habits=habits)
 
 
@@ -202,21 +206,31 @@ def format_stats_summary(stats: WeeklyStats, registry: HabitRegistry, lang: i18n
 
 
 async def run_weekly_review(
-    db: Database, config: Config, registry: HabitRegistry, llm: OllamaClient, today: date | None = None
+    db: Database,
+    config: Config,
+    registry: HabitRegistry,
+    llm: OllamaClient,
+    lang: i18n.Language,
+    user_id: str,
+    today: date | None = None,
 ) -> str:
-    """Aggregate + narrate. Falls back to the plain stats block (no
-    narrative) if the LLM call fails, so the review still gets sent.
+    """Aggregate + narrate for `user_id`. Falls back to the plain stats
+    block (no narrative) if the LLM call fails, so the review still gets
+    sent.
 
     ROADMAP.md v0.6.0 AC6.4: the weekly review is an unprompted send (no
-    inbound message to detect a language from), so its language is
-    `i18n.resolve_unprompted_language(config)` -- forced language wins as
-    usual, "auto" uses the configured primary language (default Thai).
-    The narrative's system prompt gets the same target language via
-    `i18n.language_instruction`, so the LLM-generated prose matches the
-    factual stats block instead of being English inside a Thai message;
-    the "no medical advice" constraint (SPEC.md/ROADMAP.md AC6.4) stays in
-    the (English, LLM-facing, not user-facing) instruction text itself and
-    is unaffected by which language the narrative comes back in.
+    inbound message to detect a language from). SPEC-v1.2.md: `lang` is
+    now taken pre-resolved from the caller (main.py's per-user fan-out job)
+    instead of resolved internally via `i18n.resolve_unprompted_language`
+    -- this module has no way to know which user's language preference to
+    consult once that becomes per-user (R-P1); the caller that does know
+    resolves it once and passes the result. The narrative's system prompt
+    gets the same target language via `i18n.language_instruction`, so the
+    LLM-generated prose matches the factual stats block instead of being
+    English inside a Thai message; the "no medical advice" constraint
+    (SPEC.md/ROADMAP.md AC6.4) stays in the (English, LLM-facing, not
+    user-facing) instruction text itself and is unaffected by which
+    language the narrative comes back in.
 
     ROADMAP.md v1.0.0: a Garmin hydration cross-check section is appended
     when `[garmin] csv_path` is configured (`core/garmin.py`); with the
@@ -224,8 +238,7 @@ async def run_weekly_review(
     returns `""` and this function's output is byte-identical to v0.10.0
     (zero regression for every pre-v1.0 review test)."""
     end_date = today or date.today()
-    stats = compute_weekly_stats(db, config, registry, end_date)
-    lang = i18n.resolve_unprompted_language(config)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id)
     summary = format_stats_summary(stats, registry, lang)
 
     narrative = await llm.chat_text(
@@ -238,7 +251,9 @@ async def run_weekly_review(
     header = i18n.t("weekly_review_header", lang)
     text = f"{header}\n\n{summary}\n\n{narrative}"
 
-    garmin_section = garmin.format_garmin_section(garmin.build_garmin_report(db, config, end_date), lang)
+    garmin_section = garmin.format_garmin_section(
+        garmin.build_garmin_report(db, config, end_date, user_id), lang
+    )
     if garmin_section:
         text += f"\n\n{garmin_section}"
     return text
@@ -255,24 +270,29 @@ def _chart_caption(hs: HabitStats, lang: i18n.Language) -> str:
 
 
 def render_weekly_review_charts(
-    db: Database, config: Config, registry: HabitRegistry, today: date | None = None
+    db: Database,
+    config: Config,
+    registry: HabitRegistry,
+    lang: i18n.Language,
+    user_id: str,
+    today: date | None = None,
 ) -> list[tuple[bytes, str]]:
     """ROADMAP.md v1.0.0 AC1.0.1: `(png_bytes, caption)` pairs to attach to
-    the weekly review. `[]` whenever there's nothing to attach --
+    `user_id`'s weekly review. `[]` whenever there's nothing to attach --
     `[charts] enabled = false`, matplotlib not installed
     (`core/charts.py` logs once and returns no images), or every
     configured habit is type `text` -- so `main.py`'s call site never
     needs its own enabled/failure branching: a text-only review is simply
-    "attach zero images"."""
+    "attach zero images". SPEC-v1.2.md: `lang` is now taken pre-resolved
+    (see `run_weekly_review`'s own note on why)."""
     if not config.charts.enabled:
         return []
     end_date = today or date.today()
-    lang = i18n.resolve_unprompted_language(config)
-    stats = compute_weekly_stats(db, config, registry, end_date)
+    stats = compute_weekly_stats(db, config, registry, end_date, user_id)
     stats_by_habit_id = {hs.habit.id: hs for hs in stats.habits}
 
     pairs: list[tuple[bytes, str]] = []
-    for habit, image in charts.render_weekly_charts(db, config, registry, end_date, lang):
+    for habit, image in charts.render_weekly_charts(db, config, registry, end_date, lang, user_id):
         hs = stats_by_habit_id[habit.id]
         pairs.append((image, _chart_caption(hs, lang)))
     return pairs

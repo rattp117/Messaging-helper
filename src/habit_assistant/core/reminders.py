@@ -9,33 +9,40 @@ before actually sending -- both no-ops (byte-identical to v0.7.0/v0.8.0
 behavior) unless a caller passes `db`/`config`:
 
 - **Quiet hours** (AC9.2): if the current wall-clock time (`config.app.
-  timezone`) falls inside any `config.quiet_hours.windows` entry -- including
-  a window that crosses midnight -- the reminder is suppressed and logged.
-  Pure time-of-day comparison, no DB involved, so there is nothing to fail
-  open on here.
-- **Goal-met skip** (AC9.1/AC9.4): for a goal-bearing habit
-  (`habit.goal is not None`) with `habit.skip_if_goal_met` true (the
-  default), today's progress is read from `db` and compared to the goal;
-  already-met -> suppressed and logged. **Fail-open** (AC9.5): if the DB
-  read itself raises, the error is logged and the reminder is sent anyway --
-  a DB hiccup must never silently swallow every reminder.
+  timezone`) falls inside any effective quiet-hours window -- including a
+  window that crosses midnight -- the reminder is suppressed and logged.
+- **Goal-met skip** (AC9.1/AC9.4): for a goal-bearing habit with
+  `habit.skip_if_goal_met` true (the default), today's progress is read
+  from `db` and compared to the effective goal; already-met -> suppressed
+  and logged. **Fail-open** (AC9.5): if the DB read itself raises, the
+  error is logged and the reminder is sent anyway -- a DB hiccup must
+  never silently swallow every reminder.
+
+SPEC-v1.2.md "Multi-user support" (R-S1-R-S6): reminders are now per-user
+in two independent ways -- (1) WHO gets one (`Database.active_user_ids()`,
+the fan-out set) and (2) WHEN (`effective_reminder_times`, per-user custom
+times with a config fallback). The single fixed cron-per-config-time
+scheduling of `schedule_reminders` (v0.7.0-v1.1.0) is REPLACED by a single
+minutely tick job (`run_due_reminders`, R-S1) that reads the live
+`user_reminder_times` store on every tick -- no scheduler rebuild is ever
+needed when a user runs `/remind` (R-S6), and no per-user job lifecycle is
+needed on approve/block. `ReminderState.last_habit_id` becomes a per-user
+map (chat_id -> habit id) so "snooze" (no habit named) resolves correctly
+per asking user (R-S2/AC-U-SNOOZE) and quiet-hours become per-user via
+`effective_quiet_windows` (R-P2).
 
 `ReminderState` (below) is a tiny, in-memory, single-process "which habit's
-reminder last actually fired" tracker -- `core/commands.py`'s bare "snooze"/
-"เลื่อน" (no explicit habit named in the phrase) needs to know which habit
-to reschedule (ROADMAP.md v0.9.0's own wording: "target habit = the most
-recently reminded habit"). It's plain data, not a channel/DB import, so it
-stays inside this "no channel imports" module without breaking the seam."""
+reminder last actually fired, per user" tracker. It's plain data, not a
+channel/DB import, so it stays inside this "no channel imports" module
+without breaking the seam."""
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
@@ -48,15 +55,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ReminderState:
-    """ROADMAP.md v0.9.0: `last_habit_id` is updated by `send_reminder`
-    every time a reminder actually fires (i.e. survives the quiet-hours/
-    goal-met checks below) -- read by `main.py`'s snooze handler to resolve
-    a bare "snooze"/"เลื่อน" command to a habit. One instance lives for the
-    lifetime of the process (built once in `async_main`); lost on restart,
-    which is fine -- there is nothing to snooze immediately after a fresh
-    start anyway."""
+    """SPEC-v1.2.md R-S2: `last_habit_id` is now a per-user map (chat_id ->
+    habit id), updated by `send_reminder` every time a reminder actually
+    fires for that user (i.e. survives the quiet-hours/goal-met checks
+    below) -- read by `main.py`'s snooze handler to resolve a bare
+    "snooze"/"เลื่อน" command to a habit FOR THE ASKING USER, never
+    another user's (AC-U-SNOOZE). One instance lives for the lifetime of
+    the process (built once in `async_main`); lost on restart, which is
+    fine -- there is nothing to snooze immediately after a fresh start
+    anyway."""
 
-    last_habit_id: str | None = None
+    last_habit_id: dict[str, str] = field(default_factory=dict)
 
 
 # Built-in habits reuse their v0.6.0 catalog entries verbatim (SPEC-v0.7.md
@@ -69,16 +78,9 @@ BUILTIN_REMINDER_MESSAGE_IDS = {
     "diary": "reminder_diary",
 }
 
-# Back-compat only: `main.py` (frozen shared-surface file, not touched here
-# per module ownership -- SPEC-v0.7.md §11) still has a *module-level,
-# unconditional* `from habit_assistant.core.reminders import REMINDER_TEXTS,
-# schedule_reminders, send_reminder`. Dropping this name would raise
-# ImportError at import time for every module that imports `main` --
-# collection-time breakage across ~7 unrelated test files, not a graceful
-# per-call TypeError like the `registry`/`habit` contract changes below.
-# Kept only so that import keeps working; nothing in this module's own code
-# reads it anymore. Remove once Archi's integration step flips main.py's
-# call sites (SPEC-v0.7.md §11 "Integration order" step 1).
+# Back-compat only: kept so `from habit_assistant.core.reminders import
+# REMINDER_TEXTS` (a few older tests) keeps working; nothing in this
+# module's own code reads it anymore.
 REMINDER_TEXTS = {category: i18n.t(msg_id, "en") for category, msg_id in BUILTIN_REMINDER_MESSAGE_IDS.items()}
 
 
@@ -110,27 +112,102 @@ def _today_str(config: Config) -> str:
     return datetime.now(ZoneInfo(config.app.timezone)).date().isoformat()
 
 
+def _now_hhmm(clock, tz_name: str) -> str:
+    """SPEC-v1.2.md R-S1: the current wall-clock `HH:MM` in `tz_name`.
+    Mirrors `core/query.py:_today_in_timezone`'s own convention -- a naive
+    `clock()` (this app's usual injectable-clock shape, e.g. `datetime.now`
+    or a test's fixed callable) is treated as already being in `tz_name`;
+    an aware one is converted to it."""
+    now = clock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo(tz_name))
+    else:
+        now = now.astimezone(ZoneInfo(tz_name))
+    return now.strftime("%H:%M")
+
+
 def is_quiet_hours_now(config: Config) -> bool:
     """ROADMAP.md v0.10.0: a plain "is right now inside a configured
-    quiet-hours window?" check, for callers outside this module (e.g.
-    `main.py`'s daily-summary job, which must also respect quiet hours)
-    that shouldn't have to duplicate `_in_quiet_hours`'s window-parsing
-    logic or reach into a private function."""
+    GLOBAL quiet-hours window?" check, for callers outside this module
+    (e.g. `main.py`'s daily-summary job, which is a global-time fan-out --
+    R-S3 -- and stays gated by the global config windows, not any one
+    user's override) that shouldn't have to duplicate `_in_quiet_hours`'s
+    window-parsing logic or reach into a private function."""
     if not config.quiet_hours.windows:
         return False
     now_local = datetime.now(ZoneInfo(config.app.timezone)).time()
     return _in_quiet_hours(now_local, config.quiet_hours.windows)
 
 
-def _goal_already_met(db: Database, habit: Habit, config: Config) -> bool:
+def effective_quiet_windows(db: Database | None, config: Config, chat_id: str) -> list[tuple[str, str]]:
+    """SPEC-v1.2.md R-P2: `chat_id`'s effective quiet-hours windows --
+    `users.quiet_hours_json` if set (an explicit, possibly EMPTY, list --
+    `/quiet off` stores `"[]"`, distinct from "never set"), else inherit
+    `config.quiet_hours.windows` (the pre-v1.2 global default, so an
+    un-customized user -- the owner included -- is byte-identical to v1.1,
+    AC-M3). `db=None` (a caller with no DB handle, e.g. a bare unit test
+    calling `send_reminder` directly) also falls back to the global
+    config, matching v1.1's own no-DB behavior. The whole lookup is inside
+    one fail-open `try/except` (mirrors AC9.5's own posture for the
+    goal-met read, `_goal_already_met` below) -- a DB hiccup reading the
+    user row must fall back to the global config default, not crash
+    `send_reminder` (and therefore the scheduler job) outright."""
+    if db is None:
+        return config.quiet_hours.windows
+    try:
+        user = db.get_user(chat_id)
+        if user is None or user["quiet_hours_json"] is None:
+            return config.quiet_hours.windows
+        raw = json.loads(user["quiet_hours_json"])
+        return [(w[0], w[1]) for w in raw]
+    except Exception:
+        logger.exception(
+            "Reading effective quiet hours failed for %s; falling back to global config windows (fail-open)", chat_id
+        )
+        return config.quiet_hours.windows
+
+
+def _user_language_pref(db: Database, chat_id: str) -> str:
+    """Integration step (SPEC-v1.2.md R-P1's read side, punch-list item 3
+    call site `core/reminders.py:297`): `chat_id`'s stored `users.
+    language_pref`, defaulting to `"auto"` on a missing row or a DB read
+    error -- fail-open, mirrors `effective_quiet_windows`'s own posture a
+    few lines up. A preference lookup must never block or crash the
+    minutely tick for every OTHER user in the same fan-out."""
+    try:
+        user = db.get_user(chat_id)
+    except Exception:
+        logger.exception("Reading language preference failed for %s; defaulting to auto (fail-open)", chat_id)
+        return "auto"
+    return user["language_pref"] if user is not None else "auto"
+
+
+def effective_reminder_times(db: Database, config: Config, habit: Habit, user_id: str) -> list[str]:
+    """SPEC-v1.2.md R-S4: `user_id`'s effective reminder times for `habit`
+    -- the ONE resolver both the minutely tick (`run_due_reminders`) and
+    the `/remind` show/set paths (module `schedules`) consult, so they can
+    never diverge. No stored rows -> the habit's global config
+    `reminder_times` (fallback/default, AC-S1's "owner byte-identical
+    until they customize"); rows equal to the single sentinel `["off"]` ->
+    `[]` (explicitly no reminders for this user+habit); otherwise -> the
+    stored custom `HH:MM` list, sorted and de-duplicated (read-side
+    safety net; the write side, R-S5, is also expected to de-dupe)."""
+    rows = db.get_reminder_times(user_id, habit.id)
+    if not rows:
+        return list(habit.reminder_times)
+    if rows == ["off"]:
+        return []
+    return sorted(set(rows))
+
+
+def _goal_already_met(db: Database, habit: Habit, config: Config, user_id: str) -> bool:
     """ROADMAP.md v0.9.0 AC9.1/AC9.4/AC9.5, extended by SPEC-v1.1.md R-T5/
     R-T5b: True only for a goal-bearing habit -- its effective goal
     (`targets.effective_goal`, a DB override if one is set, else the
     config default) is not `None` -- with adaptive skipping enabled
     (`habit.skip_if_goal_met`, default True) whose today's total already
-    meets that goal. A target set on a previously goal-less habit (e.g.
-    `stretch`) makes this check apply to it going forward (R-T5b); clearing
-    the target reverts to "never skip" for it, same as before v1.1.
+    meets that goal. SPEC-v1.2.md R-D2/R-S2: scoped to `user_id` -- A's
+    goal-met state never suppresses B's reminder (AC-U5).
 
     Fail-open (AC9.5): a DB read error is logged and treated as "not met"
     -- the reminder always sends rather than a scheduler job ever crashing
@@ -141,30 +218,34 @@ def _goal_already_met(db: Database, habit: Habit, config: Config) -> bool:
     if not habit.skip_if_goal_met:
         return False
     try:
-        goal = targets.effective_goal(db, habit, config)
+        goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None:
             return False
-        total = db.sum_value(habit.id, _today_str(config))
+        total = db.sum_value(user_id, habit.id, _today_str(config))
     except Exception:
-        logger.exception("Adaptive-reminder goal read failed for %s; sending reminder anyway (fail-open)", habit.id)
+        logger.exception(
+            "Adaptive-reminder goal read failed for %s/%s; sending reminder anyway (fail-open)", user_id, habit.id
+        )
         return False
     if total >= goal:
-        logger.info("Skipping %s reminder: goal already met (%s/%s)", habit.id, total, goal)
+        logger.info("Skipping %s/%s reminder: goal already met (%s/%s)", user_id, habit.id, total, goal)
         return True
     return False
 
 
 async def send_reminder(
     channel: Channel,
+    chat_id: str,
     habit: Habit,
     language: i18n.Language = "en",
     db: Database | None = None,
     config: Config | None = None,
     state: ReminderState | None = None,
 ) -> None:
-    """Unprompted send (SPEC.md §7/§8) -- `language` is resolved by the
-    caller (`schedule_reminders` passes `i18n.resolve_unprompted_language
-    (config)`, which defaults to Thai per ROADMAP.md v0.6.0 AC6.3).
+    """Unprompted send (SPEC.md §7/§8) to `chat_id` -- `language` is
+    resolved by the caller (`run_due_reminders` passes
+    `i18n.resolve_unprompted_language(config)`, which defaults to Thai per
+    ROADMAP.md v0.6.0 AC6.3).
 
     Copy resolution (SPEC-v0.7.md §4 R15): a built-in id reuses its
     existing v0.6.0 catalog entry byte-for-byte (AC13); else the habit's
@@ -172,21 +253,29 @@ async def send_reminder(
     `reminder_generic` template parameterized by `label` (AC14).
 
     ROADMAP.md v0.9.0: `db`/`config` are additive and default to `None` --
-    every pre-v0.9 caller (a test calling `send_reminder(channel, habit,
-    lang)` directly) is unaffected, byte-identical output, no adaptive
-    checks run. `schedule_reminders` below is the real production caller
-    and always binds both. Order: quiet hours first (cheap, no I/O), then
-    the goal-met DB read -- either suppression short-circuits before the
-    send and before `state` is updated (a suppressed reminder never counts
-    as "the most recently reminded habit" for snooze purposes, ROADMAP.md
-    v0.9.0's own AC9.3 target-habit rule)."""
-    if config is not None and config.quiet_hours.windows:
-        now_local = datetime.now(ZoneInfo(config.app.timezone)).time()
-        if _in_quiet_hours(now_local, config.quiet_hours.windows):
-            logger.info("Suppressing %s reminder: inside a quiet-hours window (now=%s)", habit.id, now_local)
-            return
+    every pre-v0.9 caller (a test calling `send_reminder(channel, chat_id,
+    habit, lang)` directly) is unaffected, byte-identical output, no
+    adaptive checks run. `run_due_reminders` below is the real production
+    caller and always binds both. Order: quiet hours first (cheap, no
+    I/O), then the goal-met DB read -- either suppression short-circuits
+    before the send and before `state` is updated (a suppressed reminder
+    never counts as "the most recently reminded habit" for snooze
+    purposes, ROADMAP.md v0.9.0's own AC9.3 target-habit rule).
+    SPEC-v1.2.md R-S2: quiet-hours now uses `chat_id`'s OWN effective
+    windows (`effective_quiet_windows`), not just the global config, so a
+    custom-time reminder is suppressed under the same per-user rules as a
+    config-time one (AC-S6)."""
+    if config is not None:
+        windows = effective_quiet_windows(db, config, chat_id)
+        if windows:
+            now_local = datetime.now(ZoneInfo(config.app.timezone)).time()
+            if _in_quiet_hours(now_local, windows):
+                logger.info(
+                    "Suppressing %s/%s reminder: inside a quiet-hours window (now=%s)", chat_id, habit.id, now_local
+                )
+                return
 
-    if db is not None and config is not None and _goal_already_met(db, habit, config):
+    if db is not None and config is not None and _goal_already_met(db, habit, config, chat_id):
         return
 
     if habit.id in BUILTIN_IDS:
@@ -194,39 +283,39 @@ async def send_reminder(
     else:
         custom = habit.reminder_text(language)
         text = custom if custom is not None else i18n.t("reminder_generic", language, label=habit.label(language))
-    await channel.send(text)
+    await channel.send(chat_id, text)
     if state is not None:
-        state.last_habit_id = habit.id
+        state.last_habit_id[chat_id] = habit.id
 
 
-def schedule_reminders(
-    scheduler: AsyncIOScheduler,
+async def run_due_reminders(
     channel: Channel,
     config: Config,
     registry: HabitRegistry,
-    db: Database | None = None,
+    db: Database,
     state: ReminderState | None = None,
+    clock=datetime.now,
 ) -> None:
-    """Register one cron job per `reminder_times` entry, for every habit in
-    the registry (SPEC-v0.7.md §4 R15) -- a habit with no `reminder_times`
-    schedules nothing. Reminders are unprompted (no inbound message to
-    detect a language from), so the language is resolved once from
-    `config.i18n` and baked into every job's args (ROADMAP.md v0.6.0
-    AC6.3).
-
-    ROADMAP.md v0.9.0: `db`/`state` (both optional, default `None` for
-    backward compat with every pre-v0.9 caller/test) are bound into each
-    job's `args` alongside `config`, so the adaptive quiet-hours/goal-met
-    checks run with fresh state at *fire* time, not at scheduling time."""
-    language = i18n.resolve_unprompted_language(config)
-    for habit in registry:
-        for t in habit.reminder_times:
-            hour, minute = _parse_hhmm(t)
-            scheduler.add_job(
-                send_reminder,
-                trigger=CronTrigger(hour=hour, minute=minute, timezone=config.app.timezone),
-                args=[channel, habit, language, db, config, state],
-                id=f"reminder_{habit.id}_{t}",
-                replace_existing=True,
-            )
-            logger.info("Scheduled %s reminder at %s (%s, lang=%s)", habit.id, t, config.app.timezone, language)
+    """SPEC-v1.2.md R-S1: the minutely tick, replacing the per-config-time
+    cron fan-out of the removed `schedule_reminders`. Computes the current
+    wall-clock `HH:MM` (`config.app.timezone`) once, then for every active
+    user × every registered habit, sends that habit's reminder to that
+    user iff the current minute is in the user's effective reminder times
+    for that habit (`effective_reminder_times`, R-S4). `send_reminder`
+    itself re-applies quiet-hours/goal-met suppression per user (R-S2), so
+    a custom-time reminder is suppressed under the exact same rules as a
+    config-time one (AC-S6). `main.py` schedules this on a single
+    `CronTrigger(second=0, ...)` job with `coalesce=True, max_instances=1`
+    -- a paused/restarted process never replays a missed minute or
+    double-sends (R-S1's own stated mitigation)."""
+    current_hhmm = _now_hhmm(clock, config.app.timezone)
+    for user_id in db.active_user_ids():
+        # Integration step (SPEC-v1.2.md R-P1 call site #5 of 5): resolved
+        # per user now, not once globally -- so a user who ran `/lang th`
+        # gets their reminders in Thai regardless of what any other
+        # active user (or the global config default) resolves to.
+        language = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+        for habit in registry:
+            times = effective_reminder_times(db, config, habit, user_id)
+            if current_hhmm in times:
+                await send_reminder(channel, user_id, habit, language, db, config, state)

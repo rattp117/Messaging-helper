@@ -58,18 +58,26 @@ from typing import Awaitable, Callable
 
 import httpx
 import pytest
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config, HabitConfig, HabitLabel
+from habit_assistant.core import i18n
 from habit_assistant.core.commands import dispatch
 from habit_assistant.core.habits import HabitRegistry
 from habit_assistant.core.parser import parse_message
-from habit_assistant.core.reminders import schedule_reminders, send_reminder
+from habit_assistant.core.reminders import ReminderState, run_due_reminders, send_reminder
 from habit_assistant.core.review import compute_weekly_stats, run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.main import handle_inbound_message
 from habit_assistant.storage.db import Database
+
+# SPEC-v1.2.md: this file exercises the shared surface's user_id threading
+# through the same real, non-parser-bypassing pipeline it always has -- a
+# single owning chat id stands in for "the" user throughout, since AC7.2's
+# "zero code changes for a config-only habit" claim is orthogonal to
+# multi-user scoping (that's SPEC-v1.2.md's own AC-U*/AC-M3 territory,
+# covered by test_reminders.py/test_migrations.py/test_v11_shared_surface.py).
+OWNER = "owner"
 
 # ---------------------------------------------------------------------------
 # The added-via-config-only habits (SPEC-v0.7.md SS2.1's own "sleep" example,
@@ -108,10 +116,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -139,6 +147,7 @@ def fixed_clock():
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -223,7 +232,7 @@ async def test_sleep_confirmation_english_matches_spec_example(db, fixed_clock):
     llm = make_llm(extraction("sleep", 7))
 
     await handle_inbound_message(
-        "slept 7 hours", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "slept 7 hours", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent == ["✅ 7 h logged — today 7 / 8 h (88%)"]
@@ -234,7 +243,7 @@ async def test_sleep_confirmation_thai_matches_spec_example(db, fixed_clock):
     llm = make_llm(extraction("sleep", 7))
 
     await handle_inbound_message(
-        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent == ["✅ บันทึกนอน 7 ชม. แล้ว — วันนี้ 7 / 8 ชม. (88%)"]
@@ -245,10 +254,10 @@ async def test_sleep_row_stored_with_correct_category_habit_type_and_value(db, f
     llm = make_llm(extraction("sleep", 7))
 
     await handle_inbound_message(
-        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between(OWNER, "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     assert rows[0]["category"] == "sleep"
     assert rows[0]["habit_type"] == "numeric"
@@ -260,7 +269,7 @@ async def test_meds_confirmation_english_matches_spec_example(db, fixed_clock):
     llm = make_llm(extraction("meds", True))
 
     await handle_inbound_message(
-        "took my meds", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "took my meds", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent == ["✅ meds — done today"]
@@ -271,7 +280,7 @@ async def test_meds_confirmation_thai(db, fixed_clock):
     llm = make_llm(extraction("meds", True))
 
     await handle_inbound_message(
-        "กินยาแล้ว", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "กินยาแล้ว", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent == ["✅ ยา — ทำแล้ว วันนี้"]
@@ -282,41 +291,64 @@ async def test_meds_row_stored_as_boolean_zero_or_one(db, fixed_clock):
     llm = make_llm(extraction("meds", False))
 
     await handle_inbound_message(
-        "no meds yet", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "no meds yet", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between(OWNER, "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows[0]["category"] == "meds"
     assert rows[0]["habit_type"] == "boolean"
     assert rows[0]["value_num"] == 0.0
 
 
 # ---------------------------------------------------------------------------
-# 3. Reminder job registration -- real schedule_reminders, generic
-# reminder_generic fallback (neither SLEEP nor MEDS sets reminder_text).
+# 3. Reminder scheduling -- real run_due_reminders (SPEC-v1.2.md R-S1's
+# minutely tick replaces the removed per-config-time schedule_reminders),
+# generic reminder_generic fallback (neither SLEEP nor MEDS sets
+# reminder_text). AC7.2's "zero code changes" claim now means: a
+# config-only habit's reminder_times are picked up by
+# effective_reminder_times's config fallback with no per-habit code path.
 # ---------------------------------------------------------------------------
 
 
-def test_schedule_reminders_registers_jobs_for_both_added_habits():
-    scheduler = AsyncIOScheduler()
+async def test_run_due_reminders_fires_both_added_habits_at_their_configured_times(db):
+    # run_due_reminders is an unprompted send -- it resolves its own
+    # language via i18n.resolve_unprompted_language(config), which defaults
+    # to Thai (ROADMAP.md v0.6.0 AC6.3, config.toml's primary_language="th"),
+    # not whatever language a test happens to pass send_reminder directly.
+    channel = FakeChannel()
+    lang = i18n.resolve_unprompted_language(CONFIG)
+
+    await run_due_reminders(channel, CONFIG, REGISTRY, db, clock=lambda: datetime(2026, 8, 19, 7, 0, 0))
+    assert channel.sent == [i18n.t("reminder_generic", lang, label=REGISTRY.get("sleep").label(lang))]
+
+    channel.sent.clear()
+    await run_due_reminders(channel, CONFIG, REGISTRY, db, clock=lambda: datetime(2026, 8, 19, 9, 0, 0))
+    assert channel.sent == [i18n.t("reminder_generic", lang, label=REGISTRY.get("meds").label(lang))]
+
+
+async def test_run_due_reminders_still_fires_all_builtin_times_alongside_added_habits(db):
     channel = FakeChannel()
 
-    schedule_reminders(scheduler, channel, CONFIG, REGISTRY)
+    # Built-ins untouched: still exactly 6 water + 2 stretch + 1 diary
+    # fires across their configured times, unaffected by the two added
+    # habits sharing the same registry/db/tick.
+    fired_at: dict[str, int] = {}
+    for hhmm in ["08:00", "10:30", "11:00", "13:00", "15:30", "16:00", "18:00", "20:30", "21:30"]:
+        hour, minute = (int(p) for p in hhmm.split(":"))
+        channel.sent.clear()
+        await run_due_reminders(channel, CONFIG, REGISTRY, db, clock=lambda h=hour, m=minute: datetime(2026, 8, 19, h, m, 0))
+        fired_at[hhmm] = len(channel.sent)
 
-    job_ids = {job.id for job in scheduler.get_jobs()}
-    assert "reminder_sleep_07:00" in job_ids
-    assert "reminder_meds_09:00" in job_ids
-    # Built-ins untouched: still exactly 6 water + 2 stretch + 1 diary.
-    assert len([j for j in job_ids if j.startswith("reminder_water_")]) == 6
-    assert len([j for j in job_ids if j.startswith("reminder_stretch_")]) == 2
-    assert len([j for j in job_ids if j.startswith("reminder_diary_")]) == 1
+    assert sum(fired_at[t] for t in ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]) == 6  # water
+    assert sum(fired_at[t] for t in ["11:00", "16:00"]) == 2  # stretch
+    assert fired_at["21:30"] == 1  # diary
 
 
 async def test_send_reminder_sleep_uses_generic_template_english():
     channel = FakeChannel()
     sleep_habit = REGISTRY.get("sleep")
 
-    await send_reminder(channel, sleep_habit, "en")
+    await send_reminder(channel, OWNER, sleep_habit, "en")
 
     assert channel.sent == ["⏰ Time for sleep. How did it go?"]
 
@@ -325,7 +357,7 @@ async def test_send_reminder_meds_uses_generic_template_thai():
     channel = FakeChannel()
     meds_habit = REGISTRY.get("meds")
 
-    await send_reminder(channel, meds_habit, "th")
+    await send_reminder(channel, OWNER, meds_habit, "th")
 
     assert channel.sent == ["⏰ ถึงเวลายาแล้วนะ วันนี้เป็นยังไงบ้าง?"]
 
@@ -351,6 +383,7 @@ async def test_weekly_review_includes_sleep_and_meds_alongside_builtins(db, fixe
         config=CONFIG,
         clock=fixed_clock,
         registry=REGISTRY,
+        user_id=OWNER,
     )
     await handle_inbound_message(
         "นอน 7 ชม.",
@@ -360,6 +393,7 @@ async def test_weekly_review_includes_sleep_and_meds_alongside_builtins(db, fixe
         config=CONFIG,
         clock=fixed_clock,
         registry=REGISTRY,
+        user_id=OWNER,
     )
     await handle_inbound_message(
         "took my meds",
@@ -369,9 +403,10 @@ async def test_weekly_review_includes_sleep_and_meds_alongside_builtins(db, fixe
         config=CONFIG,
         clock=fixed_clock,
         registry=REGISTRY,
+        user_id=OWNER,
     )
 
-    stats = compute_weekly_stats(db, CONFIG, REGISTRY, end_date)
+    stats = compute_weekly_stats(db, CONFIG, REGISTRY, end_date, OWNER)
 
     assert stats.get("water").total == 500.0
     assert stats.get("sleep").total == 7.0
@@ -383,8 +418,13 @@ async def test_weekly_review_includes_sleep_and_meds_alongside_builtins(db, fixe
     # `resolve_unprompted_language`); the generic per-habit lines for both
     # added habits render via `stats_generic_numeric_total`/
     # `stats_generic_count_summary` (core/i18n.py), alongside the
-    # byte-identical built-in water/stretch/diary blocks.
-    summary_th = await run_weekly_review(db, CONFIG, REGISTRY, FakeLLM("เก่งมากสัปดาห์นี้!"), today=end_date)
+    # byte-identical built-in water/stretch/diary blocks. SPEC-v1.2.md:
+    # `run_weekly_review` now takes `lang` pre-resolved by the caller
+    # (main.py's per-user fan-out job does this once per active user).
+    lang_th = i18n.resolve_unprompted_language(CONFIG)
+    summary_th = await run_weekly_review(
+        db, CONFIG, REGISTRY, FakeLLM("เก่งมากสัปดาห์นี้!"), lang_th, OWNER, today=end_date
+    )
     assert "นอนรวม: 7 ชม. เฉลี่ยต่อวัน: 1 ชม." in summary_th
     assert "บันทึกยาสัปดาห์นี้: 1 ครั้ง" in summary_th
     assert "น้ำ (มล. / เป้าหมาย / %):" in summary_th  # built-in water block still present, unchanged
@@ -392,7 +432,10 @@ async def test_weekly_review_includes_sleep_and_meds_alongside_builtins(db, fixe
     # Forced-English config: same two new-habit lines via the English side
     # of the same generic templates.
     en_config = Config(habits=CONFIG.habits, i18n={"language": "en"})
-    summary_en = await run_weekly_review(db, en_config, REGISTRY, FakeLLM("Great week!"), today=end_date)
+    lang_en = i18n.resolve_unprompted_language(en_config)
+    summary_en = await run_weekly_review(
+        db, en_config, REGISTRY, FakeLLM("Great week!"), lang_en, OWNER, today=end_date
+    )
     assert "sleep total: 7 h, average/day: 1 h" in summary_en
     assert "meds entries this week: 1" in summary_en
 
@@ -406,11 +449,11 @@ async def test_undo_sleep_numeric_with_goal(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("sleep", 7))
     await handle_inbound_message(
-        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     await handle_inbound_message(
-        "/undo", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "/undo", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent[-1] == "↩️ Undone — removed 7 h sleep. Today: 0 / 8 h (0%)"
@@ -420,11 +463,11 @@ async def test_edit_sleep_numeric_with_goal(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("sleep", 7))
     await handle_inbound_message(
-        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "นอน 7 ชม.", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     await handle_inbound_message(
-        "make that 6h", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "make that 6h", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent[-1] == "✏️ Updated to 6 h — today 6 / 8 h (75%)"
@@ -434,11 +477,11 @@ async def test_undo_meds_boolean(db, fixed_clock):
     channel = FakeChannel()
     llm = make_llm(extraction("meds", True))
     await handle_inbound_message(
-        "took my meds", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "took my meds", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     await handle_inbound_message(
-        "/undo", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY
+        "/undo", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
     assert channel.sent[-1] == "↩️ Undone — removed meds"
@@ -455,11 +498,12 @@ def test_meds_boolean_is_never_classified_as_an_edit_target():
 
 
 # ---------------------------------------------------------------------------
-# 6. Migration 004 backfill + newly-added-habit rows aggregate together.
+# 6. Migration 004+006 backfill + owner attribution + newly-added-habit
+# rows aggregate together.
 # ---------------------------------------------------------------------------
 
 
-def test_migration_004_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp_path):
+def test_migration_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp_path):
     db_path = tmp_path / "legacy_v3.db"
 
     # Hand-build a v3-shaped DB (pre-v0.7 shape, no habit_type column) with
@@ -499,23 +543,27 @@ def test_migration_004_backfilled_legacy_rows_aggregate_alongside_new_habit_rows
 
     # Open through the real Database class -- migration 004 runs here,
     # backfilling habit_type='numeric' for the two legacy water rows.
-    # SPEC-v1.1.md's additive migration 005 (habit_targets) also runs now
-    # that it's part of MIGRATIONS, so a v3-shaped DB opened today lands
-    # on version 5, not 4.
+    # SPEC-v1.1.md's additive migration 005 (habit_targets) and
+    # SPEC-v1.2.md's migration 006 (multi-user) also run now that they're
+    # part of MIGRATIONS, so a v3-shaped DB opened today lands on version
+    # 6, not 4. Migration 006 adds `logs.user_id` as NULL for these legacy
+    # rows -- mirroring `async_main`'s real startup sequence,
+    # `attribute_legacy_to_owner` backfills them to OWNER (AC-M2).
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 5
+    assert db.schema_version == 6
+    db.attribute_legacy_to_owner(OWNER)
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated
     # DB, as if the operator upgraded to v0.7.0 config.toml and kept using
     # the bot -- exactly what "aggregating alongside" means.
     from habit_assistant.storage.models import LogEntry
 
-    db.insert_log(LogEntry(None, "2026-08-17T22:00:00", "sleep", 7.0, None, "นอน 7 ชม.", "reply", habit_type="numeric"))
-    db.insert_log(LogEntry(None, "2026-08-18T22:00:00", "sleep", 6.0, None, "นอน 6 ชม.", "reply", habit_type="numeric"))
-    db.insert_log(LogEntry(None, "2026-08-19T08:00:00", "meds", 1.0, None, "took my meds", "reply", habit_type="boolean"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-17T22:00:00", "sleep", 7.0, None, "นอน 7 ชม.", "reply", habit_type="numeric"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-18T22:00:00", "sleep", 6.0, None, "นอน 6 ชม.", "reply", habit_type="numeric"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-19T08:00:00", "meds", 1.0, None, "took my meds", "reply", habit_type="boolean"))
 
-    stats = compute_weekly_stats(db, CONFIG, REGISTRY, date(2026, 8, 19))
+    stats = compute_weekly_stats(db, CONFIG, REGISTRY, date(2026, 8, 19), OWNER)
 
     # The migrated legacy water rows are aggregated correctly (not
     # orphaned/dropped by the migration).

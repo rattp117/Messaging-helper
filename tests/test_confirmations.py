@@ -28,10 +28,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -85,8 +85,7 @@ async def test_water_confirmation_format_first_log(db, fixed_clock, monkeypatch)
     config = Config()  # goal_ml = 2500
 
     await handle_inbound_message(
-        "500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock
-    )
+        "500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
 
@@ -96,9 +95,9 @@ async def test_water_confirmation_running_total_accumulates(db, fixed_clock, mon
     config = Config()
 
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     patch_parse_message(monkeypatch, ExtractionResult("water", 1000, 0.9))
-    await handle_inbound_message("1000ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("1000ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent[-1] == "✅ 1000 ml logged — today 1500 / 2500 ml (60%)"
 
@@ -108,7 +107,7 @@ async def test_water_confirmation_uses_configured_goal(db, fixed_clock, monkeypa
     channel = FakeChannel()
     config = Config.model_validate({"reminders": {"water": {"goal_ml": 1000}}})
 
-    await handle_inbound_message("100ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("100ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 100 ml logged — today 100 / 1000 ml (10%)"]
 
@@ -118,9 +117,9 @@ async def test_water_log_writes_one_row(db, fixed_clock, monkeypatch):
     channel = FakeChannel()
     config = Config()
 
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     assert rows[0]["category"] == "water"
     assert rows[0]["value_num"] == 500.0
@@ -137,8 +136,7 @@ async def test_stretch_confirmation_ordinal_first_today(db, fixed_clock, monkeyp
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "10 min stretch", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "10 min stretch", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 10 min stretch logged — 1st today"]
 
@@ -148,9 +146,9 @@ async def test_stretch_confirmation_ordinal_second_today(db, fixed_clock, monkey
     config = Config()
 
     patch_parse_message(monkeypatch, ExtractionResult("stretch", 10, 0.9))
-    await handle_inbound_message("10 min", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("10 min", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     patch_parse_message(monkeypatch, ExtractionResult("stretch", 5, 0.9))
-    await handle_inbound_message("5 min", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("5 min", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent[-1] == "✅ 5 min stretch logged — 2nd today"
 
@@ -179,7 +177,7 @@ async def test_diary_confirmation_uses_llm_reflection(db, fixed_clock, monkeypat
         channel=channel,
         config=Config(),
         clock=fixed_clock,
-    )
+    user_id="owner")
 
     assert channel.sent == ["✅ Saved. Your imagination dances beautifully today!"]
 
@@ -189,8 +187,7 @@ async def test_diary_confirmation_falls_back_when_reflection_is_none(db, fixed_c
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "a quiet day", db=db, llm=FakeLLM(reflection=None), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "a quiet day", db=db, llm=FakeLLM(reflection=None), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ Saved. Thanks for sharing — noted."]
 
@@ -200,10 +197,9 @@ async def test_diary_log_writes_value_text_not_value_num(db, fixed_clock, monkey
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "a quiet day", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "a quiet day", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows[0]["category"] == "diary"
     assert rows[0]["value_num"] is None
     assert rows[0]["value_text"] == "a quiet day"
@@ -219,8 +215,7 @@ async def test_unknown_sends_clarifying_question(db, fixed_clock, monkeypatch):
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
     assert channel.sent == [CLARIFYING_QUESTION]
 
@@ -230,10 +225,9 @@ async def test_unknown_writes_no_db_row(db, fixed_clock, monkeypatch):
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock
-    )
+        "purple elephants dance sideways", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows == []
 
 
@@ -245,11 +239,11 @@ async def test_unknown_after_valid_logs_does_not_add_a_row(db, fixed_clock, monk
     config = Config()
 
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
-    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     patch_parse_message(monkeypatch, ExtractionResult.unknown())
-    await handle_inbound_message("asdf", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("asdf", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1  # only the water log
 
 
@@ -262,10 +256,9 @@ async def test_dry_run_does_not_write_db_or_require_channel(db, fixed_clock, mon
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
 
     await handle_inbound_message(
-        "500ml", db=db, llm=FakeLLM(), channel=None, config=Config(), clock=fixed_clock, dry_run=True
-    )
+        "500ml", db=db, llm=FakeLLM(), channel=None, config=Config(), clock=fixed_clock, dry_run=True, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert rows == []
     captured = capsys.readouterr()
     assert "water" in captured.out
@@ -296,7 +289,7 @@ async def test_end_to_end_water_confirmation_with_mocked_ollama(db, fixed_clock)
     channel = FakeChannel()
     config = Config()
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, clock=fixed_clock, user_id="owner")
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
     await llm.aclose()
@@ -346,8 +339,7 @@ async def test_generic_numeric_with_goal_confirmation_matches_spec_example(db, f
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "slept 7h", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "slept 7h", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
     assert channel.sent == ["✅ 7 h logged — today 7 / 8 h (88%)"]
 
@@ -359,8 +351,7 @@ async def test_generic_numeric_with_goal_confirmation_thai(db, fixed_clock, monk
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "ดื่มน้ำ", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "ดื่มน้ำ", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
     # "ดื่มน้ำ" is Thai-detected input, driving the Thai confirmation copy.
 
     assert channel.sent == ["✅ บันทึกนอน 7 ชม. แล้ว — วันนี้ 7 / 8 ชม. (88%)"]
@@ -375,8 +366,7 @@ async def test_generic_numeric_without_goal_confirmation_matches_spec_example(db
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "8000 steps", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "8000 steps", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
     assert channel.sent == ["✅ 8000 steps logged today"]
 
@@ -388,12 +378,10 @@ async def test_generic_duration_confirmation_ordinal(db, fixed_clock, monkeypatc
 
     patch_parse_message(monkeypatch, ExtractionResult("yoga", 20, 0.9))
     await handle_inbound_message(
-        "20 min yoga", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "20 min yoga", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
     patch_parse_message(monkeypatch, ExtractionResult("yoga", 15, 0.9))
     await handle_inbound_message(
-        "15 min yoga", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "15 min yoga", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
     assert channel.sent == [
         "✅ 20 min yoga logged — 1st today",
@@ -415,7 +403,7 @@ async def test_generic_text_confirmation_uses_llm_reflection(db, fixed_clock, mo
         config=Config(),
         clock=fixed_clock,
         registry=registry,
-    )
+    user_id="owner")
 
     assert channel.sent == ["✅ gratitude saved. What a lovely thing to notice!"]
 
@@ -428,8 +416,7 @@ async def test_generic_boolean_confirmation_matches_spec_example(db, fixed_clock
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "took my meds", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "took my meds", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
     assert channel.sent == ["✅ meds — done today"]
 
@@ -441,8 +428,7 @@ async def test_generic_boolean_confirmation_not_done(db, fixed_clock, monkeypatc
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "no meds yet", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "no meds yet", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
     assert channel.sent == ["✅ meds — not done today"]
 
@@ -454,10 +440,9 @@ async def test_generic_habit_row_written_with_correct_habit_type(db, fixed_clock
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "7h sleep", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry
-    )
+        "7h sleep", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
-    rows = db.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     assert rows[0]["category"] == "sleep"
     assert rows[0]["value_num"] == 7.0

@@ -118,14 +118,17 @@ class _StaticLLM:
         return None
 
 
+OWNER = "owner"
+
+
 class _RecordingChannel:
     def __init__(self):
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default -- drop
         # the buttons, record text (this file's own log confirmations are
         # unaffected in content by v1.1's undo button).
@@ -307,10 +310,10 @@ async def test_below_threshold_confidence_yields_clarifying_question_and_no_row(
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
-    assert db.logs_between(*ANY_TIME_WINDOW) == []
+    assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
 
 
 async def test_at_threshold_confidence_is_logged(db):
@@ -321,10 +324,10 @@ async def test_at_threshold_confidence_is_logged(db):
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
-    rows = db.logs_between(*ANY_TIME_WINDOW)
+    rows = db.logs_between(OWNER, *ANY_TIME_WINDOW)
     assert len(rows) == 1
     assert rows[0]["category"] == "water"
 
@@ -335,10 +338,10 @@ async def test_above_threshold_confidence_is_logged(db):
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("10 min stretch", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("10 min stretch", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == ["✅ 10 min stretch logged — 1st today"]
-    assert len(db.logs_between(*ANY_TIME_WINDOW)) == 1
+    assert len(db.logs_between(OWNER, *ANY_TIME_WINDOW)) == 1
 
 
 async def test_custom_threshold_from_config_is_honored(db):
@@ -349,10 +352,10 @@ async def test_custom_threshold_from_config_is_honored(db):
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.9}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
-    assert db.logs_between(*ANY_TIME_WINDOW) == []
+    assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
 
 
 async def test_below_threshold_diary_also_clarifies_and_writes_no_row(db):
@@ -362,10 +365,10 @@ async def test_below_threshold_diary_also_clarifies_and_writes_no_row(db):
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("a quiet day", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("a quiet day", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
-    assert db.logs_between(*ANY_TIME_WINDOW) == []
+    assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
 
 
 # ---------------------------------------------------------------------------
@@ -483,10 +486,10 @@ async def test_handler_path_survives_total_llm_outage_no_exception_escapes(db):
     channel = _RecordingChannel()
     config = Config()
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config)
+    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
-    assert db.logs_between(*ANY_TIME_WINDOW) == []
+    assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
 
 
 async def test_chat_json_none_result_still_fails_closed_through_parser():

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class LogEntry:
     id: int | None
+    user_id: str  # SPEC-v1.2.md R-D1: the owning chat id (a string, never None for a new write)
     ts: str  # ISO8601 local time of the event
     category: str  # a configured habit id (e.g. 'water' | 'stretch' | 'diary'), or 'unparsed'
     value_num: float | None  # numeric/duration value, or boolean as 1.0/0.0; else None

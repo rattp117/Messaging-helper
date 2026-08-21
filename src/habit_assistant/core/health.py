@@ -47,12 +47,19 @@ class HealthMonitor:
     `main.py:handle_inbound_message` reads `.ollama_up` to decide whether
     to defer an inbound message (AC3.3) instead of calling the LLM at
     all. `on_ollama_recovered` fires once per DOWN->UP transition so
-    `main.py` can re-parse anything deferred while it was down."""
+    `main.py` can re-parse anything deferred while it was down.
+
+    SPEC-v1.2.md R-O1: health/ops alerts are an OPERATOR concern, not a
+    per-user one -- delivered to `owner_chat_id` only, never fanned out to
+    every active user (AC-O1). `owner_chat_id` is required (no default)
+    so a caller can't accidentally construct a monitor with nowhere to
+    alert."""
 
     def __init__(
         self,
         ollama_base_url: str,
         telegram_bot_token: str,
+        owner_chat_id: str,
         *,
         interval_seconds: float = 60.0,
         client: httpx.AsyncClient | None = None,
@@ -62,6 +69,7 @@ class HealthMonitor:
     ):
         self._ollama_base_url = ollama_base_url.rstrip("/")
         self._telegram_base_url = f"https://api.telegram.org/bot{telegram_bot_token}"
+        self._owner_chat_id = owner_chat_id
         self._interval = interval_seconds
         self._client = client or httpx.AsyncClient(timeout=10.0)
         self._owns_client = client is None
@@ -105,7 +113,7 @@ class HealthMonitor:
         logger.warning(message)
         if self._channel is not None:
             try:
-                await self._channel.send(message)
+                await self._channel.send(self._owner_chat_id, message)
             except Exception:
                 logger.exception(
                     "Health alert channel send failed; log line above is the fallback record"

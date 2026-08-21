@@ -29,10 +29,13 @@ from habit_assistant.storage.db import Database
 
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
+OWNER = "owner"
+
 
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "targets.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -45,7 +48,7 @@ def config():
 async def _execute(text: str, db: Database, config: Config, registry: HabitRegistry = DEFAULT_REGISTRY, lang="en") -> str:
     command = commands.dispatch(text, registry)
     assert command is not None and command.kind == "target"
-    return await execute_target(command, db=db, config=config, registry=registry, lang=lang)
+    return await execute_target(command, db=db, config=config, registry=registry, lang=lang, user_id=OWNER)
 
 
 # ===========================================================================
@@ -57,8 +60,8 @@ async def _execute(text: str, db: Database, config: Config, registry: HabitRegis
 async def test_ac13_target_water_2000_sets_override_and_replies_with_previous_goal(db, config):
     reply = await _execute("/target water 2000", db, config)
 
-    assert db.get_target("water") == 2000.0
-    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config) == 2000.0
+    assert db.get_target(OWNER, "water") == 2000.0
+    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config, OWNER) == 2000.0
     assert reply == i18n.t("target_set", "en", label="water", goal=2000.0, unit="ml", previous="2500 ml")
 
 
@@ -74,7 +77,7 @@ def test_ac13_dispatch_shape():
 
 async def test_ac14_target_water_3_bottles_multiplies_unit_alias(db, config):
     await _execute("/target water 3 bottles", db, config)
-    assert db.get_target("water") == 1800.0
+    assert db.get_target(OWNER, "water") == 1800.0
 
 
 def test_ac14_dispatch_shape():
@@ -93,7 +96,7 @@ def test_ac14_dispatch_shape():
 async def test_ac15_non_positive_value_writes_nothing_and_replies_invalid_value(db, config, text):
     reply = await _execute(text, db, config)
 
-    assert db.get_target("water") is None
+    assert db.get_target(OWNER, "water") is None
     assert reply == i18n.t("target_invalid_value", "en", habit_id="water", example="2500")
 
 
@@ -106,7 +109,7 @@ async def test_ac15_non_positive_value_writes_nothing_and_replies_invalid_value(
 async def test_ac16_unknown_habit_writes_nothing_and_lists_tracked_ids(db, config):
     reply = await _execute("/target coffee 2000", db, config)
 
-    assert db.all_targets() == {}
+    assert db.all_targets(OWNER) == {}
     assert reply == i18n.t("target_invalid_habit", "en", habit_id="coffee", habit_list="water, stretch, diary")
 
 
@@ -118,7 +121,7 @@ async def test_ac16_unknown_habit_writes_nothing_and_lists_tracked_ids(db, confi
 async def test_ac17_text_habit_writes_nothing_and_replies_not_goalable(db, config):
     reply = await _execute("/target diary 5", db, config)
 
-    assert db.all_targets() == {}
+    assert db.all_targets(OWNER) == {}
     assert reply == i18n.t("target_not_goalable", "en", label="diary")
 
 
@@ -130,12 +133,12 @@ async def test_ac17_text_habit_writes_nothing_and_replies_not_goalable(db, confi
 @pytest.mark.parametrize("clear_word", ["default", "reset", "clear", "ค่าเริ่มต้น"])
 async def test_ac18_clear_synonyms_revert_to_config_default(db, config, clear_word):
     await _execute("/target water 2000", db, config)
-    assert db.get_target("water") == 2000.0
+    assert db.get_target(OWNER, "water") == 2000.0
 
     reply = await _execute(f"/target water {clear_word}", db, config)
 
-    assert db.get_target("water") is None
-    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config) == 2500
+    assert db.get_target(OWNER, "water") is None
+    assert effective_goal(db, DEFAULT_REGISTRY.get("water"), config, OWNER) == 2500
     assert reply == i18n.t("target_cleared", "en", label="water", default=2500, unit="ml")
 
 
@@ -145,7 +148,7 @@ async def test_clear_on_a_previously_goalless_habit_reports_no_goal_variant(db, 
     await _execute("/target stretch 20", db, config)
     reply = await _execute("/target stretch default", db, config)
 
-    assert db.get_target("stretch") is None
+    assert db.get_target(OWNER, "stretch") is None
     assert reply == i18n.t("target_cleared_nogoal", "en", label="stretch")
 
 
@@ -248,7 +251,7 @@ async def test_ac27_target_command_never_touches_the_llm(db, config):
     it's a pure DB-read/write + catalog-formatting function, same
     LLM-free guarantee as undo/edit/snooze (module docstring)."""
     command = commands.dispatch("/target water 2000", DEFAULT_REGISTRY)
-    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en")
+    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
     assert "2000" in reply  # executed fine with no llm kwarg anywhere in the signature
 
 
@@ -259,12 +262,12 @@ async def test_ac27_target_command_never_touches_the_llm(db, config):
 
 
 class _ExplodingSetTarget(Database):
-    def set_target(self, habit_id: str, goal: float) -> None:
+    def set_target(self, user_id: str, habit_id: str, goal: float) -> None:
         raise sqlite3.OperationalError("disk I/O error")
 
 
 class _ExplodingClearTarget(Database):
-    def clear_target(self, habit_id: str) -> None:
+    def clear_target(self, user_id: str, habit_id: str) -> None:
         raise sqlite3.OperationalError("disk I/O error")
 
 
@@ -272,9 +275,9 @@ async def test_ac28_set_target_db_failure_replies_save_failed_not_a_traceback(tm
     exploding = _ExplodingSetTarget(tmp_path / "explode.db")
     try:
         command = commands.dispatch("/target water 2000", DEFAULT_REGISTRY)
-        reply = await execute_target(command, db=exploding, config=config, registry=DEFAULT_REGISTRY, lang="en")
+        reply = await execute_target(command, db=exploding, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
         assert reply == i18n.t("target_save_failed", "en")
-        assert exploding.get_target("water") is None
+        assert exploding.get_target(OWNER, "water") is None
     finally:
         exploding.close()
 
@@ -283,7 +286,7 @@ async def test_ac28_clear_target_db_failure_replies_save_failed_not_a_traceback(
     exploding = _ExplodingClearTarget(tmp_path / "explode2.db")
     try:
         command = commands.dispatch("/target water default", DEFAULT_REGISTRY)
-        reply = await execute_target(command, db=exploding, config=config, registry=DEFAULT_REGISTRY, lang="en")
+        reply = await execute_target(command, db=exploding, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
         assert reply == i18n.t("target_save_failed", "en")
     finally:
         exploding.close()
@@ -302,7 +305,7 @@ def test_unit_belonging_to_a_different_habit_is_a_usage_error():
 
 async def test_usage_command_executes_to_the_usage_message(db, config):
     command = commands.dispatch("/target water 3 min", DEFAULT_REGISTRY)
-    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en")
+    reply = await execute_target(command, db=db, config=config, registry=DEFAULT_REGISTRY, lang="en", user_id=OWNER)
     assert reply == i18n.t("target_usage", "en")
 
 

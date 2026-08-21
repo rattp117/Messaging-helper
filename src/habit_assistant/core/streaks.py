@@ -54,25 +54,33 @@ _GOAL_UNSET = object()
 
 
 def day_qualifies(
-    db: "Database", config: "Config", habit: Habit, day: str, goal: float | None = _GOAL_UNSET  # type: ignore[assignment]
+    db: "Database",
+    config: "Config",
+    habit: Habit,
+    day: str,
+    user_id: str,
+    goal: float | None = _GOAL_UNSET,  # type: ignore[assignment]
 ) -> bool:
-    """Does `day` ('YYYY-MM-DD') count toward this habit's streak? `goal`
-    lets a caller that already resolved `targets.effective_goal` (e.g.
-    `compute_streak`'s loop, R-T6) pass it straight through instead of
-    triggering a second DB read; omit it to resolve fresh (the common
-    case for a single-day check)."""
+    """Does `day` ('YYYY-MM-DD') count toward `user_id`'s streak for this
+    habit? `goal` lets a caller that already resolved
+    `targets.effective_goal` (e.g. `compute_streak`'s loop, R-T6) pass it
+    straight through instead of triggering a second DB read; omit it to
+    resolve fresh (the common case for a single-day check). SPEC-v1.2.md
+    R-D3: every DB read here is scoped to `user_id` -- two users'
+    qualification for the same habit/day are computed independently
+    (AC-U2/AC-U-ISO)."""
     if goal is _GOAL_UNSET:
-        goal = targets.effective_goal(db, habit, config)
+        goal = targets.effective_goal(db, habit, config, user_id)
     if goal:
-        return db.sum_value(habit.id, day) >= goal
+        return db.sum_value(user_id, habit.id, day) >= goal
     if habit.type == "boolean":
-        return db.count_true(habit.id, day) > 0
-    return db.count(habit.id, day) > 0
+        return db.count_true(user_id, habit.id, day) > 0
+    return db.count(user_id, habit.id, day) > 0
 
 
-def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: date) -> int:
+def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: date, user_id: str) -> int:
     """Consecutive qualifying days ending at (and including) `end_date`,
-    walking backward until the first gap (AC10.1). Shared by
+    walking backward until the first gap (AC10.1), for `user_id`. Shared by
     `core/review.py`'s weekly summary and this module's own
     milestone-crossing check (AC10.5) -- one function, one number,
     everywhere a streak is surfaced.
@@ -81,11 +89,11 @@ def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: dat
     front, and passed to every `day_qualifies` call in the walk below --
     not re-resolved (i.e. not a fresh `db.get_target` read) per day, even
     though the walk can span up to `_MAX_LOOKBACK_DAYS` iterations (AC26)."""
-    goal = targets.effective_goal(db, habit, config)
+    goal = targets.effective_goal(db, habit, config, user_id)
     streak = 0
     day = end_date
     for _ in range(_MAX_LOOKBACK_DAYS):
-        if not day_qualifies(db, config, habit, day.isoformat(), goal=goal):
+        if not day_qualifies(db, config, habit, day.isoformat(), user_id, goal=goal):
             break
         streak += 1
         day -= timedelta(days=1)
@@ -93,7 +101,7 @@ def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: dat
 
 
 def crossed_milestone(
-    db: "Database", config: "Config", habit: Habit, today: date, was_qualified_before: bool
+    db: "Database", config: "Config", habit: Habit, today: date, was_qualified_before: bool, user_id: str
 ) -> int | None:
     """ROADMAP.md v0.10.0 scope item 3 / AC10.2: did the log that was just
     written make `today` transition from not-qualifying to qualifying, AND
@@ -120,9 +128,9 @@ def crossed_milestone(
     `main.py:handle_inbound_message` does."""
     if was_qualified_before:
         return None
-    if not day_qualifies(db, config, habit, today.isoformat()):
+    if not day_qualifies(db, config, habit, today.isoformat(), user_id):
         return None
-    streak = compute_streak(db, config, habit, today)
+    streak = compute_streak(db, config, habit, today, user_id)
     if streak in config.gamification.milestones:
         return streak
     return None
@@ -144,25 +152,26 @@ class DailySummaryLine:
 
 
 def compute_daily_summary(
-    db: "Database", config: "Config", registry: "HabitRegistry", today: date
+    db: "Database", config: "Config", registry: "HabitRegistry", today: date, user_id: str
 ) -> list[DailySummaryLine]:
-    """Today's per-habit total (+ goal, when configured) and current streak,
-    in registry order -- read-only, reuses the same `Database` aggregations
-    as the weekly review and confirmations (AC10.5)."""
+    """Today's per-habit total (+ goal, when configured) and current streak
+    for `user_id`, in registry order -- read-only, reuses the same
+    `Database` aggregations as the weekly review and confirmations
+    (AC10.5). SPEC-v1.2.md R-D3: scoped throughout (AC-U2/AC-U3)."""
     today_str = today.isoformat()
     lines: list[DailySummaryLine] = []
     for habit in registry:
-        goal = targets.effective_goal(db, habit, config)
+        goal = targets.effective_goal(db, habit, config, user_id)
         if goal or habit.type == "numeric":
             # Goal-bearing (any type) or a goal-less numeric habit: both are
             # inherently summed quantities (e.g. ml), matching what
             # `day_qualifies` compares against the goal when one is set.
-            total = db.sum_value(habit.id, today_str)
+            total = db.sum_value(user_id, habit.id, today_str)
         elif habit.type == "boolean":
-            total = float(db.count_true(habit.id, today_str))
+            total = float(db.count_true(user_id, habit.id, today_str))
         else:  # duration (no goal), text
-            total = float(db.count(habit.id, today_str))
-        streak = compute_streak(db, config, habit, today)
+            total = float(db.count(user_id, habit.id, today_str))
+        streak = compute_streak(db, config, habit, today, user_id)
         lines.append(DailySummaryLine(habit=habit, total=total, goal=goal, streak=streak))
     return lines
 
@@ -204,12 +213,21 @@ def format_daily_summary(lines: list[DailySummaryLine], lang: i18n.Language) -> 
 
 
 def run_daily_summary(
-    db: "Database", config: "Config", registry: "HabitRegistry", today: date | None = None
+    db: "Database",
+    config: "Config",
+    registry: "HabitRegistry",
+    lang: i18n.Language,
+    user_id: str,
+    today: date | None = None,
 ) -> str:
-    """Aggregate + format the end-of-day recap (AC10.3). `today` defaults
-    to the real current date; tests pass a fixed date for determinism.
-    Language follows `i18n.resolve_unprompted_language` -- an unprompted
-    send, same rule as reminders/the weekly review (ROADMAP.md v0.6.0)."""
-    lang = i18n.resolve_unprompted_language(config)
-    lines = compute_daily_summary(db, config, registry, today or date.today())
+    """Aggregate + format the end-of-day recap (AC10.3) for `user_id`.
+    `today` defaults to the real current date; tests pass a fixed date for
+    determinism. SPEC-v1.2.md: `lang` is now taken pre-resolved from the
+    caller (main.py's per-user fan-out job resolves it once per user via
+    `i18n.resolve_unprompted_language`) rather than resolved internally --
+    this module has no way to know which user's language preference to
+    consult on its own once that becomes per-user (R-P1), so the caller
+    that DOES know (main.py) resolves it and passes the result, matching
+    every other formatter in this codebase's own convention."""
+    lines = compute_daily_summary(db, config, registry, today or date.today(), user_id)
     return format_daily_summary(lines, lang)

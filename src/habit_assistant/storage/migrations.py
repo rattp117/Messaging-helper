@@ -111,6 +111,78 @@ def _migration_005_habit_targets(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_multiuser(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.2.md "Multi-user support" (§4 R-M1): the ONE sanctioned break
+    of the additive-only guarantee this project has held since migration
+    001 -- `habit_targets` is rebuilt from a `habit_id`-only PK to a
+    surrogate-id PK with `UNIQUE(user_id, habit_id)`, because a per-habit
+    target now needs to vary per user, not just per habit. Every existing
+    row survives the rebuild (copied across with `user_id = NULL` -- the
+    migration runner only ever receives a bare `sqlite3.Connection`, never
+    `.env`, so it cannot know who the owner is; that backfill is
+    `Database.attribute_legacy_to_owner`'s job, R-M2, run once at startup).
+    Everything else here is additive, like every migration before it:
+    - `users`: one row per authorized/pending/blocked chat.
+    - `logs.user_id` (nullable column + index): who a log row belongs to;
+      NULL until R-M2 backfills it.
+    - `user_reminder_times`: empty at creation, so every user (owner
+      included) falls back to the global config reminder times until they
+      run `/remind` -- v1.1 reminder behavior is preserved by construction
+      (AC-M3/AC-S1), not by a special case.
+    Idempotent the same way every migration here is: the runner only
+    applies this once, guarded by `PRAGMA user_version` (AC-M1)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+          chat_id                 TEXT PRIMARY KEY,
+          role                    TEXT NOT NULL DEFAULT 'member',
+          status                  TEXT NOT NULL DEFAULT 'pending',
+          display_name            TEXT,
+          language_pref           TEXT NOT NULL DEFAULT 'auto',
+          quiet_hours_json        TEXT,
+          snooze_default_minutes  INTEGER,
+          created_at              TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+
+    conn.execute("ALTER TABLE logs ADD COLUMN user_id TEXT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_user ON logs(user_id, category, ts)")
+
+    # Rebuild habit_targets (the sanctioned break): rename-copy-drop rather
+    # than an in-place ALTER, since SQLite can't add a surrogate PK or a
+    # new UNIQUE constraint to an existing table.
+    conn.execute("ALTER TABLE habit_targets RENAME TO habit_targets_v005")
+    conn.execute(
+        """
+        CREATE TABLE habit_targets (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    TEXT,
+          habit_id   TEXT NOT NULL,
+          goal       REAL NOT NULL,
+          updated_at TEXT,
+          UNIQUE(user_id, habit_id)
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO habit_targets (user_id, habit_id, goal, updated_at) "
+        "SELECT NULL, habit_id, goal, updated_at FROM habit_targets_v005"
+    )
+    conn.execute("DROP TABLE habit_targets_v005")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_reminder_times (
+          user_id  TEXT NOT NULL,
+          habit_id TEXT NOT NULL,
+          time     TEXT NOT NULL,
+          PRIMARY KEY (user_id, habit_id, time)
+        )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -120,6 +192,7 @@ MIGRATIONS: list[Migration] = [
     _migration_003_soft_delete,
     _migration_004_habit_type,
     _migration_005_habit_targets,
+    _migration_006_multiuser,
 ]
 
 

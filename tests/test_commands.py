@@ -77,10 +77,10 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message) -> None:
+    async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -127,7 +127,7 @@ def patch_parse_message(monkeypatch, result: ExtractionResult):
 
 
 def _seed(db: Database, ts: str, category: str, value_num=None, value_text=None, raw: str | None = None) -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, value_text, raw or ts, "reply"))
+    return db.insert_log(LogEntry(None, "owner", ts, category, value_num, value_text, raw or ts, "reply"))
 
 
 def _raw_row_count(db: Database) -> int:
@@ -158,7 +158,7 @@ async def test_undo_phrasing_soft_deletes_most_recent_log(db, fixed_clock, undo_
     _seed(db, "2026-08-19T10:00:00", "water", 300.0, raw="300ml")
 
     await handle_inbound_message(
-        undo_phrase, db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        undo_phrase, db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     lang = i18n.detect_language(undo_phrase)
@@ -170,7 +170,7 @@ async def test_undo_phrasing_soft_deletes_most_recent_log(db, fixed_clock, undo_
     assert removed_description in channel.sent[0]
 
     # Running total reflects the removal: only the 500ml row remains.
-    assert db.water_total_ml("2026-08-19") == 500.0
+    assert db.water_total_ml("owner", "2026-08-19") == 500.0
 
     # Raw check: the deleted row is still physically present, marked deleted.
     assert _raw_row_count(db) == 2
@@ -186,12 +186,12 @@ async def test_second_undo_removes_the_next_most_recent_log(db, fixed_clock):
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
     _seed(db, "2026-08-19T10:00:00", "water", 300.0, raw="300ml")
 
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
 
     assert "300" in channel.sent[0]
     assert "500" in channel.sent[1]
-    assert db.water_total_ml("2026-08-19") == 0.0
+    assert db.water_total_ml("owner", "2026-08-19") == 0.0
     assert _raw_row_count(db) == 2  # both rows still physically present
 
 
@@ -200,13 +200,13 @@ async def test_undo_confirmation_names_stretch_entry_and_updates_count(db, fixed
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "stretch", 10.0, raw="10 min stretch")
     _seed(db, "2026-08-19T10:00:00", "stretch", 5.0, raw="5 min stretch")
-    assert db.stretch_count("2026-08-19") == 2
+    assert db.stretch_count("owner", "2026-08-19") == 2
 
-    await handle_inbound_message("undo last", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("undo last", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
 
     assert "5" in channel.sent[0]
     assert "stretch" in channel.sent[0]
-    assert db.stretch_count("2026-08-19") == 1
+    assert db.stretch_count("owner", "2026-08-19") == 1
 
 
 async def test_undo_confirmation_names_diary_entry(db, fixed_clock):
@@ -214,10 +214,10 @@ async def test_undo_confirmation_names_diary_entry(db, fixed_clock):
     config = Config()
     _seed(db, "2026-08-19T21:00:00", "diary", value_text="a quiet reflective day", raw="a quiet reflective day")
 
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
 
     assert "quiet reflective day" in channel.sent[0]
-    assert db.diary_count("2026-08-19") == 0
+    assert db.diary_count("owner", "2026-08-19") == 0
 
 
 # ===========================================================================
@@ -230,7 +230,7 @@ async def test_undo_on_empty_history_sends_friendly_message_and_writes_nothing(d
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=Config(), clock=fixed_clock
+        "/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [NOTHING_TO_UNDO_MESSAGE]
@@ -243,11 +243,11 @@ async def test_undo_on_all_deleted_history_sends_friendly_message_and_writes_not
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
 
     # First undo removes the only entry.
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
     row_count_after_first_undo = _raw_row_count(db)
 
     # Second undo: nothing non-deleted left.
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
 
     assert channel.sent[-1] == NOTHING_TO_UNDO_MESSAGE
     assert _raw_row_count(db) == row_count_after_first_undo  # no new row written
@@ -277,14 +277,14 @@ async def test_edit_updates_last_matching_water_entry_and_reconfirms_total(db, f
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
 
     await handle_inbound_message(
-        edit_phrase, db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        edit_phrase, db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
-    row = db.last_log(category="water")
+    row = db.last_log("owner", category="water")
     assert row["value_num"] == 300.0
     assert _raw_row_count(db) == 1  # updated in place, not a new row
 
-    total = db.water_total_ml("2026-08-19")
+    total = db.water_total_ml("owner", "2026-08-19")
     assert total == 300.0
     lang = i18n.detect_language(edit_phrase)
     expected = i18n.t("edit_updated_water", lang, value_num=300.0, total=int(total), goal=2500, pct=12)
@@ -298,7 +298,7 @@ async def test_edit_updates_only_the_last_matching_entry_not_earlier_ones(db, fi
     _seed(db, "2026-08-19T10:00:00", "water", 200.0, raw="200ml")
 
     await handle_inbound_message(
-        "make that 350ml", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        "make that 350ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     values = [
@@ -314,10 +314,10 @@ async def test_edit_updates_last_matching_stretch_entry(db, fixed_clock):
     _seed(db, "2026-08-19T09:00:00", "stretch", 10.0, raw="10 min stretch")
 
     await handle_inbound_message(
-        "change it to 15 min", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        "change it to 15 min", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
-    row = db.last_log(category="stretch")
+    row = db.last_log("owner", category="stretch")
     assert row["value_num"] == 15.0
     assert channel.sent == ["✏️ Updated to 15 min stretch — 1st today"]
 
@@ -331,7 +331,7 @@ async def test_edit_with_no_matching_category_entry_sends_friendly_message_and_w
     _seed(db, "2026-08-19T09:00:00", "stretch", 10.0, raw="10 min stretch")
 
     await handle_inbound_message(
-        "make that 300ml", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        "make that 300ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     assert channel.sent == [NOTHING_TO_EDIT_MESSAGE]
@@ -344,7 +344,7 @@ async def test_edit_on_empty_history_sends_friendly_message_and_writes_nothing(d
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "edit that to 15 min", db=db, llm=_NeverCalledLLM(), channel=channel, config=Config(), clock=fixed_clock
+        "edit that to 15 min", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=Config(), clock=fixed_clock
     )
 
     assert channel.sent == [NOTHING_TO_EDIT_MESSAGE]
@@ -451,7 +451,7 @@ def test_soft_deleted_row_remains_in_table_but_excluded_from_water_total(db):
     assert raw is not None
     assert raw["deleted_at"] is not None
 
-    assert db.water_total_ml("2026-08-19") == 0.0
+    assert db.water_total_ml("owner", "2026-08-19") == 0.0
 
 
 async def test_soft_deleted_row_excluded_from_stretch_count_and_ordinal(db, fixed_clock, monkeypatch):
@@ -459,11 +459,11 @@ async def test_soft_deleted_row_excluded_from_stretch_count_and_ordinal(db, fixe
     config = Config()
     old_id = _seed(db, "2026-08-19T09:00:00", "stretch", 10.0, raw="10 min stretch")
     db.soft_delete(old_id)
-    assert db.stretch_count("2026-08-19") == 0
+    assert db.stretch_count("owner", "2026-08-19") == 0
 
     patch_parse_message(monkeypatch, ExtractionResult("stretch", 5, 0.9))
     await handle_inbound_message(
-        "5 min stretch", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        "5 min stretch", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     # Ordinal counts from 1, ignoring the soft-deleted earlier session.
@@ -474,7 +474,7 @@ def test_soft_deleted_row_excluded_from_diary_count(db):
     log_id = _seed(db, "2026-08-19T21:00:00", "diary", value_text="a day", raw="a day")
     db.soft_delete(log_id)
 
-    assert db.diary_count("2026-08-19") == 0
+    assert db.diary_count("owner", "2026-08-19") == 0
 
 
 def test_soft_deleted_row_excluded_from_pending_unparsed(db):
@@ -501,7 +501,7 @@ def test_soft_deleted_rows_excluded_from_weekly_review_stats(db):
     db.soft_delete(deleted_id)
     db.soft_delete(stretch_id)
 
-    stats = compute_weekly_stats(db, config, registry, date(2026, 8, 19))
+    stats = compute_weekly_stats(db, config, registry, date(2026, 8, 19), "owner")
 
     assert stats.get("water").total == 500.0
     assert stats.get("stretch").total == 0
@@ -514,7 +514,7 @@ def test_soft_delete_never_issues_a_hard_delete(db):
     _seed(db, "2026-08-19T10:00:00", "water", 300.0, raw="300ml")
     before = _raw_row_count(db)
 
-    row = db.last_log()
+    row = db.last_log("owner")
     db.soft_delete(row["id"])
 
     assert _raw_row_count(db) == before
@@ -558,7 +558,7 @@ async def test_normal_habit_messages_reach_parser_exactly_once(db, fixed_clock, 
     monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
 
     await handle_inbound_message(
-        message, db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        message, db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     assert calls == [message]  # called exactly once, with the original text
@@ -571,9 +571,9 @@ async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands
     channel = FakeChannel()
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
-    await handle_inbound_message("/undo", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
     await handle_inbound_message(
-        "make that 250ml", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+        "make that 250ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
     )
 
     calls: list[str] = []
@@ -584,7 +584,7 @@ async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands
 
     monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
 
-    await handle_inbound_message("500ml", db=db, llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message("500ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
 
     assert calls == ["500ml"]
     assert "logged" in channel.sent[-1]
@@ -663,7 +663,7 @@ async def test_query_message_does_not_reach_the_parser(db, fixed_clock, monkeypa
 
     await handle_inbound_message(
         "how much water this week?",
-        db=db,
+        db=db, user_id="owner",
         llm=_StaticQueryLLM("water"),
         channel=channel,
         config=config,
@@ -688,7 +688,7 @@ async def test_undo_executes_while_llm_is_down_not_deferred(db, fixed_clock):
 
     await handle_inbound_message(
         "/undo",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
@@ -696,7 +696,7 @@ async def test_undo_executes_while_llm_is_down_not_deferred(db, fixed_clock):
         health_monitor=health_monitor,
     )
 
-    assert db.water_total_ml("2026-08-19") == 0.0
+    assert db.water_total_ml("owner", "2026-08-19") == 0.0
     assert channel.sent != [DEFERRED_ACK_MESSAGE]
     # No 'unparsed' row was written -- the command executed directly.
     assert db.pending_unparsed() == []
@@ -710,7 +710,7 @@ async def test_edit_executes_while_llm_is_down_not_deferred(db, fixed_clock):
 
     await handle_inbound_message(
         "make that 300ml",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
@@ -718,7 +718,7 @@ async def test_edit_executes_while_llm_is_down_not_deferred(db, fixed_clock):
         health_monitor=health_monitor,
     )
 
-    assert db.last_log(category="water")["value_num"] == 300.0
+    assert db.last_log("owner", category="water")["value_num"] == 300.0
     assert channel.sent != [DEFERRED_ACK_MESSAGE]
 
 
@@ -733,7 +733,7 @@ async def test_normal_message_while_llm_down_is_still_deferred_not_intercepted(d
 
     await handle_inbound_message(
         "500ml",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
@@ -751,11 +751,11 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
 
     await handle_inbound_message(
-        "/undo", db=db, llm=_NeverCalledLLM(), channel=None, config=Config(), clock=fixed_clock, dry_run=True
+        "/undo", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=None, config=Config(), clock=fixed_clock, dry_run=True
     )
 
     # dry-run never writes -- the seeded row is untouched.
-    assert db.water_total_ml("2026-08-19") == 500.0
+    assert db.water_total_ml("owner", "2026-08-19") == 500.0
     captured = capsys.readouterr()
     assert "undo" in captured.out
 
@@ -766,20 +766,21 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_5(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.1.md
-    "Undo menu + per-habit targets" (migration 005: `habit_targets`) there
-    are exactly 5 migrations, and a fresh DB must land on version 5. Bump
-    this literal deliberately the next time a migration is added -- unlike
-    a bare `== len(MIGRATIONS)` comparison, this fails if a migration is
-    silently added/removed without the test being updated.
-    CHANGED (v1.1.0): was `== 4` / `test_..._schema_version_4` before
-    migration 005 (`habit_targets`) was added -- see IMPL.md."""
-    assert len(MIGRATIONS) == 5
+def test_fresh_db_migrates_to_schema_version_6(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.2.md
+    "Multi-user support" (migration 006: users/logs.user_id/habit_targets
+    rebuild/user_reminder_times) there are exactly 6 migrations, and a
+    fresh DB must land on version 6. Bump this literal deliberately the
+    next time a migration is added -- unlike a bare `== len(MIGRATIONS)`
+    comparison, this fails if a migration is silently added/removed
+    without the test being updated.
+    CHANGED (v1.2.0): was `== 5` / `test_..._schema_version_5` before
+    migration 006 (multi-user) was added -- see IMPL-v1.2-shared.md."""
+    assert len(MIGRATIONS) == 6
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 5
+    assert database.schema_version == 6
     database.close()
 
 
@@ -842,13 +843,13 @@ def test_migration_003_is_idempotent(tmp_path):
 
     first = Database(db_path)
     assert first.schema_version == len(MIGRATIONS)
-    first.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
+    first.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
     first.close()
 
     second = Database(db_path)
     assert second.schema_version_before == len(MIGRATIONS)  # nothing pending
     assert second.schema_version == len(MIGRATIONS)
-    rows = second.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = second.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1  # row from the first open survived
     second.close()
 
@@ -906,11 +907,11 @@ class _FakeSnoozeScheduler:
 async def test_snooze_with_no_prior_reminder_sends_friendly_fallback_and_schedules_nothing(db, fixed_clock):
     channel = FakeChannel()
     scheduler = _FakeSnoozeScheduler()
-    reminder_state = ReminderState()  # last_habit_id is None -- nothing ever fired this process
+    reminder_state = ReminderState()  # last_habit_id is empty -- nothing ever fired this process
 
     await handle_inbound_message(
         "snooze 30",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=Config(),
@@ -927,11 +928,11 @@ async def test_snooze_with_explicit_minutes_schedules_a_one_off_job_for_last_rem
     channel = FakeChannel()
     scheduler = _FakeSnoozeScheduler()
     reminder_state = ReminderState()
-    reminder_state.last_habit_id = "water"
+    reminder_state.last_habit_id["owner"] = "water"
 
     await handle_inbound_message(
         "snooze 30",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=Config(),
@@ -947,8 +948,17 @@ async def test_snooze_with_explicit_minutes_schedules_a_one_off_job_for_last_rem
     assert len(scheduler.jobs) == 1
     job = scheduler.jobs[0]
     assert isinstance(job["trigger"], DateTrigger)
-    scheduled_channel, scheduled_habit, scheduled_lang, scheduled_db, scheduled_config, scheduled_state = job["args"]
+    (
+        scheduled_channel,
+        scheduled_chat_id,
+        scheduled_habit,
+        scheduled_lang,
+        scheduled_db,
+        scheduled_config,
+        scheduled_state,
+    ) = job["args"]
     assert scheduled_channel is channel
+    assert scheduled_chat_id == "owner"
     assert scheduled_habit.id == "water"
     assert scheduled_db is db
     assert scheduled_state is reminder_state
@@ -958,12 +968,12 @@ async def test_snooze_without_explicit_minutes_uses_configured_default(db, fixed
     channel = FakeChannel()
     scheduler = _FakeSnoozeScheduler()
     reminder_state = ReminderState()
-    reminder_state.last_habit_id = "stretch"
+    reminder_state.last_habit_id["owner"] = "stretch"
     config = Config.model_validate({"snooze": {"default_minutes": 45}})
 
     await handle_inbound_message(
         "snooze",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
@@ -980,11 +990,11 @@ async def test_snooze_thai_phrase_gets_thai_confirmation_and_correct_run_time(db
     channel = FakeChannel()
     scheduler = _FakeSnoozeScheduler()
     reminder_state = ReminderState()
-    reminder_state.last_habit_id = "water"
+    reminder_state.last_habit_id["owner"] = "water"
 
     await handle_inbound_message(
         "เลื่อน 20 นาที",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=Config(),
@@ -1000,12 +1010,12 @@ async def test_snooze_thai_phrase_gets_thai_confirmation_and_correct_run_time(db
 
 async def test_snooze_command_in_dry_run_prints_and_schedules_nothing(db, fixed_clock, capsys):
     reminder_state = ReminderState()
-    reminder_state.last_habit_id = "water"
+    reminder_state.last_habit_id["owner"] = "water"
     scheduler = _FakeSnoozeScheduler()
 
     await handle_inbound_message(
         "snooze 10",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=None,
         config=Config(),
@@ -1023,7 +1033,7 @@ async def test_snooze_command_in_dry_run_prints_and_schedules_nothing(db, fixed_
 
 async def test_snooze_never_reaches_the_llm(db, fixed_clock):
     reminder_state = ReminderState()
-    reminder_state.last_habit_id = "water"
+    reminder_state.last_habit_id["owner"] = "water"
     scheduler = _FakeSnoozeScheduler()
     channel = FakeChannel()
 
@@ -1033,7 +1043,7 @@ async def test_snooze_never_reaches_the_llm(db, fixed_clock):
     # matched here").
     await handle_inbound_message(
         "snooze",
-        db=db,
+        db=db, user_id="owner",
         llm=_NeverCalledLLM(),
         channel=channel,
         config=Config(),

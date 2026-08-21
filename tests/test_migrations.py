@@ -62,14 +62,14 @@ def test_second_open_of_migrated_db_applies_nothing(tmp_path):
 
     db1 = Database(db_path)
     first_version = db1.schema_version
-    db1.insert_log(LogEntry(None, "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
+    db1.insert_log(LogEntry(None, "owner", "2026-08-19T10:00:00", "water", 250.0, None, "1 glass", "reply"))
     db1.close()
 
     db2 = Database(db_path)
 
     assert db2.schema_version_before == first_version
     assert db2.schema_version == first_version
-    rows = db2.logs_between("2026-08-19T00:00:00", "2026-08-19T23:59:59")
+    rows = db2.logs_between("owner", "2026-08-19T00:00:00", "2026-08-19T23:59:59")
     assert len(rows) == 1
     db2.close()
 
@@ -295,15 +295,18 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     assert current_version(conn) == 3
     conn.close()
 
-    # Open through the real Database class -- this also runs migration 005
-    # (SPEC-v1.1.md, additive `habit_targets`) since it's now unconditionally
-    # part of MIGRATIONS; a v3-shaped DB opened today lands on version 5,
-    # not 4, but everything asserted below about migration 004's own
-    # effect (habit_type backfill, untouched logs rows) still holds.
+    # Open through the real Database class -- this also runs migrations 005
+    # (SPEC-v1.1.md, additive `habit_targets`) and 006 (SPEC-v1.2.md,
+    # `users`/`logs.user_id`/habit_targets rebuild/`user_reminder_times`)
+    # since both are now unconditionally part of MIGRATIONS; a v3-shaped DB
+    # opened today lands on version 6, not 4, but everything asserted below
+    # about migration 004's own effect (habit_type backfill, untouched logs
+    # rows) still holds -- migration 006's `logs.user_id` column addition
+    # doesn't touch the columns selected below.
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 5
+    assert db.schema_version == 6
 
     after_rows = [
         tuple(r)
@@ -325,8 +328,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 5
-    assert reopened.schema_version == 5
+    assert reopened.schema_version_before == 6
+    assert reopened.schema_version == 6
     reopened.close()
 
 
@@ -347,13 +350,16 @@ def test_fresh_db_has_habit_type_column(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_db_reports_schema_version_5_with_habit_targets_table(tmp_path):
-    db = Database(tmp_path / "fresh_v5.db")
-    assert db.schema_version == 5
+def test_fresh_db_reports_schema_version_6_with_habit_targets_table(tmp_path):
+    # SPEC-v1.2.md added migration 006 after this one (005); a fresh DB now
+    # lands on version 6, and habit_targets was rebuilt with a surrogate
+    # `id` PK + `user_id` (R-M1) instead of the old `habit_id`-only PK.
+    db = Database(tmp_path / "fresh_v6.db")
+    assert db.schema_version == 6
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
-    assert cols == {"habit_id", "goal", "updated_at"}
+    assert cols == {"id", "user_id", "habit_id", "goal", "updated_at"}
     db.close()
 
 
@@ -400,8 +406,11 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     db = Database(db_path)
 
+    # SPEC-v1.2.md: opening a v4-shaped DB today also applies migration 006
+    # (users/logs.user_id/habit_targets rebuild/user_reminder_times), so it
+    # lands on version 6, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 5
+    assert db.schema_version == 6
 
     after_rows = [
         tuple(r)
@@ -417,34 +426,54 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 5
-    assert reopened.schema_version == 5
+    assert reopened.schema_version_before == 6
+    assert reopened.schema_version == 6
     reopened.close()
 
 
 def test_habit_targets_get_set_clear_all(tmp_path):
     db = Database(tmp_path / "targets.db")
 
-    assert db.get_target("water") is None
-    assert db.all_targets() == {}
+    assert db.get_target("owner", "water") is None
+    assert db.all_targets("owner") == {}
 
-    db.set_target("water", 2000.0)
-    assert db.get_target("water") == 2000.0
-    assert db.all_targets() == {"water": 2000.0}
+    db.set_target("owner", "water", 2000.0)
+    assert db.get_target("owner", "water") == 2000.0
+    assert db.all_targets("owner") == {"water": 2000.0}
 
-    db.set_target("water", 1800.0)  # upsert -- replaces, doesn't stack
-    assert db.get_target("water") == 1800.0
-    assert db.all_targets() == {"water": 1800.0}
+    db.set_target("owner", "water", 1800.0)  # upsert -- replaces, doesn't stack
+    assert db.get_target("owner", "water") == 1800.0
+    assert db.all_targets("owner") == {"water": 1800.0}
 
-    db.set_target("stretch", 20.0)
-    assert db.all_targets() == {"water": 1800.0, "stretch": 20.0}
+    db.set_target("owner", "stretch", 20.0)
+    assert db.all_targets("owner") == {"water": 1800.0, "stretch": 20.0}
 
-    db.clear_target("water")
-    assert db.get_target("water") is None
-    assert db.all_targets() == {"stretch": 20.0}
+    db.clear_target("owner", "water")
+    assert db.get_target("owner", "water") is None
+    assert db.all_targets("owner") == {"stretch": 20.0}
 
-    db.clear_target("water")  # no-op, not an error, when absent
-    assert db.get_target("water") is None
+    db.clear_target("owner", "water")  # no-op, not an error, when absent
+    assert db.get_target("owner", "water") is None
+    db.close()
+
+
+def test_habit_targets_are_scoped_per_user(tmp_path):
+    """SPEC-v1.2.md R-D2 (AC-U1): the migration-006 rebuild makes
+    `habit_targets` UNIQUE(user_id, habit_id), not just habit_id -- two
+    users can each have their own override for the same habit id."""
+    db = Database(tmp_path / "targets_multiuser.db")
+
+    db.set_target("user-a", "water", 2000.0)
+    db.set_target("user-b", "water", 3000.0)
+
+    assert db.get_target("user-a", "water") == 2000.0
+    assert db.get_target("user-b", "water") == 3000.0
+    assert db.all_targets("user-a") == {"water": 2000.0}
+    assert db.all_targets("user-b") == {"water": 3000.0}
+
+    db.clear_target("user-a", "water")
+    assert db.get_target("user-a", "water") is None
+    assert db.get_target("user-b", "water") == 3000.0  # untouched by A's clear
     db.close()
 
 
@@ -452,7 +481,7 @@ def test_get_log_returns_row_regardless_of_deleted_at(tmp_path):
     db = Database(tmp_path / "getlog.db")
     from habit_assistant.storage.models import LogEntry
 
-    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    row_id = db.insert_log(LogEntry(None, "owner", "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
 
     live = db.get_log(row_id)
     assert live is not None
@@ -483,4 +512,179 @@ def test_v010_shaped_db_index_and_wal_still_correct_after_migration(tmp_path):
     assert row is not None
     mode = db._conn.execute("PRAGMA journal_mode;").fetchone()[0]
     assert mode.lower() == "wal"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.2.md "Multi-user support" (AC-M1): migration 006 -- `users`,
+# `logs.user_id` + index, and the `habit_targets` rebuild (the ONE
+# sanctioned break of the additive-only guarantee, R-M1). Built on a v5-shaped
+# DB, never the live `data/habits.db`.
+# ---------------------------------------------------------------------------
+
+
+def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
+    db_path = tmp_path / "v5_copy.db"
+
+    # Hand-build a v5-shaped DB (migrations 001-005 already applied): logs +
+    # habit_type + the OLD habit_targets (habit_id-only PK), user_version=5.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL,
+          habit_type  TEXT NULL
+        );
+        CREATE INDEX idx_logs_ts_cat ON logs(ts, category);
+        CREATE INDEX idx_logs_category ON logs(category);
+        CREATE INDEX idx_logs_deleted_at ON logs(deleted_at);
+        CREATE TABLE habit_targets (
+          habit_id   TEXT PRIMARY KEY,
+          goal       REAL NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        PRAGMA user_version = 5;
+        """
+    )
+    conn.execute(
+        "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source, habit_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("2026-08-10T09:00:00", "water", 500.0, None, "500ml", "reply", "numeric"),
+    )
+    conn.execute("INSERT INTO habit_targets (habit_id, goal) VALUES ('water', 2500.0)")
+    conn.commit()
+    before_logs = [
+        tuple(r)
+        for r in conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source, habit_type FROM logs ORDER BY id"
+        )
+    ]
+    before_targets = [tuple(r) for r in conn.execute("SELECT habit_id, goal FROM habit_targets")]
+    assert current_version(conn) == 5
+    conn.close()
+
+    db = Database(db_path)
+
+    assert db.schema_version_before == 5
+    assert db.schema_version == 6
+
+    # logs values preserved, byte-for-byte; new user_id column present and NULL.
+    after_logs = [
+        tuple(r)
+        for r in db._conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source, habit_type FROM logs ORDER BY id"
+        )
+    ]
+    assert after_logs == before_logs
+    log_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)").fetchall()}
+    assert "user_id" in log_cols
+    user_ids = [row["user_id"] for row in db._conn.execute("SELECT user_id FROM logs")]
+    assert user_ids == [None]  # the migration itself cannot know the owner (R-M1) -- R-M2 fills it later
+
+    # habit_targets rebuilt: same (habit_id, goal) preserved, user_id NULL,
+    # new surrogate id PK + UNIQUE(user_id, habit_id).
+    after_targets = [
+        (row["habit_id"], row["goal"]) for row in db._conn.execute("SELECT habit_id, goal FROM habit_targets")
+    ]
+    assert after_targets == before_targets
+    target_user_ids = [row["user_id"] for row in db._conn.execute("SELECT user_id FROM habit_targets")]
+    assert target_user_ids == [None]
+    target_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
+    assert target_cols == {"id", "user_id", "habit_id", "goal", "updated_at"}
+
+    # users + user_reminder_times both created, users empty (nobody attributed yet).
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"users", "user_reminder_times"} <= tables
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 0
+    db.close()
+
+    # Re-running (reopen) applies nothing further (idempotent, AC-M1).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 6
+    assert reopened.schema_version == 6
+    reopened.close()
+
+
+def test_fresh_db_has_users_and_user_reminder_times_tables(tmp_path):
+    db = Database(tmp_path / "fresh_v6.db")
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"users", "user_reminder_times"} <= tables
+    user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert user_cols == {
+        "chat_id", "role", "status", "display_name", "language_pref",
+        "quiet_hours_json", "snooze_default_minutes", "created_at",
+    }
+    reminder_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(user_reminder_times)").fetchall()}
+    assert reminder_cols == {"user_id", "habit_id", "time"}
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.2.md R-M2 (AC-M2): startup attribution -- `attribute_legacy_to_
+# owner`, called once in `async_main` right after `load_secrets`.
+# ---------------------------------------------------------------------------
+
+
+def test_attribute_legacy_to_owner_upserts_owner_row_and_backfills_null_user_ids(tmp_path):
+    from habit_assistant.storage.models import LogEntry
+
+    db = Database(tmp_path / "attribution.db")
+    # Simulate pre-v1.2 legacy rows: user_id is NULL until attribution runs.
+    db.insert_log(LogEntry(None, None, "2026-08-10T09:00:00", "water", 500.0, None, "500ml", "reply"))
+    db.set_target(None, "water", 2500.0)
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 1
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 1
+
+    db.attribute_legacy_to_owner("owner-chat-id")
+
+    owner_row = db.get_user("owner-chat-id")
+    assert owner_row is not None
+    assert owner_row["role"] == "owner"
+    assert owner_row["status"] == "active"
+
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
+    assert db.last_log("owner-chat-id") is not None
+    assert db.get_target("owner-chat-id", "water") == 2500.0
+    db.close()
+
+
+def test_attribute_legacy_to_owner_is_idempotent_and_never_downgrades(tmp_path):
+    db = Database(tmp_path / "attribution2.db")
+
+    db.attribute_legacy_to_owner("owner-chat-id")
+    first = db.get_user("owner-chat-id")
+    assert first["role"] == "owner"
+    assert first["status"] == "active"
+
+    # Running it again changes nothing -- no NULL rows left to backfill, and
+    # the owner's own role/status stay exactly role=owner/status=active.
+    db.attribute_legacy_to_owner("owner-chat-id")
+    second = db.get_user("owner-chat-id")
+    assert second["role"] == "owner"
+    assert second["status"] == "active"
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM users WHERE chat_id = 'owner-chat-id'").fetchone()["n"] == 1
+    db.close()
+
+
+def test_attribute_legacy_to_owner_does_not_touch_already_attributed_rows(tmp_path):
+    """A row already attributed to a DIFFERENT (non-owner) user must not be
+    reassigned to the owner -- the backfill is `WHERE user_id IS NULL` only."""
+    from habit_assistant.storage.models import LogEntry
+
+    db = Database(tmp_path / "attribution3.db")
+    db.insert_log(LogEntry(None, "member-chat-id", "2026-08-10T09:00:00", "water", 300.0, None, "300ml", "reply"))
+
+    db.attribute_legacy_to_owner("owner-chat-id")
+
+    assert db.last_log("member-chat-id") is not None
+    assert db.last_log("owner-chat-id") is None  # nothing was reassigned to the owner
     db.close()

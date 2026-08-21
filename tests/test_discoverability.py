@@ -32,9 +32,11 @@ from habit_assistant.storage.models import LogEntry
 
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
+OWNER = "owner"
 
-def _seed(db: Database, ts: str, category: str, value_num: float | None) -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, "x", "reply"))
+
+def _seed(db: Database, ts: str, category: str, value_num: float | None, user_id: str = OWNER) -> int:
+    return db.insert_log(LogEntry(None, user_id, ts, category, value_num, None, "x", "reply"))
 
 
 class FakeChannel(Channel):
@@ -42,14 +44,14 @@ class FakeChannel(Channel):
         self.sent: list[str] = []
         self.actionable: list[tuple[str, list[Button]]] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         self.actionable.append((text, buttons))
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]], on_callback=None) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -76,6 +78,7 @@ class _OllamaDownHealthMonitor:
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -107,7 +110,7 @@ async def test_ac35_help_reply_matches_build_help_text_and_works_with_ollama_dow
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         health_monitor=_OllamaDownHealthMonitor(),
     )
 
@@ -128,7 +131,7 @@ async def test_ac35_help_reply_language_follows_resolve_reply_language(db):
         llm=_NeverCalledLLM(),
         channel=channel_th,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         health_monitor=_OllamaDownHealthMonitor(),
     )
 
@@ -232,12 +235,12 @@ async def test_ac37_habits_reply_matches_build_habits_overview_and_works_with_ol
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         clock=fixed_clock,
         health_monitor=_OllamaDownHealthMonitor(),
     )
 
-    expected = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    expected = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     assert channel.sent == [expected]
     assert channel.actionable == []  # not a log confirmation, no button
 
@@ -274,7 +277,7 @@ def test_ac37_every_registered_habit_appears_in_registry_order(db, fixed_clock):
     )
     registry = HabitRegistry.from_config(config)
 
-    overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en", OWNER)
     lines = [line for line in overview.split("\n") if line.startswith("•")]
 
     assert len(lines) == 4
@@ -289,9 +292,9 @@ def test_ac37_every_registered_habit_appears_in_registry_order(db, fixed_clock):
 
 def test_ac38_override_marked_as_your_target_vs_default_vs_no_goal(db, fixed_clock):
     config = Config()  # water config default 2500, stretch has none
-    db.set_target("water", 2000.0)
+    db.set_target(OWNER, "water", 2000.0)
 
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
 
     water_line = next(line for line in overview.split("\n") if line.startswith("• water"))
     stretch_line = next(line for line in overview.split("\n") if line.startswith("• stretch"))
@@ -307,7 +310,7 @@ def test_ac38_override_marked_as_your_target_vs_default_vs_no_goal(db, fixed_clo
 
 def test_ac38_config_default_marked_default_not_your_target(db, fixed_clock):
     config = Config()  # water's config default (2500) applies, no override
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     water_line = next(line for line in overview.split("\n") if line.startswith("• water"))
     assert "2500" in water_line
     assert "default" in water_line
@@ -316,9 +319,9 @@ def test_ac38_config_default_marked_default_not_your_target(db, fixed_clock):
 
 def test_ac38_clearing_the_override_reverts_the_mark_to_default(db, fixed_clock):
     config = Config()
-    db.set_target("water", 2000.0)
-    db.clear_target("water")
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    db.set_target(OWNER, "water", 2000.0)
+    db.clear_target(OWNER, "water")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     water_line = next(line for line in overview.split("\n") if line.startswith("• water"))
     assert "2500" in water_line
     assert "default" in water_line
@@ -329,8 +332,8 @@ def test_ac38_target_on_a_previously_goalless_habit_is_marked_your_target(db, fi
     set on a habit with no config default at all (stretch) still shows up
     correctly marked, not as "no goal"."""
     config = Config()
-    db.set_target("stretch", 20.0)
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    db.set_target(OWNER, "stretch", 20.0)
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     stretch_line = next(line for line in overview.split("\n") if line.startswith("• stretch"))
     assert "20" in stretch_line
     assert "your target" in stretch_line
@@ -346,7 +349,7 @@ def test_ac39_todays_water_total_shown_correctly(db, fixed_clock):
     config = Config()
     _seed(db, "2026-08-19T08:00:00", "water", 500.0)
 
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     water_line = next(line for line in overview.split("\n") if line.startswith("• water"))
     assert "today 500 ml" in water_line
 
@@ -356,7 +359,7 @@ def test_ac39_only_todays_logs_count_not_other_days(db, fixed_clock):
     _seed(db, "2026-08-18T08:00:00", "water", 9999.0)  # yesterday -- must not count
     _seed(db, "2026-08-19T08:00:00", "water", 300.0)  # today
 
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     water_line = next(line for line in overview.split("\n") if line.startswith("• water"))
     assert "today 300 ml" in water_line
     assert "9999" not in water_line
@@ -377,7 +380,7 @@ def test_ac39_boolean_and_text_totals_use_count_not_sum(db, fixed_clock):
     _seed(db, "2026-08-19T09:00:00", "journal", None)
     _seed(db, "2026-08-19T21:00:00", "journal", None)
 
-    overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en", OWNER)
     meds_line = next(line for line in overview.split("\n") if line.startswith("• meds"))
     journal_line = next(line for line in overview.split("\n") if line.startswith("• journal"))
 
@@ -403,7 +406,7 @@ class _FakeScheduler:
         self.jobs: dict[str, object] = {}
         _FakeScheduler.last_instance = self
 
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
         self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
 
     def start(self):
@@ -441,10 +444,10 @@ class _AsyncMainFakeChannel(Channel):
         self.set_my_commands_calls: list[dict] = []
         _AsyncMainFakeChannel.last_instance = self
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         self.sent.append(text)
 
     async def set_my_commands(self, commands) -> None:
@@ -621,7 +624,7 @@ async def test_help_and_habits_never_touch_llm_even_when_ollama_reports_up(db, f
         llm=_AlwaysRaisingLLM(),
         channel=channel,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         clock=fixed_clock,
         health_monitor=_OllamaUpHealthMonitor(),
     )
@@ -644,7 +647,7 @@ async def test_help_and_habits_work_with_no_health_monitor_wired_at_all(db, fixe
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         clock=fixed_clock,
         health_monitor=None,
     )
@@ -667,7 +670,7 @@ async def test_help_reply_does_not_write_a_deferred_ack_log_row_while_ollama_dow
         llm=_NeverCalledLLM(),
         channel=channel,
         config=config,
-        registry=DEFAULT_REGISTRY,
+        registry=DEFAULT_REGISTRY, user_id=OWNER,
         clock=fixed_clock,
         health_monitor=_OllamaDownHealthMonitor(),
     )
@@ -695,7 +698,7 @@ async def test_habits_override_round_trip_through_real_target_command_updates_th
 
     await handle_inbound_message(
         "/target water 1800", db=db, llm=_NeverCalledLLM(), channel=channel, config=config,
-        registry=DEFAULT_REGISTRY, clock=fixed_clock,
+        registry=DEFAULT_REGISTRY, user_id=OWNER, clock=fixed_clock,
     )
     overview_after_set = await _habits_text(db, config, channel, fixed_clock)
     water_line = _line_for(overview_after_set, "water")
@@ -704,7 +707,7 @@ async def test_habits_override_round_trip_through_real_target_command_updates_th
 
     await handle_inbound_message(
         "/target water default", db=db, llm=_NeverCalledLLM(), channel=channel, config=config,
-        registry=DEFAULT_REGISTRY, clock=fixed_clock,
+        registry=DEFAULT_REGISTRY, user_id=OWNER, clock=fixed_clock,
     )
     overview_after_clear = await _habits_text(db, config, channel, fixed_clock)
     water_line_2 = _line_for(overview_after_clear, "water")
@@ -717,7 +720,7 @@ async def _habits_text(db, config, channel, clock) -> str:
     channel.sent.clear()
     await handle_inbound_message(
         "/habits", db=db, llm=_NeverCalledLLM(), channel=channel, config=config,
-        registry=DEFAULT_REGISTRY, clock=clock,
+        registry=DEFAULT_REGISTRY, user_id=OWNER, clock=clock,
     )
     return channel.sent[-1]
 
@@ -731,7 +734,7 @@ def test_habits_goalless_habit_with_no_override_shows_no_goal_standalone(db, fix
     R-D3's "no goal" branch on a goal-able habit that has neither a config
     default nor a DB override."""
     config = Config()
-    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en")
+    overview = discoverability.build_habits_overview(db, config, DEFAULT_REGISTRY, fixed_clock, "en", OWNER)
     stretch_line = _line_for(overview, "stretch")
     assert i18n.t("habits_overview_goal_none", "en") in stretch_line
     assert "your target" not in stretch_line
@@ -760,24 +763,21 @@ def test_habits_day_boundary_a_log_just_before_midnight_excluded_from_the_next_d
             # entry must NOT count toward "today" (Aug 20).
             clock_next_day = lambda: datetime(2026, 8, 20, 0, 0, 1)
             overview_next_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_next_day, "en"
-            )
+                db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
             assert "today 0" in _line_for(overview_next_day, "water")
 
             # Query clock is still Aug 19 (same second the log landed) --
             # it MUST count.
             clock_same_day = lambda: datetime(2026, 8, 19, 23, 59, 59)
             overview_same_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_same_day, "en"
-            )
+                db, config, DEFAULT_REGISTRY, clock_same_day, "en", OWNER)
             assert "today 500 ml" in _line_for(overview_same_day, "water")
 
             # And a log at the FIRST second of a day must count for that
             # same day (the symmetric edge).
             _seed(db, "2026-08-20T00:00:01", "water", 250.0)
             overview_new_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_next_day, "en"
-            )
+                db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
             assert "today 250 ml" in _line_for(overview_new_day, "water")
         finally:
             db.close()
@@ -815,7 +815,7 @@ def test_habits_all_four_aggregation_kinds_in_one_overview(fixed_clock):
             _seed(db, "2026-08-19T10:00:00", "journal", None)
             _seed(db, "2026-08-19T20:00:00", "journal", None)  # text count: 2
 
-            overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en")
+            overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en", OWNER)
             assert "today 500 ml" in _line_for(overview, "water")
             assert "today 15 min" in _line_for(overview, "stretch")
             assert "today 1" in _line_for(overview, "meds")
@@ -872,9 +872,9 @@ def test_help_text_renders_cleanly_in_both_languages_no_keyerror(lang):
 
 @pytest.mark.parametrize("lang", ["en", "th"])
 def test_habits_overview_renders_cleanly_in_both_languages_no_keyerror(db, fixed_clock, lang):
-    db.set_target("water", 2000.0)
+    db.set_target(OWNER, "water", 2000.0)
     _seed(db, "2026-08-19T08:00:00", "water", 500.0)
-    text = discoverability.build_habits_overview(db, Config(), DEFAULT_REGISTRY, fixed_clock, lang)
+    text = discoverability.build_habits_overview(db, Config(), DEFAULT_REGISTRY, fixed_clock, lang, OWNER)
     assert text
     assert "�" not in text
 
@@ -893,17 +893,26 @@ def test_en_and_th_help_and_habits_text_are_genuinely_different_not_copy_pasted(
         db = Database(Path(tmp) / "lang.db")
         try:
             clock = lambda: datetime(2026, 8, 19, 9, 0, 0)
-            en_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "en")
-            th_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "th")
+            en_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "en", OWNER)
+            th_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "th", OWNER)
             assert en_overview != th_overview
         finally:
             db.close()
 
 
-async def test_command_menu_registers_exactly_the_four_expected_commands_no_extras(tmp_path, monkeypatch):
+async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tmp_path, monkeypatch):
     """Luna's own AC40 test uses a subset check (`<=`); this tightens it to
     an exact-set check per language, guarding against an accidental
-    duplicate or stray entry creeping into either language's merge."""
+    duplicate or stray entry creeping into either language's merge.
+
+    UPDATED at the SPEC-v1.2.md §11 integration step (IMPL-v1.2-
+    integration.md): the public menu grew from 4 to 8 commands --
+    `start`/`remind`/`lang`/`quiet` joined `undo`/`target`/`help`/
+    `habits`. The four TRUE admin commands (`approve`/`block`/`users`/
+    `invite`, R-A4, owner-only) are deliberately excluded from this
+    GLOBAL menu (`setMyCommands` has no per-chat scoping, R-C1) -- this
+    test's exact-set check is exactly what would catch one of them
+    leaking in by accident."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -913,9 +922,10 @@ async def test_command_menu_registers_exactly_the_four_expected_commands_no_extr
 
     channel = _AsyncMainFakeChannel.last_instance
     registered = channel.set_my_commands_calls[0]
+    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert set(names) == {"undo", "target", "help", "habits"}, f"{lang}: {names}"
+        assert set(names) == expected, f"{lang}: {names}"
         assert len(names) == len(set(names)), f"{lang}: duplicate command entries {names}"
 
 

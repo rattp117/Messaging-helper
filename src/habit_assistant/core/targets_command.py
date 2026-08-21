@@ -74,8 +74,8 @@ def _default_note(effective_goal: float, default_goal: float | None, unit: str, 
     return ""
 
 
-def _render_show(db: "Database", config: "Config", habit: "Habit", lang: i18n.Language) -> str:
-    goal = targets.effective_goal(db, habit, config)
+def _render_show(db: "Database", config: "Config", habit: "Habit", lang: i18n.Language, user_id: str) -> str:
+    goal = targets.effective_goal(db, habit, config, user_id)
     if goal is None:
         # A goal-able habit with no override AND no config default (e.g.
         # `stretch` before any target has ever been set on it). No
@@ -90,10 +90,12 @@ def _render_show(db: "Database", config: "Config", habit: "Habit", lang: i18n.La
     return i18n.t("target_show", lang, label=habit.label(lang), goal=goal, unit=unit, default_note=default_note)
 
 
-def _render_show_all(db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language) -> str:
+def _render_show_all(
+    db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language, user_id: str
+) -> str:
     lines = [i18n.t("target_show_all_header", lang)]
     for habit in registry:
-        goal = targets.effective_goal(db, habit, config)
+        goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None:
             lines.append(i18n.t("target_show_all_line_nogoal", lang, label=habit.label(lang)))
             continue
@@ -108,12 +110,12 @@ def _render_show_all(db: "Database", config: "Config", registry: "HabitRegistry"
     return "\n".join(lines)
 
 
-def _execute_clear(db: "Database", config: "Config", habit: "Habit", lang: i18n.Language) -> str:
+def _execute_clear(db: "Database", config: "Config", habit: "Habit", lang: i18n.Language, user_id: str) -> str:
     default_goal = targets.config_goal(habit, config)
     try:
-        db.clear_target(habit.id)
+        db.clear_target(user_id, habit.id)
     except Exception:
-        logger.exception("Failed to clear target for habit %r", habit.id)
+        logger.exception("Failed to clear target for user %r habit %r", user_id, habit.id)
         return i18n.t("target_save_failed", lang)
 
     if default_goal is None:
@@ -122,39 +124,49 @@ def _execute_clear(db: "Database", config: "Config", habit: "Habit", lang: i18n.
     return i18n.t("target_cleared", lang, label=habit.label(lang), default=default_goal, unit=unit)
 
 
-def _execute_set(db: "Database", config: "Config", habit: "Habit", value_num: float | None, lang: i18n.Language) -> str:
+def _execute_set(
+    db: "Database", config: "Config", habit: "Habit", value_num: float | None, lang: i18n.Language, user_id: str
+) -> str:
     if value_num is None or value_num <= 0:
         return i18n.t(
             "target_invalid_value", lang, habit_id=habit.id, example=_example_goal_value(habit)
         )
 
-    previous_goal = targets.effective_goal(db, habit, config)
+    previous_goal = targets.effective_goal(db, habit, config, user_id)
     unit = habit.unit(lang) or ""
     previous_text = _format_previous(previous_goal, unit, lang)
 
     try:
-        db.set_target(habit.id, value_num)
+        db.set_target(user_id, habit.id, value_num)
     except Exception:
-        logger.exception("Failed to set target for habit %r", habit.id)
+        logger.exception("Failed to set target for user %r habit %r", user_id, habit.id)
         return i18n.t("target_save_failed", lang)
 
     return i18n.t("target_set", lang, label=habit.label(lang), goal=value_num, unit=unit, previous=previous_text)
 
 
 async def execute_target(
-    command: "Command", *, db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language
+    command: "Command",
+    *,
+    db: "Database",
+    config: "Config",
+    registry: "HabitRegistry",
+    lang: i18n.Language,
+    user_id: str,
 ) -> str:
     """Validate and perform the target op described by `command`
     (`core/commands.dispatch`'s `kind="target"` output, or an equivalent
-    `Command` built from a validated `core/target_nl.TargetIntent`), and
-    return the bilingual reply. Never raises (R-T10/§3.5): every failure
-    mode -- unknown habit, non-goalable habit, invalid value, a DB write
-    error -- resolves to a friendly catalog message."""
+    `Command` built from a validated `core/target_nl.TargetIntent`), for
+    `user_id`, and return the bilingual reply. Never raises (R-T10/§3.5):
+    every failure mode -- unknown habit, non-goalable habit, invalid
+    value, a DB write error -- resolves to a friendly catalog message.
+    SPEC-v1.2.md R-D2: every DB read/write here is scoped to `user_id` --
+    two users' targets for the same habit are fully independent (AC-U1)."""
     if command.target_action is None or command.target_action == "usage":
         return i18n.t("target_usage", lang)
 
     if command.target_action == "show_all":
-        return _render_show_all(db, config, registry, lang)
+        return _render_show_all(db, config, registry, lang, user_id)
 
     habit_id = command.category or ""
     habit = registry.get(habit_id)
@@ -165,10 +177,10 @@ async def execute_target(
         return i18n.t("target_not_goalable", lang, label=habit.label(lang))
 
     if command.target_action == "show":
-        return _render_show(db, config, habit, lang)
+        return _render_show(db, config, habit, lang, user_id)
     if command.target_action == "clear":
-        return _execute_clear(db, config, habit, lang)
+        return _execute_clear(db, config, habit, lang, user_id)
     if command.target_action == "set":
-        return _execute_set(db, config, habit, command.value_num, lang)
+        return _execute_set(db, config, habit, command.value_num, lang, user_id)
 
     return i18n.t("target_usage", lang)  # defensive, unreachable given Command's Literal type

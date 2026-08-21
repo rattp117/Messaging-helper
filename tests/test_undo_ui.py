@@ -35,19 +35,22 @@ from habit_assistant.storage.db import Database
 from habit_assistant.storage.models import LogEntry
 
 
+OWNER = "owner"
+
+
 class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.actionable: list[tuple[str, list[tuple[str, str]]]] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons: list[tuple[str, str]]) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[tuple[str, str]]) -> None:
         self.actionable.append((text, buttons))
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]], on_callback=None) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
 
 
@@ -64,6 +67,7 @@ def fixed_clock():
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
     yield database
     database.close()
 
@@ -109,8 +113,10 @@ def _extended_config() -> Config:
     )
 
 
-def _seed(db: Database, ts: str, category: str, value_num: float | None, value_text: str | None = None) -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, value_text, "raw", "reply"))
+def _seed(
+    db: Database, ts: str, category: str, value_num: float | None, value_text: str | None = None, user_id: str = OWNER
+) -> int:
+    return db.insert_log(LogEntry(None, user_id, ts, category, value_num, value_text, "raw", "reply"))
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +149,7 @@ async def test_button_and_milestone_suffix_travel_as_one_actionable_message():
     milestone_suffix = "\n\n🔥 3-day streak!"
     buttons = undo_ui.undo_button(77, "en")
 
-    await channel.send_actionable(confirmation_text + milestone_suffix, buttons)
+    await channel.send_actionable(OWNER, confirmation_text + milestone_suffix, buttons)
 
     assert len(channel.actionable) == 1
     sent_text, sent_buttons = channel.actionable[0]
@@ -184,6 +190,7 @@ async def test_handle_undo_callback_soft_deletes_and_sends_confirmation(db, regi
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         f"undo:{log_id}",
         "💧 500ml logged — 500/2500 ml today (20%)",
         "cb-1",
@@ -206,6 +213,7 @@ async def test_handle_undo_callback_detects_thai_language_from_source_text(db, r
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         f"undo:{log_id}",
         "💧 บันทึกน้ำ 500 มล. แล้ว",
         "cb-2",
@@ -225,6 +233,7 @@ async def test_handle_undo_callback_forced_language_overrides_source_text(db, re
     config = Config(i18n={"language": "th"})
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         f"undo:{log_id}",
         "500ml logged",  # English source text
         "cb-3",
@@ -253,6 +262,7 @@ async def test_handle_undo_callback_already_deleted_sends_already_undone_and_no_
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         f"undo:{log_id}",
         "500ml logged",
         "cb-4",
@@ -271,6 +281,7 @@ async def test_handle_undo_callback_missing_row_sends_already_undone(db, registr
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         "undo:999999",
         "500ml logged",
         "cb-5",
@@ -297,6 +308,7 @@ async def test_handle_undo_callback_malformed_data_no_write_no_send(db, registry
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         bad_data,
         "500ml logged",
         "cb-6",
@@ -316,6 +328,7 @@ async def test_handle_undo_callback_malformed_data_is_logged(db, registry, fixed
 
     with caplog.at_level(logging.INFO, logger="habit_assistant.core.undo_ui"):
         await undo_ui.handle_undo_callback(
+            OWNER,
             "not-an-undo-payload",
             "500ml logged",
             "cb-7",
@@ -343,6 +356,7 @@ async def test_handle_undo_callback_negative_id_no_write_no_send(db, registry, f
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         "undo:-1",
         "500ml logged",
         "cb-neg",
@@ -372,6 +386,7 @@ async def test_handle_undo_callback_astronomically_large_id_does_not_raise(db, r
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         "undo:999999999999999999999999999999999",
         "500ml logged",
         "cb-huge",
@@ -395,6 +410,7 @@ async def test_handle_undo_callback_id_at_sqlite_max_int_is_a_normal_missing_id(
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         "undo:9223372036854775807",
         "500ml logged",
         "cb-max",
@@ -416,6 +432,7 @@ async def test_handle_undo_callback_id_one_past_sqlite_max_int_is_ignored(db, re
     channel = FakeChannel()
 
     await undo_ui.handle_undo_callback(
+        OWNER,
         "undo:9223372036854775808",
         "500ml logged",
         "cb-maxplus1",
@@ -439,12 +456,20 @@ async def test_handle_undo_callback_idempotent_after_text_undo_command(db, regis
 
     text_channel = FakeChannel()
     await handle_inbound_message(
-        "undo", db=db, llm=FakeLLM(), channel=text_channel, config=config, registry=registry, clock=fixed_clock
+        "undo",
+        db=db,
+        llm=FakeLLM(),
+        channel=text_channel,
+        config=config,
+        registry=registry,
+        clock=fixed_clock,
+        user_id=OWNER,
     )
     assert db.get_log(log_id)["deleted_at"] is not None
 
     button_channel = FakeChannel()
     await undo_ui.handle_undo_callback(
+        OWNER,
         f"undo:{log_id}",
         "500ml logged",
         "cb-cross",
@@ -467,7 +492,9 @@ async def test_handle_undo_callback_idempotent_after_text_undo_command(db, regis
 
 async def _confirmation_via_command_path(db, config, registry, clock, lang: i18n.Language, undo_text: str) -> str:
     channel = FakeChannel()
-    await handle_inbound_message(undo_text, db=db, llm=FakeLLM(), channel=channel, config=config, registry=registry, clock=clock)
+    await handle_inbound_message(
+        undo_text, db=db, llm=FakeLLM(), channel=channel, config=config, registry=registry, clock=clock, user_id=OWNER
+    )
     assert len(channel.sent) == 1
     return channel.sent[0]
 
@@ -638,8 +665,8 @@ async def test_byte_identical_water_with_target_override(tmp_path, fixed_clock, 
     db_a = Database(tmp_path / "a.db")
     db_b = Database(tmp_path / "b.db")
     try:
-        db_a.set_target("water", 1000.0)
-        db_b.set_target("water", 1000.0)
+        db_a.set_target(OWNER, "water", 1000.0)
+        db_b.set_target(OWNER, "water", 1000.0)
         _seed(db_a, "2026-08-19T08:00:00", "water", 500.0)
         row_id = _seed(db_b, "2026-08-19T08:00:00", "water", 500.0)
 

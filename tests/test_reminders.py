@@ -1,33 +1,52 @@
-"""Reminder scheduling tests (SPEC-v0.7.md §8 AC13/AC14, module M2):
-`schedule_reminders(scheduler, channel, config, registry)` registers one
-cron job per habit's `reminder_times` entry via AsyncIOScheduler, and
-`send_reminder(channel, habit, language)` resolves the right copy --
-built-in ids reuse their byte-identical v0.6.0 catalog entries, other
-habits use their own `reminder_text` or the type-generic
-`reminder_generic` template."""
+"""Reminder tests (SPEC-v0.7.md §8 AC13/AC14, module M2; SPEC-v1.2.md §4
+R-S1-R-S6, "Multi-user support").
+
+CHANGED (SPEC-v1.2.md R-S1): the old `schedule_reminders(scheduler, channel,
+config, registry)` -- one APScheduler cron job PER (habit, configured time)
+-- is REMOVED entirely, replaced by a single minutely tick
+(`run_due_reminders(channel, config, registry, db, state, clock=...)`) that
+consults `effective_reminder_times(db, config, habit, user_id)` (R-S4) live
+on every call. `main.py` now registers exactly ONE `CronTrigger(second=0)`
+job (`id="reminder_tick"`) instead of one job per habit-time; the old
+per-habit-time cron-registration tests below (AC13/AC14) are rewritten
+against the new mechanism -- SAME acceptance intent ("a habit's reminder
+fires at its configured time, not at other times; a habit with no
+`reminder_times` never fires"), different plumbing.
+
+`send_reminder(channel, chat_id, habit, language)` gained `chat_id` as a
+new 2nd positional param (R-C1: every send is now per-recipient)."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Awaitable, Callable
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from habit_assistant.channels.base import Channel
+from habit_assistant.channels.base import Button, Channel
 from habit_assistant.config import Config
 from habit_assistant.core import i18n
 from habit_assistant.core.habits import Habit, HabitRegistry
-from habit_assistant.core.reminders import schedule_reminders, send_reminder
+from habit_assistant.core.reminders import (
+    ReminderState,
+    effective_reminder_times,
+    run_due_reminders,
+    send_reminder,
+)
+from habit_assistant.storage.db import Database
+
+OWNER = "owner"
 
 
 class FakeChannel(Channel):
     def __init__(self) -> None:
-        self.sent: list[str] = []
+        self.sent: list[tuple[str, str]] = []
 
-    async def send(self, text: str) -> None:
-        self.sent.append(text)
+    async def send(self, chat_id: str, text: str) -> None:
+        self.sent.append((chat_id, text))
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
         raise NotImplementedError
 
 
@@ -63,10 +82,21 @@ def _default_registry() -> HabitRegistry:
     return HabitRegistry.from_config(Config())
 
 
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "habits.db")
+    database.upsert_user(OWNER, role="owner", status="active")
+    yield database
+    database.close()
+
+
+def _fixed_clock(hhmm: str):
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    return lambda: datetime(2026, 8, 19, hour, minute, 0)
+
+
 # ---------------------------------------------------------------------------
-# AC13: default config -> same 9 cron jobs (6 water, 2 stretch, 1 diary) at
-# the same times as v0.6.0; send_reminder(channel, water_habit, "th") sends
-# the byte-identical v0.6.0 Thai water reminder.
+# send_reminder: byte-identical v0.6.0 text, per-recipient (R-C1).
 # ---------------------------------------------------------------------------
 
 
@@ -74,14 +104,14 @@ async def test_send_reminder_sends_byte_identical_v060_text_for_each_builtin_hab
     registry = _default_registry()
     channel = FakeChannel()
 
-    await send_reminder(channel, registry.get("water"), "en")
-    await send_reminder(channel, registry.get("stretch"), "en")
-    await send_reminder(channel, registry.get("diary"), "en")
+    await send_reminder(channel, OWNER, registry.get("water"), "en")
+    await send_reminder(channel, OWNER, registry.get("stretch"), "en")
+    await send_reminder(channel, OWNER, registry.get("diary"), "en")
 
     assert channel.sent == [
-        i18n.t("reminder_water", "en"),
-        i18n.t("reminder_stretch", "en"),
-        i18n.t("reminder_diary", "en"),
+        (OWNER, i18n.t("reminder_water", "en")),
+        (OWNER, i18n.t("reminder_stretch", "en")),
+        (OWNER, i18n.t("reminder_diary", "en")),
     ]
 
 
@@ -89,183 +119,21 @@ async def test_send_reminder_water_habit_thai_is_byte_identical_to_v060():
     registry = _default_registry()
     channel = FakeChannel()
 
-    await send_reminder(channel, registry.get("water"), "th")
+    await send_reminder(channel, OWNER, registry.get("water"), "th")
 
-    assert channel.sent == [i18n.t("reminder_water", "th")]
-    assert channel.sent == ["💧 ถึงเวลาดื่มน้ำแล้วนะ วันนี้ดื่มไปเท่าไหร่แล้ว?"]
+    assert channel.sent == [(OWNER, i18n.t("reminder_water", "th"))]
+    assert channel.sent == [(OWNER, "💧 ถึงเวลาดื่มน้ำแล้วนะ วันนี้ดื่มไปเท่าไหร่แล้ว?")]
 
 
-def test_schedule_reminders_registers_one_job_per_configured_time():
-    config = Config()  # defaults: 6 water + 2 stretch + 1 diary = 9
-    registry = HabitRegistry.from_config(config)
-    scheduler = AsyncIOScheduler()
+async def test_send_reminder_addresses_the_given_chat_id_not_a_pinned_one():
+    """SPEC-v1.2.md R-C1: two different chat ids each get their own send."""
+    registry = _default_registry()
     channel = FakeChannel()
 
-    schedule_reminders(scheduler, channel, config, registry)
+    await send_reminder(channel, "user-a", registry.get("water"), "en")
+    await send_reminder(channel, "user-b", registry.get("water"), "en")
 
-    jobs = scheduler.get_jobs()
-    assert len(jobs) == 9
-    water_jobs = [j for j in jobs if j.id.startswith("reminder_water_")]
-    stretch_jobs = [j for j in jobs if j.id.startswith("reminder_stretch_")]
-    diary_jobs = [j for j in jobs if j.id.startswith("reminder_diary_")]
-    assert len(water_jobs) == 6
-    assert len(stretch_jobs) == 2
-    assert len(diary_jobs) == 1
-
-
-def test_schedule_reminders_cron_times_match_config():
-    config = Config.model_validate(
-        {
-            "habits": [
-                {
-                    "id": "water",
-                    "type": "numeric",
-                    "goal": 2500,
-                    "reminder_times": ["08:00", "20:30"],
-                    "label": {"en": "water", "th": "น้ำ"},
-                    "unit": {"en": "ml", "th": "มล."},
-                },
-                {
-                    "id": "stretch",
-                    "type": "duration",
-                    "reminder_times": ["11:00"],
-                    "label": {"en": "stretch", "th": "ยืดเส้น"},
-                    "unit": {"en": "min", "th": "นาที"},
-                },
-                {
-                    "id": "diary",
-                    "type": "text",
-                    "reminder_times": ["21:30"],
-                    "label": {"en": "diary", "th": "ไดอารี่"},
-                },
-            ]
-        }
-    )
-    registry = HabitRegistry.from_config(config)
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-
-    jobs = {job.id: job for job in scheduler.get_jobs()}
-    assert set(jobs) == {"reminder_water_08:00", "reminder_water_20:30", "reminder_stretch_11:00", "reminder_diary_21:30"}
-
-    water_0800 = jobs["reminder_water_08:00"]
-    trigger_fields = {f.name: f for f in water_0800.trigger.fields}
-    assert str(trigger_fields["hour"]) == "8"
-    assert str(trigger_fields["minute"]) == "0"
-
-
-def test_schedule_reminders_job_args_bind_correct_habit_and_language():
-    """Reminders are unprompted, so "auto" resolves to
-    `config.i18n.primary_language` (default Thai) -- job.args is
-    `(channel, habit, "th")` under the default `Config()` used here, with
-    `habit` the actual `Habit` object from the registry (not a bare
-    category string, per SPEC-v0.7.md §5).
-
-    CHANGED (ROADMAP.md v0.9.0 AC9.1/AC9.2/AC9.3): `schedule_reminders`
-    now also binds `db`/`config`/`state` into every job's args so the
-    adaptive quiet-hours/goal-met checks and the snooze `ReminderState`
-    tracker work at fire time -- `send_reminder`'s 6-arg contract, not the
-    old 3-arg one. `db`/`state` default `None` when `schedule_reminders`
-    isn't given them (as here), `config` is always the real object."""
-    config = Config()
-    registry = HabitRegistry.from_config(config)
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-
-    job = scheduler.get_job("reminder_water_08:00")
-    assert job.args == (channel, registry.get("water"), "th", None, config, None)
-
-
-def test_schedule_reminders_uses_configured_timezone():
-    config = Config.model_validate(
-        {
-            "app": {"timezone": "UTC"},
-            "habits": [
-                {
-                    "id": "water",
-                    "type": "numeric",
-                    "goal": 2500,
-                    "reminder_times": ["08:00"],
-                    "label": {"en": "water", "th": "น้ำ"},
-                    "unit": {"en": "ml", "th": "มล."},
-                },
-            ],
-        }
-    )
-    registry = HabitRegistry.from_config(config)
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-
-    job = scheduler.get_job("reminder_water_08:00")
-    assert str(job.trigger.timezone) == "UTC"
-
-
-async def test_schedule_reminders_replace_existing_does_not_duplicate():
-    """AsyncIOScheduler only reconciles `replace_existing` once jobs leave
-    the pending queue and hit the jobstore, which happens at scheduler
-    start() -- so the scheduler must be started for this to be observable."""
-    config = Config.model_validate(
-        {
-            "habits": [
-                {
-                    "id": "water",
-                    "type": "numeric",
-                    "goal": 2500,
-                    "reminder_times": ["08:00"],
-                    "label": {"en": "water", "th": "น้ำ"},
-                    "unit": {"en": "ml", "th": "มล."},
-                },
-            ]
-        }
-    )
-    registry = HabitRegistry.from_config(config)
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-    schedule_reminders(scheduler, channel, config, registry)  # re-registering must replace, not duplicate
-    scheduler.start()
-    try:
-        assert len(scheduler.get_jobs()) == 1
-    finally:
-        scheduler.shutdown(wait=False)
-
-
-# ---------------------------------------------------------------------------
-# AC14: a new habit's reminder_times are scheduled; firing sends its own
-# reminder_text (or the reminder_generic template if unset); a habit with
-# no reminder_times schedules nothing.
-# ---------------------------------------------------------------------------
-
-
-def test_schedule_reminders_adds_one_job_for_a_new_habit_with_reminder_times():
-    sleep = _habit(
-        "sleep",
-        "numeric",
-        goal=8,
-        reminder_times=("07:00",),
-        reminder_text_en="😴 How many hours did you sleep?",
-        reminder_text_th="😴 เมื่อคืนนอนกี่ชั่วโมง?",
-    )
-    registry = HabitRegistry([sleep])
-    config = Config()
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-
-    jobs = scheduler.get_jobs()
-    assert len(jobs) == 1
-    assert jobs[0].id == "reminder_sleep_07:00"
-    # CHANGED (ROADMAP.md v0.9.0): see the args-shape note on
-    # test_schedule_reminders_job_args_bind_correct_habit_and_language above.
-    assert jobs[0].args == (channel, sleep, "th", None, config, None)
+    assert [chat_id for chat_id, _ in channel.sent] == ["user-a", "user-b"]
 
 
 async def test_send_reminder_new_habit_with_reminder_text_sends_it_in_resolved_language():
@@ -279,67 +147,267 @@ async def test_send_reminder_new_habit_with_reminder_text_sends_it_in_resolved_l
     )
     channel = FakeChannel()
 
-    await send_reminder(channel, sleep, "en")
-    await send_reminder(channel, sleep, "th")
+    await send_reminder(channel, OWNER, sleep, "en")
+    await send_reminder(channel, OWNER, sleep, "th")
 
-    assert channel.sent == ["😴 How many hours did you sleep?", "😴 เมื่อคืนนอนกี่ชั่วโมง?"]
+    assert [text for _, text in channel.sent] == ["😴 How many hours did you sleep?", "😴 เมื่อคืนนอนกี่ชั่วโมง?"]
 
 
 async def test_send_reminder_new_habit_without_reminder_text_uses_generic_template():
     steps = _habit("steps", "numeric", label_en="steps", label_th="ก้าวเดิน", reminder_times=("09:00",))
     channel = FakeChannel()
 
-    await send_reminder(channel, steps, "en")
-    await send_reminder(channel, steps, "th")
+    await send_reminder(channel, OWNER, steps, "en")
+    await send_reminder(channel, OWNER, steps, "th")
 
-    assert channel.sent == [
+    assert [text for _, text in channel.sent] == [
         i18n.t("reminder_generic", "en", label="steps"),
         i18n.t("reminder_generic", "th", label="ก้าวเดิน"),
     ]
 
 
-def test_schedule_reminders_habit_with_no_reminder_times_schedules_nothing():
-    silent = _habit("meds", "boolean", unit_en=None, unit_th=None, reminder_times=())
-    registry = HabitRegistry([silent])
+# ---------------------------------------------------------------------------
+# effective_reminder_times (R-S4): the ONE resolver run_due_reminders and
+# `/remind` both consult -- no override -> config default; ["off"] -> [];
+# a custom list -> sorted+deduped. (module `schedules` owns the WRITE side
+# via `/remind`; this shared-surface test only exercises the resolver
+# itself against direct `db.set_reminder_times`/`clear_reminder_times`
+# calls, not the not-yet-built command.)
+# ---------------------------------------------------------------------------
+
+
+def test_effective_reminder_times_no_override_falls_back_to_config_default(db):
     config = Config()
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
-
-    schedule_reminders(scheduler, channel, config, registry)
-
-    assert scheduler.get_jobs() == []
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    assert effective_reminder_times(db, config, water, OWNER) == list(water.reminder_times)
 
 
-def test_schedule_reminders_mixed_registry_only_schedules_habits_with_times():
-    water = HabitRegistry.from_config(Config()).get("water")
-    silent = _habit("meds", "boolean", unit_en=None, unit_th=None, reminder_times=())
-    sleep = _habit("sleep", "numeric", goal=8, reminder_times=("07:00",))
-    registry = HabitRegistry([water, silent, sleep])
+def test_effective_reminder_times_off_sentinel_means_no_reminders(db):
     config = Config()
-    scheduler = AsyncIOScheduler()
-    channel = FakeChannel()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    db.set_reminder_times(OWNER, "water", ["off"])
+    assert effective_reminder_times(db, config, water, OWNER) == []
 
-    schedule_reminders(scheduler, channel, config, registry)
 
-    job_ids = {j.id for j in scheduler.get_jobs()}
-    assert all(not jid.startswith("reminder_meds_") for jid in job_ids)
-    assert "reminder_sleep_07:00" in job_ids
-    assert len([jid for jid in job_ids if jid.startswith("reminder_water_")]) == 6
+def test_effective_reminder_times_custom_list_is_sorted(db):
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    # db.set_reminder_times stores exactly what it's given (R-S5's own
+    # de-dupe responsibility lives on the WRITE side, module `schedules`'s
+    # execute_remind, not this shared-surface store) -- a legitimately
+    # duplicate-free but out-of-order list is enough to prove the read
+    # side (effective_reminder_times) sorts.
+    db.set_reminder_times(OWNER, "water", ["12:00", "08:00"])
+    assert effective_reminder_times(db, config, water, OWNER) == ["08:00", "12:00"]
+
+
+def test_effective_reminder_times_clearing_reverts_to_config_default(db):
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    db.set_reminder_times(OWNER, "water", ["12:00"])
+    db.clear_reminder_times(OWNER, "water")
+    assert effective_reminder_times(db, config, water, OWNER) == list(water.reminder_times)
+
+
+def test_effective_reminder_times_is_per_user(db):
+    """SPEC-v1.2.md AC-S2: A's custom time doesn't affect B's."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    db.upsert_user("user-b", role="member", status="active")
+    db.set_reminder_times("user-a", "water", ["12:00"])
+
+    assert effective_reminder_times(db, config, water, "user-a") == ["12:00"]
+    assert effective_reminder_times(db, config, water, "user-b") == list(water.reminder_times)
+
+
+def test_effective_reminder_times_a_previously_goal_less_or_config_less_habit_is_still_settable(db):
+    """R-S5's own note: a habit with NO config `reminder_times` at all is
+    still allowed to gain a custom override."""
+    config = Config()
+    sleep = _habit("sleep", "numeric", goal=8, reminder_times=())
+    assert effective_reminder_times(db, config, sleep, OWNER) == []
+    db.set_reminder_times(OWNER, "sleep", ["07:00"])
+    assert effective_reminder_times(db, config, sleep, OWNER) == ["07:00"]
 
 
 # ---------------------------------------------------------------------------
-# Weekly review job registration + schedule_reminders wiring, exercised
-# through the real async_main -- SKIPPED, not an M2 bug. main.py's
-# `schedule_reminders(scheduler, channel, config)` call site is still on
-# the v0.6.0 3-arg contract (frozen shared-surface file per SPEC-v0.7.md
-# §11's build order; IMPL.md "v0.7.0 — Multi-Habit Extensibility (shared
-# surface only)" Known limitations #1 documents this exact boundary and
-# explicitly defers the wiring flip to Archi's integration step). Calling
-# the SPEC-v0.7.md §5 registry-aware `schedule_reminders` now raises
-# TypeError (missing `registry`) from that frozen 3-arg call site.
-# AC13/AC14 are already covered directly above at the unit level, which is
-# this module's actual scope; this test only re-verifies the same wiring
-# end-to-end through main.py, which is integration's job.
+# run_due_reminders (R-S1): the minutely tick, replacing `schedule_reminders`.
+# Rewritten AC13/AC14 coverage -- same acceptance intent ("a habit's
+# reminder fires at its own configured time and not at other times; a habit
+# with no reminder_times never fires"), against the new mechanism.
+# ---------------------------------------------------------------------------
+
+
+async def test_run_due_reminders_fires_at_a_habits_configured_time(db):
+    """AC13: the default config's water habit has 08:00 among its times."""
+    config = Config()  # water default reminder_times includes "08:00"
+    registry = HabitRegistry.from_config(config)
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("08:00"))
+
+    water_sends = [text for chat_id, text in channel.sent if chat_id == OWNER]
+    assert i18n.t("reminder_water", i18n.resolve_unprompted_language(config)) in water_sends
+
+
+async def test_run_due_reminders_does_not_fire_at_an_unconfigured_time(db):
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("03:33"))  # not a configured time
+
+    assert channel.sent == []
+
+
+async def test_run_due_reminders_habit_with_no_reminder_times_never_fires(db):
+    silent = _habit("meds", "boolean", unit_en=None, unit_th=None, reminder_times=())
+    registry = HabitRegistry([silent])
+    config = Config()
+    channel = FakeChannel()
+
+    # Sweep every minute of a day -- meds must never fire, since it has no
+    # config reminder_times and no override.
+    for hour in range(24):
+        for minute in (0, 30):
+            await run_due_reminders(channel, config, registry, db, clock=_fixed_clock(f"{hour:02d}:{minute:02d}"))
+    assert channel.sent == []
+
+
+async def test_run_due_reminders_a_new_habits_configured_time_fires_its_own_text(db):
+    """AC14: a new habit's reminder_times fire, sending its own
+    reminder_text (not the generic template, since one is configured)."""
+    sleep = _habit(
+        "sleep",
+        "numeric",
+        goal=8,
+        reminder_times=("07:00",),
+        reminder_text_en="😴 How many hours did you sleep?",
+        reminder_text_th="😴 เมื่อคืนนอนกี่ชั่วโมง?",
+    )
+    registry = HabitRegistry([sleep])
+    config = Config()  # primary_language defaults to Thai
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("07:00"))
+
+    assert channel.sent == [(OWNER, "😴 เมื่อคืนนอนกี่ชั่วโมง?")]
+
+
+async def test_run_due_reminders_only_fires_for_active_users(db):
+    """R-S1: `db.active_user_ids()` is the fan-out set -- a pending/blocked
+    user's reminders never fire."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    channel = FakeChannel()
+    db.upsert_user("pending-user", role="member", status="pending")
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("08:00"))
+
+    assert all(chat_id != "pending-user" for chat_id, _ in channel.sent)
+
+
+async def test_run_due_reminders_fires_independently_for_each_active_user(db):
+    """AC-U5/AC-S1: two active users both due at the same minute each get
+    their own send."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    channel = FakeChannel()
+    db.upsert_user("user-b", role="member", status="active")
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("08:00"))
+
+    chat_ids = {chat_id for chat_id, _ in channel.sent}
+    assert OWNER in chat_ids
+    assert "user-b" in chat_ids
+
+
+async def test_run_due_reminders_custom_time_fires_and_config_time_does_not(db):
+    """AC-S2: after `/remind water 12:00` (simulated directly via
+    `db.set_reminder_times`, since the `schedules` module's own command
+    parsing isn't this shared surface's scope), water fires at 12:00 and
+    NOT at any of the old config times."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    db.set_reminder_times(OWNER, "water", ["12:00"])
+
+    channel_at_config_time = FakeChannel()
+    await run_due_reminders(channel_at_config_time, config, registry, db, clock=_fixed_clock(water.reminder_times[0]))
+    assert channel_at_config_time.sent == []
+
+    channel_at_custom_time = FakeChannel()
+    await run_due_reminders(channel_at_custom_time, config, registry, db, clock=_fixed_clock("12:00"))
+    assert any(chat_id == OWNER for chat_id, _ in channel_at_custom_time.sent)
+
+
+async def test_run_due_reminders_off_sentinel_suppresses_that_habit_only(db):
+    """AC-S3: `/remind water off` (simulated directly) -- water never
+    fires for that user; other habits (e.g. stretch) are unaffected."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    stretch = registry.get("stretch")
+    db.set_reminder_times(OWNER, "water", ["off"])
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock(stretch.reminder_times[0]))
+
+    sent_texts = [text for _, text in channel.sent]
+    assert i18n.t("reminder_water", i18n.resolve_unprompted_language(config)) not in sent_texts
+    assert i18n.t("reminder_stretch", i18n.resolve_unprompted_language(config)) in sent_texts
+
+
+async def test_run_due_reminders_state_tracks_last_habit_per_user(db):
+    """R-S2/AC-U-SNOOZE: `ReminderState.last_habit_id` is a per-chat_id map,
+    updated only for the user whose reminder actually fired."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    state = ReminderState()
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, state=state, clock=_fixed_clock(water.reminder_times[0]))
+
+    assert state.last_habit_id.get(OWNER) == "water"
+
+
+async def test_run_due_reminders_goal_met_skip_is_per_user(db):
+    """AC-U5: A has met the goal (skipped), B has not (sent) -- each
+    evaluated against their own total.
+
+    `_goal_already_met` reads TODAY's total via `_today_str(config)`,
+    which uses the REAL current date (not the `clock` passed to
+    `run_due_reminders`, which only drives the HH:MM-due check) -- so the
+    seeded log must land on the real "today", not a hardcoded past date."""
+    from datetime import date
+
+    from habit_assistant.storage.models import LogEntry
+
+    config = Config()  # water goal 2500
+    registry = HabitRegistry.from_config(config)
+    water = registry.get("water")
+    db.upsert_user("user-b", role="member", status="active")
+    today_iso = date.today().isoformat()
+    db.insert_log(LogEntry(None, OWNER, f"{today_iso}T07:00:00", "water", 3000.0, None, "3000ml", "reply"))
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock(water.reminder_times[0]))
+
+    chat_ids_sent_water = {
+        chat_id for chat_id, text in channel.sent if text == i18n.t("reminder_water", i18n.resolve_unprompted_language(config))
+    }
+    assert OWNER not in chat_ids_sent_water  # goal already met -> skipped
+    assert "user-b" in chat_ids_sent_water  # no logs -> goal not met -> sent
+
+
+# ---------------------------------------------------------------------------
+# async_main wiring: a single "reminder_tick" job (not one per habit-time),
+# alongside the weekly-review job.
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +426,7 @@ class _FakeScheduler:
         self.jobs: dict[str, object] = {}
         _FakeScheduler.last_instance = self
 
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
         from types import SimpleNamespace
 
         self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
@@ -380,10 +448,10 @@ class _FakeTelegramChannel:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         pass
 
-    async def send_actionable(self, text: str, buttons) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         pass
 
     async def set_my_commands(self, commands) -> None:
@@ -396,11 +464,6 @@ class _FakeTelegramChannel:
         pass
 
 
-# UNSKIPPED (ROADMAP.md v0.7.0 integration): main.py's
-# `schedule_reminders(scheduler, channel, config, registry)` call site is
-# now wired to the registry-aware contract (was the frozen v0.6.0 3-arg
-# shape -- see IMPL.md's v0.7.0 "Known limitations" #1 / TEST-v0.7-M2.md
-# item 3), so this end-to-end async_main path now passes.
 async def test_async_main_registers_weekly_review_job_from_config(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -437,6 +500,9 @@ async def test_async_main_registers_weekly_review_job_from_config(tmp_path, monk
     assert trigger_fields["hour"] == "9"
     assert trigger_fields["minute"] == "15"
 
-    # Per-category reminder jobs (from schedule_reminders) are on the same
-    # scheduler alongside the weekly review job.
-    assert any(j.id.startswith("reminder_water_") for j in scheduler.get_jobs())
+    # SPEC-v1.2.md R-S1: a single "reminder_tick" job replaces the old
+    # one-job-per-habit-time fan-out from the removed `schedule_reminders`.
+    tick_job = scheduler.get_job("reminder_tick")
+    assert tick_job is not None
+    tick_fields = {f.name: str(f) for f in tick_job.trigger.fields}
+    assert tick_fields["second"] == "0"

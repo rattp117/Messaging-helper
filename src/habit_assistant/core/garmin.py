@@ -87,12 +87,14 @@ def parse_garmin_csv(csv_path: str, column_map: dict[str, str]) -> dict[str, flo
     return result
 
 
-def build_garmin_report(db: Database, config: Config, end_date: date) -> GarminReport | None:
+def build_garmin_report(db: Database, config: Config, end_date: date, user_id: str) -> GarminReport | None:
     """None when Garmin import isn't configured (`csv_path` empty) --
     the review appends nothing in that case. A configured-but-broken file
     (missing, unreadable, malformed) returns `available=False` instead, so
     the caller can render the bilingual "unavailable" note without the
-    weekly review itself failing (AC1.0.4)."""
+    weekly review itself failing (AC1.0.4). SPEC-v1.2.md R-D3: the
+    self-reported side is scoped to `user_id` -- each user's Garmin
+    cross-check compares only their own logged water."""
     csv_path = config.garmin.csv_path
     if not csv_path:
         return None
@@ -104,7 +106,7 @@ def build_garmin_report(db: Database, config: Config, end_date: date) -> GarminR
         return GarminReport(available=False, comparisons=[], threshold_ml=config.garmin.discrepancy_threshold_ml)
 
     comparisons = [
-        GarminDayComparison(day=d, self_reported_ml=db.water_total_ml(d), garmin_ml=garmin_by_day.get(d, 0.0))
+        GarminDayComparison(day=d, self_reported_ml=db.water_total_ml(user_id, d), garmin_ml=garmin_by_day.get(d, 0.0))
         for d in _week_days(end_date)
     ]
     return GarminReport(available=True, comparisons=comparisons, threshold_ml=config.garmin.discrepancy_threshold_ml)

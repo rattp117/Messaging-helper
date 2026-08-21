@@ -47,8 +47,11 @@ from habit_assistant.storage.models import LogEntry
 # ---------------------------------------------------------------------------
 
 
+CHAT_ID = "owner-chat-id"
+
+
 def _seed(db: Database, ts: str, category: str, value_num: float | None) -> int:
-    return db.insert_log(LogEntry(None, ts, category, value_num, None, "x", "reply"))
+    return db.insert_log(LogEntry(None, CHAT_ID, ts, category, value_num, None, "x", "reply"))
 
 
 def _log_count(db: Database) -> int:
@@ -64,14 +67,14 @@ class FakeChannel(Channel):
         self.sent: list[str] = []
         self.actionable: list[tuple[str, list[Button]]] = []
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         self.actionable.append((text, buttons))
         self.sent.append(text)
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]], on_callback=None) -> None:
+    async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in the direct handle_inbound_message tests")
 
 
@@ -112,6 +115,7 @@ class _FrozenHealthMonitor:
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "habits.db")
+    database.upsert_user(CHAT_ID, role="owner", status="active")
     yield database
     database.close()
 
@@ -143,14 +147,21 @@ async def test_ac3_log_confirmation_carries_exactly_one_undo_button_with_correct
     channel = FakeChannel()
 
     await handle_inbound_message(
-        "500ml", db=db, llm=FakeLLM(), channel=channel, config=Config(), registry=registry, clock=_clock()
+        "500ml",
+        db=db,
+        llm=FakeLLM(),
+        channel=channel,
+        config=Config(),
+        registry=registry,
+        clock=_clock(),
+        user_id=CHAT_ID,
     )
 
     assert len(channel.actionable) == 1
     text, buttons = channel.actionable[0]
     assert len(buttons) == 1
     label, data = buttons[0]
-    row = db.last_log()
+    row = db.last_log(CHAT_ID)
     assert data == f"undo:{row['id']}"
     assert label == i18n.t("undo_button_label", "en")
     assert channel.sent == [text]  # the confirmation went out via send_actionable, not a second plain send
@@ -181,6 +192,7 @@ async def test_ac4_clarifying_question_carries_no_button(db, registry, monkeypat
         config=Config(),
         registry=registry,
         clock=_clock(),
+        user_id=CHAT_ID,
     )
 
     assert channel.actionable == []
@@ -200,6 +212,7 @@ async def test_ac4_deferred_ack_carries_no_button(db, registry):
         registry=registry,
         clock=_clock(),
         health_monitor=health_monitor,
+        user_id=CHAT_ID,
     )
 
     assert channel.actionable == []
@@ -226,7 +239,14 @@ async def test_ac5_milestone_crossing_confirmation_carries_both_suffix_and_butto
 
     # Day 3 (today): this log crosses the 3-day milestone.
     await handle_inbound_message(
-        "2500ml", db=db, llm=FakeLLM(), channel=channel, config=config, registry=registry, clock=_clock()
+        "2500ml",
+        db=db,
+        llm=FakeLLM(),
+        channel=channel,
+        config=config,
+        registry=registry,
+        clock=_clock(),
+        user_id=CHAT_ID,
     )
 
     assert len(channel.actionable) == 1  # ONE send, not a milestone line as a second message
@@ -234,7 +254,7 @@ async def test_ac5_milestone_crossing_confirmation_carries_both_suffix_and_butto
     assert "2500" in text
     assert i18n.t("milestone_reached", "en", streak=3, label=registry.get("water").label("en")) in text
     assert len(buttons) == 1
-    row = db.last_log()
+    row = db.last_log(CHAT_ID)
     assert buttons[0][1] == f"undo:{row['id']}"
 
 
@@ -263,10 +283,11 @@ async def test_nl_target_hit_short_circuits_before_parser_and_writes_no_log_row(
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=True),
+        user_id=CHAT_ID,
     )
 
     assert _log_count(db) == 0  # AC29/AC30: no logs row written
-    assert db.get_target("water") == 2500.0
+    assert db.get_target(CHAT_ID, "water") == 2500.0
     assert channel.actionable == []  # a target reply is not a log confirmation (R-T10) -- no button
     assert len(channel.sent) == 1
 
@@ -287,6 +308,7 @@ async def test_gate_miss_falls_through_to_parser_and_logs_normally(db, registry,
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=True),
+        user_id=CHAT_ID,
     )
 
     assert _log_count(db) == 1
@@ -324,15 +346,16 @@ async def test_ac31_nl_set_goal_on_goalless_habit_then_consumers_reflect_it_end_
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=True),
+        user_id=CHAT_ID,
     )
     assert _log_count(db) == 0  # the NL step itself writes no log row
 
     # A subsequent stretch log of exactly 20 min now qualifies against the
     # freshly-set target, through the real streaks module.
     _seed(db, _today_ts(), "stretch", 20.0)
-    assert streaks.day_qualifies(db, config, stretch, date.today().isoformat()) is True
+    assert streaks.day_qualifies(db, config, stretch, date.today().isoformat(), CHAT_ID) is True
 
-    lines = streaks.compute_daily_summary(db, config, registry, date.today())
+    lines = streaks.compute_daily_summary(db, config, registry, date.today(), CHAT_ID)
     stretch_line = next(line for line in lines if line.habit.id == "stretch")
     assert stretch_line.goal == 20.0
 
@@ -365,10 +388,11 @@ async def test_ac33_ollama_down_skips_nl_step_entirely_and_defers_as_unparsed_lo
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=False),
+        user_id=CHAT_ID,
     )
 
     assert channel.sent == [i18n.t("deferred_ack", "en")]
-    assert db.get_target("water") is None  # no target was set
+    assert db.get_target(CHAT_ID, "water") is None  # no target was set
     row = db.pending_unparsed()
     assert len(row) == 1
     assert row[0]["raw_message"] == text
@@ -387,9 +411,10 @@ async def test_ac33_deterministic_target_command_still_works_during_ollama_outag
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=False),
+        user_id=CHAT_ID,
     )
 
-    assert db.get_target("water") == 2500.0
+    assert db.get_target(CHAT_ID, "water") == 2500.0
     assert len(channel.sent) == 1
     assert "2500" in channel.sent[0]
 
@@ -414,7 +439,7 @@ class _FakeScheduler:
         self.jobs: dict[str, object] = {}
         _FakeScheduler.last_instance = self
 
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True):
+    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
         self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
 
     def start(self):
@@ -464,10 +489,10 @@ class _AsyncMainFakeChannel(Channel):
         self.set_my_commands_calls: list[dict] = []
         _AsyncMainFakeChannel.last_instance = self
 
-    async def send(self, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> None:
         self.sent.append(text)
 
-    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         self.actionable.append((text, buttons))
         self.sent.append(text)
 
@@ -478,16 +503,22 @@ class _AsyncMainFakeChannel(Channel):
 
     async def run(self, on_message, on_callback=None) -> None:
         if _AsyncMainFakeChannel.queued_message is not None:
-            await on_message(_AsyncMainFakeChannel.queued_message)
+            # SPEC-v1.2.md R-C2: on_message now takes chat_id first. Uses
+            # the same chat id load_secrets() mocks as telegram_chat_id
+            # ("fake") -- async_main's real attribute_legacy_to_owner call
+            # registers that exact id as the active owner before channel.
+            # run() is ever reached, so this is the one user id guaranteed
+            # to already exist and be active by this point.
+            await on_message("fake", _AsyncMainFakeChannel.queued_message)
             if on_callback is not None and self.actionable:
                 # AC6: drive the exact button main.py just attached, proving
                 # the on_callback closure round-trips through the real
                 # undo_ui.handle_undo_callback with the real db/config/registry.
                 _, buttons = self.actionable[-1]
                 _, data = buttons[0]
-                await on_callback(data, self.actionable[-1][0], "cb-integration-1")
+                await on_callback("fake", data, self.actionable[-1][0], "cb-integration-1")
             if _AsyncMainFakeChannel.second_message is not None:
-                await on_message(_AsyncMainFakeChannel.second_message)
+                await on_message("fake", _AsyncMainFakeChannel.second_message)
         raise _StopAfterSchedulerStart()
 
     async def aclose(self) -> None:

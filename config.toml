@@ -1,3 +1,21 @@
+# SPEC-v1.2.md "Multi-user support": this bot now serves multiple people
+# from one process, partitioned by Telegram chat id. The OWNER is whoever
+# TELEGRAM_CHAT_ID (in .env) names -- their pre-v1.2 data is automatically
+# attributed to them on first startup after upgrading, and their own
+# experience is unchanged (undo/targets/streaks/reminders/summaries/
+# reviews all work exactly as before). Anyone else who messages the bot is
+# held as "pending" until the owner sends `/approve <their chat id>` (or
+# `/block <chat id>` to refuse); `/users` lists everyone's role/status.
+# Once approved, a person gets their own fully independent logs, streaks,
+# targets, undo, and preferences:
+#   /lang en | th | auto           -- per-person reply language (default: auto)
+#   /quiet HH:MM-HH:MM[,...] | off -- per-person quiet hours (default: inherit [quiet_hours] below)
+#   /remind <habit> HH:MM [HH:MM ...] | off | default
+#                                   -- per-person reminder times for one habit
+#                                      (default: inherit that habit's reminder_times below)
+# The habit catalog itself ([[habits]] below) stays global -- everyone
+# tracks the same habits; only targets/reminder-times/preferences differ
+# per person. Health/connectivity alerts still go to the owner only.
 [app]
 timezone = "Asia/Bangkok"
 db_path = "data/habits.db"
