@@ -21,10 +21,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from habit_assistant.channels.base import Channel
+from habit_assistant.channels.base import Button, Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
-from habit_assistant.core import commands, i18n, query, streaks
+from habit_assistant.core import commands, discoverability, i18n, query, streaks, target_nl, targets, targets_command, undo_ui
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
@@ -72,6 +72,28 @@ DEFERRED_ACK_MESSAGE = i18n.t("deferred_ack", "en")
 NOTHING_TO_UNDO_MESSAGE = i18n.t("nothing_to_undo", "en")
 NOTHING_TO_EDIT_MESSAGE = i18n.t("nothing_to_edit", "en")
 
+# SPEC-v1.1.md R-U1/AC1: this integration step's own contribution to the bot
+# command menu, mirroring `core/undo_ui.py:UNDO_COMMAND_DESCRIPTIONS`'s shape
+# and rationale -- there is no `core/i18n.py` catalog key for Bot API menu
+# copy (short, static, not a user-facing reply template), and the `targets`
+# module (IMPL-v1.1-targets.md) did not add a `command_menu_entries()` of its
+# own, so this integration step supplies `/target`'s menu entry directly.
+TARGET_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "View or set a habit's daily goal",
+    "th": "ดูหรือตั้งเป้าหมายรายวันของกิจกรรม",
+}
+
+# SPEC-v1.1.md R-D4/AC40: this module's own contribution to the bot command
+# menu for `/help` and `/habits`, same rationale as TARGET_COMMAND_
+# DESCRIPTIONS above -- `core/discoverability.py` (module `discoverability`)
+# has no `command_menu_entries()` of its own (its public surface is just the
+# two formatter functions, per SPEC-v1.1.md §5), so this integration point
+# supplies the menu copy directly.
+DISCOVERABILITY_COMMAND_DESCRIPTIONS: dict[i18n.Language, list[tuple[str, str]]] = {
+    "en": [("help", "Show what I can do"), ("habits", "List your habits and today's progress")],
+    "th": [("help", "ดูสิ่งที่ฉันทำได้"), ("habits", "ดูรายการกิจกรรมและความคืบหน้าวันนี้")],
+}
+
 
 def ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
@@ -98,33 +120,6 @@ def setup_logging(level: str) -> None:
     )
 
 
-def _describe_log(row, registry: HabitRegistry, lang: i18n.Language) -> str:
-    """Human-readable one-line summary of a log row, for undo's "confirm
-    what was removed" (AC5.1). ROADMAP.md v0.7.0: built-ins keep their
-    byte-identical v0.6 catalog entries; any other configured habit
-    resolves through `registry` to a type-generic description (AC9)."""
-    category = row["category"]
-    if category == "water":
-        return i18n.t("describe_log_water", lang, value_num=row["value_num"])
-    if category == "stretch":
-        return i18n.t("describe_log_stretch", lang, value_num=row["value_num"])
-    if category == "diary":
-        text = row["value_text"] or ""
-        snippet = text if len(text) <= 40 else text[:37] + "..."
-        return i18n.t("describe_log_diary", lang, snippet=snippet)
-
-    habit = registry.get(category)
-    if habit is not None:
-        if habit.type in ("numeric", "duration"):
-            msg_id = "describe_log_numeric" if habit.type == "numeric" else "describe_log_duration"
-            return i18n.t(
-                msg_id, lang, value_num=row["value_num"], unit=habit.unit(lang) or "", label=habit.label(lang)
-            )
-        if habit.type == "boolean":
-            return i18n.t("describe_log_boolean", lang, label=habit.label(lang))
-    return i18n.t("describe_log_generic", lang, category=category)
-
-
 async def _execute_undo(
     db: Database, channel: Channel, config: Config, clock, registry: HabitRegistry, lang: i18n.Language
 ) -> None:
@@ -134,60 +129,18 @@ async def _execute_undo(
     write (AC5.2). `lang` is the reply language resolved from the inbound
     undo command itself (ROADMAP.md v0.6.0 AC6.1/AC6.3).
 
-    ROADMAP.md v0.7.0: water/stretch keep their byte-identical v0.6
-    confirmations (AC7.1); any other configured habit gets a type-generic
-    undo confirmation via `registry` (AC9); anything else (including
-    diary, unchanged from v0.6) falls back to `undo_removed_generic`."""
+    SPEC-v1.1.md R-U8/AC11: the "soft-delete + describe + recompute" body
+    now delegates to `core/undo_ui.send_undo_confirmation` -- the single
+    formatter this text/command `/undo` path and the inline-button
+    `handle_undo_callback` path both use, so the two can never diverge by
+    a future edit to only one of them (this function's own former inline
+    copy is gone, not just byte-identical by coincidence)."""
     row = db.last_log()
     if row is None:
         await channel.send(i18n.t("nothing_to_undo", lang))
         return
 
-    db.soft_delete(row["id"])
-    description = _describe_log(row, registry, lang)
-    today_str = clock().date().isoformat()
-    category = row["category"]
-
-    if category == "water":
-        total = db.water_total_ml(today_str)
-        goal = config.reminders.water.goal_ml
-        pct = round(100 * total / goal) if goal else 0
-        await channel.send(
-            i18n.t("undo_removed_water", lang, description=description, total=int(total), goal=goal, pct=pct)
-        )
-        return
-    if category == "stretch":
-        count = db.stretch_count(today_str)
-        await channel.send(i18n.t("undo_removed_stretch", lang, description=description, count=count))
-        return
-
-    habit = registry.get(category)
-    if habit is not None and habit.type == "numeric" and habit.goal:
-        total = db.sum_value(habit.id, today_str)
-        pct = round(100 * total / habit.goal) if habit.goal else 0
-        await channel.send(
-            i18n.t(
-                "undo_removed_numeric",
-                lang,
-                description=description,
-                total=total,
-                goal=habit.goal,
-                unit=habit.unit(lang) or "",
-                pct=pct,
-            )
-        )
-        return
-    if habit is not None and habit.type == "duration":
-        count = db.count(habit.id, today_str)
-        await channel.send(
-            i18n.t("undo_removed_duration", lang, description=description, count=count, label=habit.label(lang))
-        )
-        return
-    if habit is not None and habit.type == "boolean":
-        await channel.send(i18n.t("undo_removed_boolean", lang, description=description))
-        return
-
-    await channel.send(i18n.t("undo_removed_generic", lang, description=description))
+    await undo_ui.send_undo_confirmation(db, channel, config, clock, registry, lang, row)
 
 
 async def _execute_edit(
@@ -219,10 +172,14 @@ async def _execute_edit(
 
     db.update_value(row["id"], value_num=command.value_num)
     today_str = clock().date().isoformat()
+    habit = registry.get(command.category)
 
     if command.category == "water":
         total = db.water_total_ml(today_str)
-        goal = config.reminders.water.goal_ml
+        # SPEC-v1.1.md R-T5/AC23: same override-aware goal resolution as
+        # the water confirmation/undo paths (AC24: byte-identical with no
+        # override set).
+        goal = targets.effective_goal(db, habit, config) if habit is not None else config.reminders.water.goal_ml
         pct = round(100 * total / goal) if goal else 0
         await channel.send(
             i18n.t("edit_updated_water", lang, value_num=command.value_num, total=int(total), goal=goal, pct=pct)
@@ -235,22 +192,23 @@ async def _execute_edit(
         )
         return
 
-    habit = registry.get(command.category)
-    if habit is not None and habit.type == "numeric" and habit.goal:
-        total = db.sum_value(habit.id, today_str)
-        pct = round(100 * total / habit.goal) if habit.goal else 0
-        await channel.send(
-            i18n.t(
-                "edit_updated_numeric",
-                lang,
-                value=command.value_num,
-                total=total,
-                goal=habit.goal,
-                unit=habit.unit(lang) or "",
-                pct=pct,
+    if habit is not None and habit.type == "numeric":
+        goal = targets.effective_goal(db, habit, config)
+        if goal:
+            total = db.sum_value(habit.id, today_str)
+            pct = round(100 * total / goal) if goal else 0
+            await channel.send(
+                i18n.t(
+                    "edit_updated_numeric",
+                    lang,
+                    value=command.value_num,
+                    total=total,
+                    goal=goal,
+                    unit=habit.unit(lang) or "",
+                    pct=pct,
+                )
             )
-        )
-        return
+            return
     if habit is not None and habit.type == "duration":
         count = db.count(habit.id, today_str)
         await channel.send(
@@ -322,7 +280,7 @@ async def _execute_snooze(
 
 
 async def _generic_confirmation(
-    db: Database, llm: OllamaClient, habit: Habit, value, today_str: str, lang: i18n.Language
+    db: Database, llm: OllamaClient, habit: Habit, value, today_str: str, lang: i18n.Language, config: Config
 ) -> str:
     """Type-generic confirmation for any habit that is NOT one of the
     three built-ins (SPEC-v0.7.md §3.2/§4 R13). Built-ins never reach
@@ -331,8 +289,12 @@ async def _generic_confirmation(
     if habit.type == "numeric":
         total = db.sum_value(habit.id, today_str)
         unit = habit.unit(lang) or ""
-        if habit.goal:
-            pct = round(100 * total / habit.goal) if habit.goal else 0
+        # SPEC-v1.1.md R-T5/AC23: a stored `/target <habit> …` override
+        # now wins over the habit's config `goal` here too (AC24:
+        # byte-identical when no override is set).
+        goal = targets.effective_goal(db, habit, config)
+        if goal:
+            pct = round(100 * total / goal) if goal else 0
             return i18n.t(
                 "confirm_numeric_goal",
                 lang,
@@ -340,7 +302,7 @@ async def _generic_confirmation(
                 value=value,
                 unit=unit,
                 total=total,
-                goal=habit.goal,
+                goal=goal,
                 pct=pct,
             )
         return i18n.t("confirm_numeric_nogoal", lang, label=habit.label(lang), value=value, unit=unit)
@@ -372,22 +334,29 @@ async def _generic_confirmation(
     return i18n.t("confirm_boolean", lang, label=habit.label(lang), status=status)
 
 
-async def _send_recovered_generic(channel: Channel, habit: Habit, value, lang: i18n.Language) -> None:
+async def _send_recovered_generic(
+    channel: Channel, habit: Habit, value, lang: i18n.Language, buttons: list[Button]
+) -> None:
     """The recovery-confirmation counterpart of `_generic_confirmation`,
-    for `reparse_pending_unparsed` (SPEC-v0.7.md §4 R14)."""
+    for `reparse_pending_unparsed` (SPEC-v0.7.md §4 R14). SPEC-v1.1.md
+    R-U2: a recovery re-confirmation is itself an interactive log
+    confirmation (the deferred message finally got logged), so it carries
+    the undo button too, via `send_actionable`."""
     if habit.type == "numeric":
-        await channel.send(
-            i18n.t("recovered_numeric", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang))
+        await channel.send_actionable(
+            i18n.t("recovered_numeric", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
+            buttons,
         )
     elif habit.type == "duration":
-        await channel.send(
-            i18n.t("recovered_duration", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang))
+        await channel.send_actionable(
+            i18n.t("recovered_duration", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
+            buttons,
         )
     elif habit.type == "boolean":
-        await channel.send(i18n.t("recovered_boolean", lang, label=habit.label(lang)))
+        await channel.send_actionable(i18n.t("recovered_boolean", lang, label=habit.label(lang)), buttons)
     else:  # text -- not explicitly listed among SPEC-v0.7.md §5's catalog
         # ids; added for completeness (see IMPL.md "known limitations").
-        await channel.send(i18n.t("recovered_text", lang, label=habit.label(lang)))
+        await channel.send_actionable(i18n.t("recovered_text", lang, label=habit.label(lang)), buttons)
 
 
 async def handle_inbound_message(
@@ -473,7 +442,35 @@ async def handle_inbound_message(
     never repeated for further logs the same day (see
     `streaks.crossed_milestone`'s docstring for why). `enabled = false`
     skips this entirely -- zero milestone lines, and the pre/post
-    `day_qualifies` reads never happen (AC10.4)."""
+    `day_qualifies` reads never happen (AC10.4).
+
+    SPEC-v1.1.md "Undo menu + per-habit targets" integration (this file's
+    own wiring, landed after both `undo-ui` and `targets` reported done):
+    a `command.kind == "target"` (R-T7, e.g. "/target water 2000") is
+    answered by `core/targets_command.execute_target` and returned
+    immediately, plain `send` (a target reply is not a log confirmation).
+    Every interactive log confirmation below (water/stretch/diary/generic,
+    plus `reparse_pending_unparsed`'s recovery re-confirmations) now goes
+    out via `channel.send_actionable(text, undo_ui.undo_button(row_id,
+    lang))` instead of plain `send` (R-U2/AC3) -- unprompted sends
+    (reminders, daily summary, weekly review, health alerts, the
+    clarifying question, the deferred-ack) are untouched, still plain
+    `send`, no button (R-U2's explicit exclusion list). Between the
+    health-monitor deferral check and `parse_message`, a full-NL
+    target-intent step (R-T12-R-T16) runs only when Ollama is up: a cheap
+    gate (`target_nl.looks_like_target_phrasing`) followed by a fail-closed
+    LLM classification (`target_nl.classify_target_intent`); a hit sets the
+    target via the same `execute_target` "set" path and returns without
+    ever writing a `logs` row (AC29/AC30); a miss (gate miss, low
+    confidence, or any classifier failure) falls straight through to
+    `parse_message` unchanged (R-C5).
+
+    SPEC-v1.1.md "discoverability" module (sequential follow-on, landed
+    after the above): `command.kind in ("help", "habits")` (R-D1) are
+    answered by `core/discoverability.py`'s two formatters and returned
+    immediately, plain `send` -- both deterministic and LLM-free, so both
+    are dispatched here, before the health-monitor deferral check, and
+    work with Ollama down (AC35/AC37)."""
     registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config)
     command = commands.dispatch(text, registry)
@@ -495,6 +492,39 @@ async def handle_inbound_message(
         if command.kind == "snooze":
             await _execute_snooze(db, channel, config, clock, command, registry, lang, scheduler, reminder_state, dry_run)
             return
+        if command.kind == "target":
+            # SPEC-v1.1.md R-T10: a target reply is not a log confirmation
+            # (R-U2 scope) -- plain `send`, no undo button.
+            reply = await targets_command.execute_target(
+                command, db=db, config=config, registry=registry, lang=lang
+            )
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(reply)
+            return
+        if command.kind == "help":
+            # SPEC-v1.1.md R-D2/AC35: deterministic, LLM-free, reads only
+            # `config` -- runs here, before the health-monitor deferral
+            # check below, so it works with Ollama down.
+            reply = discoverability.build_help_text(config, lang)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(reply)
+            return
+        if command.kind == "habits":
+            # SPEC-v1.1.md R-D3/AC37: deterministic, LLM-free, read-only --
+            # same "before the deferral check" placement as "help" above.
+            reply = discoverability.build_habits_overview(db, config, registry, clock, lang)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(reply)
+            return
         if dry_run:
             print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
             return
@@ -512,6 +542,39 @@ async def handle_inbound_message(
         db.insert_log(LogEntry(None, ts, "unparsed", None, None, text, source))
         await channel.send(i18n.t("deferred_ack", lang))
         return
+
+    # SPEC-v1.1.md R-T12-R-T16 (OQ3, module `targets`): the full-NL
+    # target-intent step. `command` is guaranteed None here (every branch
+    # above returns) -- i.e. the message matched neither an anchored
+    # command nor query-shape -- and the health-monitor deferral check just
+    # above already returned for the Ollama-DOWN case, so reaching this
+    # point already implies "Ollama up" whenever a health_monitor is wired
+    # (R-T16: no NL classification call is made while Ollama is down; the
+    # message falls through unchanged to the deferred/parse path below).
+    # `looks_like_target_phrasing` is a cheap cost gate only (R-T13.1) --
+    # `classify_target_intent` is independently fail-closed (R-T14), so a
+    # `None` result here (gate miss, low confidence, or any classifier
+    # failure) falls straight through to the normal log-parsing path,
+    # unchanged (R-C5).
+    if health_monitor is None or health_monitor.ollama_up:
+        if target_nl.looks_like_target_phrasing(text):
+            intent = await target_nl.classify_target_intent(text, llm, registry, config)
+            if intent is not None:
+                set_command = commands.Command(
+                    kind="target",
+                    category=intent.habit_id,
+                    value_num=intent.goal_base_unit,
+                    target_action="set",
+                )
+                reply = await targets_command.execute_target(
+                    set_command, db=db, config=config, registry=registry, lang=lang
+                )
+                if dry_run:
+                    print(reply)
+                    return
+                assert channel is not None, "channel is required outside dry-run"
+                await channel.send(reply)
+                return  # AC29/AC30: no `logs` row is written for a target-intent hit
 
     result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
 
@@ -541,7 +604,10 @@ async def handle_inbound_message(
     )
 
     entry = log_entry_from_result(habit, result, ts, text, source)
-    db.insert_log(entry)
+    # SPEC-v1.1.md R-U2: the inserted row's id drives the inline "Undo"
+    # button attached to this confirmation below.
+    row_id = db.insert_log(entry)
+    undo_buttons = undo_ui.undo_button(row_id, lang)
 
     milestone_suffix = ""
     if config.gamification.enabled:
@@ -552,20 +618,24 @@ async def handle_inbound_message(
     if habit.id == "water":
         water_ml = int(result.value)  # type: ignore[arg-type]
         total = db.water_total_ml(today_str)
-        goal = config.reminders.water.goal_ml
+        # SPEC-v1.1.md R-T5/AC23: a stored `/target water …` override now
+        # wins here too (AC24: byte-identical when no override is set).
+        goal = targets.effective_goal(db, habit, config)
         pct = round(100 * total / goal) if goal else 0
-        await channel.send(
+        await channel.send_actionable(
             i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
-            + milestone_suffix
+            + milestone_suffix,
+            undo_buttons,
         )
         return
 
     if habit.id == "stretch":
         stretch_min = int(result.value)  # type: ignore[arg-type]
         count = db.stretch_count(today_str)
-        await channel.send(
+        await channel.send_actionable(
             i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
-            + milestone_suffix
+            + milestone_suffix,
+            undo_buttons,
         )
         return
 
@@ -577,12 +647,14 @@ async def handle_inbound_message(
         )
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
-        await channel.send(i18n.t("diary_confirmation", lang, reflection=reflection) + milestone_suffix)
+        await channel.send_actionable(
+            i18n.t("diary_confirmation", lang, reflection=reflection) + milestone_suffix, undo_buttons
+        )
         return
 
     # Any other configured habit: type-generic confirmation (AC9).
-    message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang)
-    await channel.send(message + milestone_suffix)
+    message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang, config)
+    await channel.send_actionable(message + milestone_suffix, undo_buttons)
 
 
 async def reparse_pending_unparsed(
@@ -635,15 +707,23 @@ async def reparse_pending_unparsed(
         db.reclassify_log(
             row["id"], habit.id, recovered_entry.value_num, recovered_entry.value_text, habit_type=habit.type
         )
+        # SPEC-v1.1.md R-U2: a recovery re-confirmation is itself an
+        # interactive log confirmation -- the deferred row's id (unchanged
+        # by reclassify_log) drives its own undo button.
+        undo_buttons = undo_ui.undo_button(row["id"], lang)
 
         if habit.id == "water":
-            await channel.send(i18n.t("recovered_water", lang, water_ml=int(result.value)))  # type: ignore[arg-type]
+            await channel.send_actionable(
+                i18n.t("recovered_water", lang, water_ml=int(result.value)), undo_buttons  # type: ignore[arg-type]
+            )
         elif habit.id == "stretch":
-            await channel.send(i18n.t("recovered_stretch", lang, stretch_min=int(result.value)))  # type: ignore[arg-type]
+            await channel.send_actionable(
+                i18n.t("recovered_stretch", lang, stretch_min=int(result.value)), undo_buttons  # type: ignore[arg-type]
+            )
         elif habit.id == "diary":
-            await channel.send(i18n.t("recovered_diary", lang))
+            await channel.send_actionable(i18n.t("recovered_diary", lang), undo_buttons)
         else:
-            await _send_recovered_generic(channel, habit, result.value, lang)
+            await _send_recovered_generic(channel, habit, result.value, lang, undo_buttons)
 
 
 def seed_fake_data(db: Database, config: Config) -> None:
@@ -815,6 +895,24 @@ async def async_main(args: argparse.Namespace) -> None:
     except Exception:
         logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
 
+    # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40: register the bot command menu once
+    # at startup -- `/undo` (undo_ui's own contribution) + `/target` (this
+    # integration step's, see TARGET_COMMAND_DESCRIPTIONS above) + `/help` +
+    # `/habits` (the discoverability module's, see
+    # DISCOVERABILITY_COMMAND_DESCRIPTIONS above), English default + a Thai
+    # set. A transport error here is logged and never crashes startup
+    # (AC2) -- same belt-and-suspenders posture as the schema-conformance
+    # probe just above.
+    undo_command_menu = undo_ui.command_menu_entries()
+    command_menu = {
+        lang: undo_command_menu[lang] + [("target", desc)] + DISCOVERABILITY_COMMAND_DESCRIPTIONS[lang]
+        for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
+    }
+    try:
+        await channel.set_my_commands(command_menu)
+    except Exception:
+        logger.exception("set_my_commands failed at startup; continuing")
+
     # ROADMAP.md v0.4.0 AC3.3: catch up on anything deferred by a
     # *previous* process run before entering the main loop. If Ollama is
     # still down right now, parse_message just fails closed per row (no
@@ -924,11 +1022,20 @@ async def async_main(args: argparse.Namespace) -> None:
             reminder_state=reminder_state,
         )
 
+    async def on_callback(data: str, source_text: str, callback_id: str) -> None:
+        # SPEC-v1.1.md R-U4/R-U5: route an inline-button tap to the shared
+        # undo_ui handler. `TelegramChannel.run` always calls
+        # `answer_callback_query` itself right after awaiting this (R-U4),
+        # so this closure doesn't need to.
+        await undo_ui.handle_undo_callback(
+            data, source_text, callback_id, db=db, channel=channel, config=config, clock=datetime.now, registry=registry
+        )
+
     # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own
     # asyncio task alongside the scheduler and the inbound loop.
     health_task = asyncio.create_task(health_monitor.run())
     try:
-        await channel.run(on_message)
+        await channel.run(on_message, on_callback=on_callback)
     finally:
         health_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

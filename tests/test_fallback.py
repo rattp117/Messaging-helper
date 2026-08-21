@@ -125,6 +125,12 @@ class _RecordingChannel:
     async def send(self, text: str) -> None:
         self.sent.append(text)
 
+    async def send_actionable(self, text: str, buttons) -> None:
+        # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default -- drop
+        # the buttons, record text (this file's own log confirmations are
+        # unaffected in content by v1.1's undo button).
+        self.sent.append(text)
+
 
 # ---------------------------------------------------------------------------
 # AC2.1 -- probe_schema_support(): per-model conformance check, never raises

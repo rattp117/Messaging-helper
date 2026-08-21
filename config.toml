@@ -97,6 +97,16 @@ hydration_ml = "Hydration(ml)"
 # default reproduces this exact shape when this file/section is absent).
 # The legacy `[reminders.*]`/`[units]` sections above are retained but
 # ignored by the new habit-driven code paths.
+#
+# SPEC-v1.1.md "Undo menu + per-habit targets": each `goal` below (and the
+# legacy `[reminders.water].goal_ml` above, for `water` specifically) is
+# only the DEFAULT daily goal. Sending `/target <habit> <value>` in chat
+# stores a per-habit override in the DB (`habit_targets` table, migration
+# 005) that takes priority over the value here at runtime, for every
+# reminder/streak/summary/review/chart/confirmation -- no restart, no
+# config edit needed. `/target <habit> default` clears the override and
+# reverts to whatever is configured here. No new field is needed in this
+# file for that -- the override lives entirely in the DB.
 [[habits]]
 id = "water"
 type = "numeric"

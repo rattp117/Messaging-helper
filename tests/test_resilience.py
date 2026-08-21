@@ -59,6 +59,11 @@ class _RecordingChannel:
             raise RuntimeError("simulated channel send failure")
         self.sent.append(text)
 
+    async def send_actionable(self, text: str, buttons) -> None:
+        # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default -- drop
+        # the buttons, same failure/recording behavior as send().
+        await self.send(text)
+
 
 class _FrozenHealthMonitor:
     """Minimal `health_monitor` stand-in exposing only the `.ollama_up`

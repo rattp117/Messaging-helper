@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
-from habit_assistant.core import charts, garmin, i18n, streaks
+from habit_assistant.core import charts, garmin, i18n, streaks, targets
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
@@ -88,11 +88,11 @@ def _compute_habit_stats(
 ) -> HabitStats:
     if habit.type == "numeric":
         values = [db.sum_value(habit.id, d) for d in day_strs]
-        # ROADMAP.md v0.10.0: `effective_goal` is the same helper
-        # `core/streaks.py`'s streak/milestone/daily-summary math reads,
-        # replacing this module's own (now-removed) `_water_goal_ml` --
-        # one place decides what a habit's "goal" is (AC10.5).
-        goal = streaks.effective_goal(habit, config)
+        # SPEC-v1.1.md R-T5: `targets.effective_goal` is the same helper
+        # every other goal-consuming module reads (streaks, reminders,
+        # charts, main.py's confirmations) -- one place decides what a
+        # habit's "goal" is, DB override included (AC10.5, R-T3).
+        goal = targets.effective_goal(db, habit, config)
         days = [DayValue(d, v, goal) for d, v in zip(day_strs, values)] if goal else []
         total = sum(values)
         avg = round(total / len(values), 1) if values else 0.0

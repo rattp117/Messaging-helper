@@ -93,6 +93,24 @@ def _migration_004_habit_type(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_005_habit_targets(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.1.md "Undo menu + per-habit targets" (§4 R-T1): additive-only,
+    like every migration before it -- a new, small override table, no
+    ALTER/DROP on `logs`. `habit_id` is the primary key (one override row
+    per habit, upserted by `Database.set_target`); `goal` is the daily
+    target in the habit's base unit. `IF NOT EXISTS` makes re-running a
+    no-op (AC12)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS habit_targets (
+          habit_id   TEXT PRIMARY KEY,
+          goal       REAL NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -101,6 +119,7 @@ MIGRATIONS: list[Migration] = [
     _migration_002_category_index,
     _migration_003_soft_delete,
     _migration_004_habit_type,
+    _migration_005_habit_targets,
 ]
 
 

@@ -481,7 +481,13 @@ class _FakeTelegramChannel:
     async def send(self, text: str) -> None:
         self.sent.append(text)
 
-    async def run(self, on_message):
+    async def send_actionable(self, text: str, buttons) -> None:
+        self.sent.append(text)
+
+    async def set_my_commands(self, commands) -> None:
+        pass
+
+    async def run(self, on_message, on_callback=None):
         if _FakeTelegramChannel.invoke_daily_summary_job_on_run:
             job = _FakeScheduler.last_instance.get_job("daily_summary")
             if job is not None:

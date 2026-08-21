@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from habit_assistant.channels.base import Channel
+from habit_assistant.channels.base import Button, Channel
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,59 @@ class TelegramChannel(Channel):
         resp = await self._client.post(url, data=data, files=files)
         resp.raise_for_status()
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    def build_send_actionable_request(self, text: str, buttons: list[Button]) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: `sendMessage` + a one-row inline keyboard
+        (SPEC-v1.1.md §5) -- each `(label, callback_data)` pair becomes one
+        button in the row."""
+        url, payload = self.build_send_request(text)
+        payload = dict(payload)
+        payload["reply_markup"] = {
+            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
+        }
+        return url, payload
+
+    async def send_actionable(self, text: str, buttons: list[Button]) -> None:
+        url, payload = self.build_send_actionable_request(text, buttons)
+        resp = await self._client.post(url, json=payload)
+        resp.raise_for_status()
+
+    def build_set_my_commands_requests(
+        self, commands: dict[str, list[tuple[str, str]]]
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Exposed for testing: one `setMyCommands` request per language
+        code in `commands` (SPEC-v1.1.md §5) -- `"en"` is the Bot API's
+        default set (no `language_code` field); any other code (e.g.
+        `"th"`) is sent with `language_code` so it only applies to clients
+        in that language."""
+        requests: list[tuple[str, dict[str, Any]]] = []
+        url = f"{self._base_url}/setMyCommands"
+        for lang_code, cmds in commands.items():
+            payload: dict[str, Any] = {
+                "commands": [{"command": command, "description": description} for command, description in cmds]
+            }
+            if lang_code != "en":
+                payload["language_code"] = lang_code
+            requests.append((url, payload))
+        return requests
+
+    async def set_my_commands(self, commands: dict[str, list[tuple[str, str]]]) -> None:
+        for url, payload in self.build_set_my_commands_requests(commands):
+            resp = await self._client.post(url, json=payload)
+            resp.raise_for_status()
+
+    async def answer_callback_query(self, callback_id: str, text: str | None = None) -> None:
+        url = f"{self._base_url}/answerCallbackQuery"
+        payload: dict[str, Any] = {"callback_query_id": callback_id}
+        if text is not None:
+            payload["text"] = text
+        resp = await self._client.post(url, json=payload)
+        resp.raise_for_status()
+
+    async def run(
+        self,
+        on_message: Callable[[str], Awaitable[None]],
+        on_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
+    ) -> None:
         backoff = self._backoff_initial
         while True:
             try:
@@ -95,6 +147,29 @@ class TelegramChannel(Channel):
 
             for update in payload.get("result", []):
                 self._offset = update["update_id"] + 1
+
+                callback_query = update.get("callback_query")
+                if callback_query is not None:
+                    # SPEC-v1.1.md R-U4: a callback (inline-button tap) is
+                    # routed to on_callback, then the client's spinner is
+                    # ALWAYS dismissed via answerCallbackQuery -- even when
+                    # on_callback is absent, raises, or the data is
+                    # malformed (that validation lives in on_callback
+                    # itself; this loop never inspects `data`).
+                    cb_id = callback_query.get("id", "")
+                    data = callback_query.get("data") or ""
+                    source_text = (callback_query.get("message") or {}).get("text") or ""
+                    if on_callback is not None:
+                        try:
+                            await on_callback(data, source_text, cb_id)
+                        except Exception:
+                            logger.exception("on_callback handler raised; continuing inbound loop")
+                    try:
+                        await self.answer_callback_query(cb_id)
+                    except Exception:
+                        logger.exception("answerCallbackQuery failed; continuing inbound loop")
+                    continue
+
                 message = update.get("message") or {}
                 text = message.get("text")
                 if not text:

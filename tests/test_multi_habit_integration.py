@@ -499,9 +499,12 @@ def test_migration_004_backfilled_legacy_rows_aggregate_alongside_new_habit_rows
 
     # Open through the real Database class -- migration 004 runs here,
     # backfilling habit_type='numeric' for the two legacy water rows.
+    # SPEC-v1.1.md's additive migration 005 (habit_targets) also runs now
+    # that it's part of MIGRATIONS, so a v3-shaped DB opened today lands
+    # on version 5, not 4.
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 4
+    assert db.schema_version == 5
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated
     # DB, as if the operator upgraded to v0.7.0 config.toml and kept using

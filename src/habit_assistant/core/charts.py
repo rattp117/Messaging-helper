@@ -19,7 +19,7 @@ import logging
 from datetime import date, timedelta
 
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, streaks
+from habit_assistant.core import i18n, targets
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -76,7 +76,9 @@ def render_habit_chart(
     try:
         if habit.type == "numeric":
             values = [db.sum_value(habit.id, d) for d in day_strs]
-            goal = streaks.effective_goal(habit, config)
+            # SPEC-v1.1.md R-T5/AC22: a numeric habit's goal-line reflects a
+            # DB target override the moment one is set (targets.effective_goal).
+            goal = targets.effective_goal(db, habit, config)
             unit = habit.unit(lang) or ""
             return _render_bar_chart(labels, values, habit.label(lang), unit, goal)
         if habit.type == "duration":

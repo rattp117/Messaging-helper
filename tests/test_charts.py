@@ -541,7 +541,21 @@ class _FakeTelegramChannel:
         self.images.append((image, caption))
         self.calls.append("send_image")
 
-    async def run(self, on_message):
+    async def send_actionable(self, text: str, buttons) -> None:
+        # SPEC-v1.1.md R-U7: mirrors the Channel ABC's own default
+        # (send_image-style degradation) -- drop the buttons, record text.
+        self.sent.append(text)
+        self.calls.append("send_actionable")
+
+    async def set_my_commands(self, commands) -> None:
+        # Deliberately NOT appended to `self.calls` -- that list is this
+        # fake's pre-existing "send vs. send_image ordering" contract
+        # (see class docstring), which this test's own assertions index
+        # into; the one-time startup command-menu registration is a
+        # separate concern, tracked here only for tests that care.
+        self.set_my_commands_calls = getattr(self, "set_my_commands_calls", 0) + 1
+
+    async def run(self, on_message, on_callback=None):
         if _FakeTelegramChannel.invoke_weekly_review_job_on_run:
             job = _FakeScheduler.last_instance.get_job("weekly_review")
             if job is not None:
@@ -650,6 +664,16 @@ async def test_async_main_weekly_review_job_chart_render_exception_still_sends_t
 
 
 def test_version_is_consistent_across_version_file_pyproject_and_init():
+    """The `VERSION` file (PROGRESS.md's playbook: "single source of
+    truth") is read dynamically here and used to cross-check pyproject.toml
+    and `__init__.py`, rather than pinning a hardcoded literal -- a
+    hardcoded expectation went stale at the very first release after this
+    test was written (v1.0.0 -> v1.0.1 bumped `VERSION`/pyproject.toml but
+    the test still asserted "1.0.0", failing on every release from then on
+    regardless of whether the three files actually agreed with each
+    other). This version reads whatever `VERSION` currently says and
+    requires the other two to match it -- it fails only on a genuine
+    cross-file drift, not on every version bump."""
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -663,10 +687,11 @@ def test_version_is_consistent_across_version_file_pyproject_and_init():
 
     init_version = habit_assistant.__version__
 
-    assert version_file == "1.0.0", f"VERSION file is {version_file!r}, expected 1.0.0"
-    assert pyproject_version == "1.0.0", f"pyproject.toml version is {pyproject_version!r}, expected 1.0.0"
-    assert init_version == "1.0.0", (
-        f"habit_assistant.__version__ is {init_version!r}, expected 1.0.0 -- "
+    assert pyproject_version == version_file, (
+        f"pyproject.toml version is {pyproject_version!r}, VERSION file says {version_file!r}"
+    )
+    assert init_version == version_file, (
+        f"habit_assistant.__version__ is {init_version!r}, VERSION file says {version_file!r} -- "
         f"src/habit_assistant/__init__.py was not bumped this release"
     )
 

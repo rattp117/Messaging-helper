@@ -10,7 +10,7 @@ habit via `skip_if_goal_met` (AC9.4)."""
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Awaitable, Callable
 
 from habit_assistant.channels.base import Channel
@@ -92,8 +92,9 @@ def test_in_quiet_hours_no_windows_never_suppresses():
 
 class _FixedDatetime(datetime):
     """A `datetime` subclass whose `.now(tz)` always returns a fixed wall-
-    clock moment, so quiet-hours suppression can be tested deterministically
-    regardless of when the suite actually runs."""
+    clock moment, so quiet-hours suppression AND the goal-met skip's
+    "today" (`_today_str`, also `reminders.datetime.now(tz)`) can be tested
+    deterministically regardless of when the suite actually runs."""
 
     _fixed: datetime
 
@@ -102,10 +103,23 @@ class _FixedDatetime(datetime):
         return cls._fixed.replace(tzinfo=tz) if tz is not None else cls._fixed
 
 
-def _freeze_reminders_clock(monkeypatch, hour: int, minute: int) -> None:
-    fixed = _FixedDatetime(2026, 8, 19, hour, minute, 0)
+def _freeze_reminders_clock(monkeypatch, hour: int, minute: int, day: date | None = None) -> None:
+    """Freezes `core/reminders.py`'s own `datetime.now(tz)` at `day` (real
+    "today" by default -- date-drift-proof, per TEST-v1.1-integration.md's
+    repair of the pre-existing hardcoded-2026-08-19 flakes) and the given
+    wall-clock time."""
+    frozen_day = day if day is not None else date.today()
+    fixed = _FixedDatetime(frozen_day.year, frozen_day.month, frozen_day.day, hour, minute, 0)
     frozen = type("_Frozen", (_FixedDatetime,), {"_fixed": fixed})
     monkeypatch.setattr("habit_assistant.core.reminders.datetime", frozen)
+
+
+def _frozen_today_ts(hour: int = 9) -> str:
+    """An ISO timestamp on real "today", matching whatever date
+    `_freeze_reminders_clock`'s default freezes to -- use together so a
+    seeded log always falls on the frozen "today", regardless of when the
+    suite runs."""
+    return f"{date.today().isoformat()}T{hour:02d}:00:00"
 
 
 async def test_send_reminder_suppressed_inside_quiet_hours_window(monkeypatch):
@@ -139,10 +153,11 @@ def _seed_water(db: Database, ml: float, ts: str = "2026-08-19T09:00:00") -> Non
     db.insert_log(LogEntry(None, ts, "water", ml, None, f"{ml}ml", "reply"))
 
 
-async def test_send_reminder_skipped_when_goal_already_met(tmp_path):
+async def test_send_reminder_skipped_when_goal_already_met(tmp_path, monkeypatch):
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
     db = Database(tmp_path / "habits.db")
     try:
-        _seed_water(db, 3000.0)  # over the 2500ml goal
+        _seed_water(db, 3000.0, ts=_frozen_today_ts())  # over the 2500ml goal, on the frozen "today"
         habit = _water_habit(goal=2500)
         channel = FakeChannel()
         config = Config()
@@ -169,10 +184,11 @@ async def test_send_reminder_sent_when_goal_not_met(tmp_path):
         db.close()
 
 
-async def test_send_reminder_goal_exactly_met_is_skipped(tmp_path):
+async def test_send_reminder_goal_exactly_met_is_skipped(tmp_path, monkeypatch):
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
     db = Database(tmp_path / "habits.db")
     try:
-        _seed_water(db, 2500.0)  # exactly the goal
+        _seed_water(db, 2500.0, ts=_frozen_today_ts())  # exactly the goal, on the frozen "today"
         habit = _water_habit(goal=2500)
         channel = FakeChannel()
 
@@ -260,10 +276,11 @@ async def test_send_reminder_without_db_or_config_is_unaffected_by_adaptive_chec
 # ===========================================================================
 
 
-async def test_send_reminder_updates_state_only_when_actually_sent(tmp_path):
+async def test_send_reminder_updates_state_only_when_actually_sent(tmp_path, monkeypatch):
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
     db = Database(tmp_path / "habits.db")
     try:
-        _seed_water(db, 3000.0)  # goal met -> suppressed
+        _seed_water(db, 3000.0, ts=_frozen_today_ts())  # goal met -> suppressed, on the frozen "today"
         habit = _water_habit(goal=2500)
         channel = FakeChannel()
         state = ReminderState()

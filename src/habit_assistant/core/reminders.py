@@ -39,7 +39,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, targets
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -123,21 +123,33 @@ def is_quiet_hours_now(config: Config) -> bool:
 
 
 def _goal_already_met(db: Database, habit: Habit, config: Config) -> bool:
-    """ROADMAP.md v0.9.0 AC9.1/AC9.4/AC9.5: True only for a goal-bearing
-    habit (`habit.goal is not None`) with adaptive skipping enabled
+    """ROADMAP.md v0.9.0 AC9.1/AC9.4/AC9.5, extended by SPEC-v1.1.md R-T5/
+    R-T5b: True only for a goal-bearing habit -- its effective goal
+    (`targets.effective_goal`, a DB override if one is set, else the
+    config default) is not `None` -- with adaptive skipping enabled
     (`habit.skip_if_goal_met`, default True) whose today's total already
-    meets the goal. Fail-open (AC9.5): a DB read error is logged and
-    treated as "not met" -- the reminder always sends rather than a
-    scheduler job ever crashing or silently going dark on a DB hiccup."""
-    if habit.goal is None or not habit.skip_if_goal_met:
+    meets that goal. A target set on a previously goal-less habit (e.g.
+    `stretch`) makes this check apply to it going forward (R-T5b); clearing
+    the target reverts to "never skip" for it, same as before v1.1.
+
+    Fail-open (AC9.5): a DB read error is logged and treated as "not met"
+    -- the reminder always sends rather than a scheduler job ever crashing
+    or silently going dark on a DB hiccup. The goal lookup itself
+    (`targets.effective_goal`) is included in this fail-open try/except --
+    a `habit_targets` read failure must not behave differently from a
+    `sum_value` read failure."""
+    if not habit.skip_if_goal_met:
         return False
     try:
+        goal = targets.effective_goal(db, habit, config)
+        if goal is None:
+            return False
         total = db.sum_value(habit.id, _today_str(config))
     except Exception:
         logger.exception("Adaptive-reminder goal read failed for %s; sending reminder anyway (fail-open)", habit.id)
         return False
-    if total >= habit.goal:
-        logger.info("Skipping %s reminder: goal already met (%s/%s)", habit.id, total, habit.goal)
+    if total >= goal:
+        logger.info("Skipping %s reminder: goal already met (%s/%s)", habit.id, total, goal)
         return True
     return False
 

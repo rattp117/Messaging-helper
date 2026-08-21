@@ -40,5 +40,9 @@ class LineChannel(Channel):
     async def send(self, text: str) -> None:
         raise NotImplementedError
 
-    async def run(self, on_message: Callable[[str], Awaitable[None]]) -> None:
+    async def run(
+        self,
+        on_message: Callable[[str], Awaitable[None]],
+        on_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
+    ) -> None:
         raise NotImplementedError

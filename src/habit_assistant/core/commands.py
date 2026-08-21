@@ -52,7 +52,46 @@ brief's exact stated precedence. Resolving *which* habit to snooze is not
 this module's job either (it has no DB/registry-state access beyond the
 static `registry` argument) -- `main.py` resolves that from
 `core/reminders.ReminderState.last_habit_id` at dispatch time.
-"""
+
+v1.1.0 (SPEC-v1.1.md §4 R-T7-R-T9, module `targets`): a fifth, LLM-free
+`"target"` kind -- deterministic per-habit daily-goal set/show/clear,
+recognized by (a) the slash form `/target [<habit> [<value>|default]]`
+and (b) conservative anchored bilingual NL "set" triggers ("set <habit>
+goal to <value>", "change <habit>('s) goal to <value>", Thai "ตั้งเป้า
+<habit> <value>" / "เป้า <habit> <value>"). Checked *after* snooze and
+*before* query (R-T7's stated precedence: "undo/edit -> snooze -> target
+-> query -> extractor"). Unlike edit's "garbled tail -> None" contract, a
+`/target ...`/NL trigger whose value tail doesn't cleanly parse as
+NUMBER [+ UNIT] still returns a `Command(kind="target",
+target_action="usage")` -- never a silent `None` fall-through -- so the
+caller (`core/targets_command.execute_target`) can reply with concrete
+usage help instead of the message being misfiled as an unrecognized log
+(R-T7's own explicit carve-out). This module never resolves whether a
+named habit id actually exists/is goal-able -- an unresolved habit token
+is carried through verbatim as `Command.category` (lowercased) so
+`execute_target`'s own registry lookup is what reports
+`target_invalid_habit`/`target_not_goalable` (R-T10); this module only
+recognizes the *shape* of a target command and, for a value tail that DID
+parse, converts any recognized unit alias to the habit's base unit
+(mirrors `_parse_edit_value`'s registry-driven unit resolution). The full
+free-form NL target-setting path (R-T13-R-T16, "from now on I want to
+drink 2.5L a day") is NOT here -- that is `core/target_nl.py`'s
+LLM-classification job, gated and routed by `main.py`, not this
+anchored/deterministic layer.
+
+v1.1.0 (SPEC-v1.1.md §4 R-D1, module `discoverability`, sequential
+follow-on landed after the v1.1 shared surface + integration -- SPEC-v1.1.md
+§11's own note that this module edits the same file the `targets` module
+already touched, hence NOT parallel-safe with it): two more LLM-free kinds,
+`"help"` (`^/help$`, `^ช่วยเหลือ$`, `^วิธีใช้$`) and `"habits"`
+(`^/habits$`, `^นิสัย$`) -- each anchored to the *whole* stripped message,
+same conservatism as every pattern above (R-C5: a plain log can never
+accidentally equal one of these five exact strings). Checked alongside the
+other anchored commands, after target and before query (R-D1's own stated
+precedence: "... -> target -> help/habits -> query -> extractor") -- neither
+kind carries any payload (`Command(kind="help")`/`Command(kind="habits")`
+is the whole of it); the actual reply text is `core/discoverability.py`'s
+job, dispatched by `main.py`."""
 
 from __future__ import annotations
 
@@ -63,15 +102,17 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from habit_assistant.core.habits import HabitRegistry
 
-CommandKind = Literal["undo", "edit", "query", "snooze"]
+CommandKind = Literal["undo", "edit", "query", "snooze", "target", "help", "habits"]
 
 
 @dataclass(slots=True)
 class Command:
     kind: CommandKind
-    category: str | None = None  # a configured habit id -- only set for "edit"
-    value_num: float | None = None  # new value -- only set for "edit"
+    category: str | None = None  # a configured habit id -- "edit", and "target" (set/show/clear)
+    value_num: float | None = None  # new value -- "edit", and "target" (the new goal, in base unit) for "set"
     minutes: int | None = None  # explicit snooze minutes -- only set for "snooze"; None = use the configured default
+    # SPEC-v1.1.md §5: which target operation -- only set for kind="target".
+    target_action: Literal["set", "clear", "show", "show_all", "usage"] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +173,203 @@ def _match_snooze(stripped: str) -> tuple[bool, int | None]:
             minutes_str = match.group("minutes")
             return True, (int(minutes_str) if minutes_str else None)
     return False, None
+
+
+# ---------------------------------------------------------------------------
+# target set/show/clear -- SPEC-v1.1.md §4 R-T7-R-T9 (module `targets`).
+# Slash form `/target [<habit> [<value>|default]]`, plus conservative
+# anchored bilingual NL "set" triggers. Both forms resolve a habit TOKEN
+# (an id or a configured label) via `_build_habit_token_lookup`, and a
+# value tail via `_parse_target_value`, which reuses the same
+# `_build_unit_lookup`/`_resolve_unit` machinery `_parse_edit_value`
+# already uses for edit-value unit resolution (R-T9).
+# ---------------------------------------------------------------------------
+
+_TARGET_SLASH_RE = re.compile(r"^/target(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_TARGET_CLEAR_WORDS = {"default", "reset", "clear", "ค่าเริ่มต้น"}
+
+# English NL "set"-only triggers (R-T7b). `\S+?` (non-greedy) on the habit
+# group so the "change <habit>('s) ..." form correctly splits a possessive
+# ("water's" -> habit "water", the "'s" consumed by its own optional
+# group) instead of swallowing the apostrophe-s into the habit token.
+_TARGET_EN_SET_PATTERNS = [
+    re.compile(r"^set\s+(?P<habit>\S+?)\s+(?:goal|target)\s+to\s+(?P<value>.+)$", re.IGNORECASE),
+    re.compile(r"^change\s+(?P<habit>\S+?)(?:'s)?\s+(?:goal|target)\s+to\s+(?P<value>.+)$", re.IGNORECASE),
+]
+
+
+def _build_habit_token_lookup(registry: "HabitRegistry") -> dict[str, str]:
+    """Maps a lowercased habit id / English label / Thai label -> habit id,
+    so a target command's habit token can be given as the raw id (slash
+    form, English NL triggers: "water") or its configured label (Thai NL
+    trigger: "น้ำ"). Iterated in registry order with `setdefault` --
+    first-match-wins on a shared token, same convention as
+    `_build_unit_lookup`. Unlike that lookup, this one is NOT filtered to
+    numeric/duration habits -- a target command must also be able to name
+    a non-goalable habit (e.g. "/target diary 5") so `execute_target` can
+    report `target_not_goalable` rather than a bare `target_invalid_habit`."""
+    lookup: dict[str, str] = {}
+    for habit in registry:
+        lookup.setdefault(habit.id.strip().lower(), habit.id)
+        if habit.label_en:
+            lookup.setdefault(habit.label_en.strip().lower(), habit.id)
+        if habit.label_th:
+            lookup.setdefault(habit.label_th.strip().lower(), habit.id)
+    return lookup
+
+
+def _resolve_habit_token(token: str, registry: "HabitRegistry") -> str | None:
+    return _build_habit_token_lookup(registry).get(token.strip().lower())
+
+
+def _resolve_target_category(habit_token: str, registry: "HabitRegistry") -> str:
+    """The habit id if `habit_token` resolves, else the raw (lowercased)
+    token itself -- letting `execute_target`'s own registry lookup fail
+    and report `target_invalid_habit` (R-T10/AC16) rather than this
+    module silently rejecting an unrecognized habit name."""
+    resolved = _resolve_habit_token(habit_token, registry)
+    return resolved if resolved is not None else habit_token.strip().lower()
+
+
+def _build_target_th_set_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "ตั้งเป้า<habit><value>" / "เป้า<habit><value>" (R-T7b), habit
+    token built from the LIVE registry's ids/Thai labels rather than a
+    generic "any non-digit run" character class. Thai script is normally
+    written with no spaces between words, so a generic habit-token class
+    risks a false positive on an unrelated sentence that happens to start
+    with "เป้า" (e.g. "เป้าหมายของฉันคือ 2000 บาท", a diary-style reflection
+    about a personal goal in baht, not a habit target) -- anchoring the
+    habit token to only the habits actually configured eliminates that
+    false-positive class entirely (a message naming a habit this bot
+    doesn't track can't accidentally look like this trigger). Returns None
+    if the registry has no matchable Thai/id tokens (defensive; every
+    shipped config has at least `water`'s "น้ำ")."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    if not escaped:
+        return None
+    habit_alt = "|".join(escaped)
+    return re.compile(rf"^(?:ตั้งเป้า|เป้า)\s*(?P<habit>{habit_alt})\s*(?P<value>\d.*)$")
+
+
+
+# Unlike `_VALUE_RE` (edit values, always a physical quantity actually
+# logged), a target's proposed value can legitimately be typed as a
+# non-positive number ("/target water 0"/"-5", AC15) -- that must still
+# reach `execute_target`'s own `target_invalid_value` reply, not silently
+# become a `target_usage` reply. So target-value parsing accepts an
+# optional leading "-" that `_VALUE_RE` deliberately does not.
+_TARGET_VALUE_RE = re.compile(r"^(?P<num>-?\d+(?:\.\d+)?)\s*(?P<unit>\S+)?\s*$")
+
+
+def _parse_target_value(habit_token: str, value_str: str, registry: "HabitRegistry") -> tuple[str, float] | None:
+    """Parse a target-command value tail into (category, goal_in_base_unit),
+    or None if the tail doesn't cleanly parse as NUMBER [+ UNIT], or an
+    explicit unit resolves to a habit OTHER than the one named (R-T9's
+    usage-error case). `category` is the resolved habit id when the named
+    habit token matches a configured habit; otherwise it is the raw
+    (lowercased) token, so an unrecognized habit ("/target coffee 2000")
+    still produces a "set" command `execute_target` can reject with
+    `target_invalid_habit` (AC16) -- this function never treats an
+    unresolvable habit token as a parse failure by itself. A non-positive
+    number ("/target water 0"/"-5") is likewise passed through unchanged
+    (AC15) -- `execute_target`'s own "set" validation is what reports
+    `target_invalid_value`, not this layer."""
+    match = _TARGET_VALUE_RE.match(value_str.strip())
+    if not match:
+        return None
+    num = float(match.group("num"))
+    unit_raw = match.group("unit")
+    resolved_habit_id = _resolve_habit_token(habit_token, registry)
+
+    if resolved_habit_id is None:
+        # The named habit itself isn't recognized -- a trailing unit token
+        # can't be validated against an unknown habit's alias table, so
+        # it's ignored; the raw token is what execute_target reports as
+        # invalid, regardless of what the unit might otherwise suggest.
+        return habit_token.strip().lower(), num
+
+    if unit_raw is None:
+        return resolved_habit_id, num
+
+    unit_resolution = _resolve_unit(_build_unit_lookup(registry), unit_raw.lower())
+    if unit_resolution is None:
+        return None  # unrecognized unit token -> usage (can't tell what's meant)
+    unit_habit_id, multiplier = unit_resolution
+    if unit_habit_id != resolved_habit_id:
+        return None  # unit belongs to a different habit than the one named -> usage (R-T9)
+    return resolved_habit_id, num * multiplier
+
+
+def _build_target_set_or_usage(habit_token: str, value_str: str, registry: "HabitRegistry") -> "Command":
+    parsed = _parse_target_value(habit_token, value_str, registry)
+    if parsed is None:
+        return Command(kind="target", target_action="usage")
+    category, value_num = parsed
+    return Command(kind="target", category=category, value_num=value_num, target_action="set")
+
+
+def _match_target_slash(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _TARGET_SLASH_RE.match(stripped)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    if rest is None:
+        return Command(kind="target", target_action="show_all")
+
+    parts = rest.strip().split(None, 1)
+    habit_token = parts[0]
+    tail = parts[1].strip() if len(parts) > 1 else None
+
+    if tail is None:
+        return Command(kind="target", category=_resolve_target_category(habit_token, registry), target_action="show")
+
+    if tail.lower() in _TARGET_CLEAR_WORDS:
+        return Command(kind="target", category=_resolve_target_category(habit_token, registry), target_action="clear")
+
+    return _build_target_set_or_usage(habit_token, tail, registry)
+
+
+def _match_target_nl(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    for pattern in _TARGET_EN_SET_PATTERNS:
+        match = pattern.match(stripped)
+        if match is not None:
+            return _build_target_set_or_usage(match.group("habit"), match.group("value"), registry)
+
+    th_pattern = _build_target_th_set_pattern(registry)
+    if th_pattern is not None:
+        match = th_pattern.match(stripped)
+        if match is not None:
+            return _build_target_set_or_usage(match.group("habit"), match.group("value"), registry)
+
+    return None
+
+
+def _match_target(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_target_slash(stripped, registry) or _match_target_nl(stripped, registry)
+
+
+# ---------------------------------------------------------------------------
+# help / habits -- SPEC-v1.1.md §4 R-D1 (module `discoverability`). Anchored
+# to the whole stripped message, exactly the five literal strings R-D1
+# names -- no partial/prefix matching, so neither can ever fire on a real
+# habit log (AC40).
+# ---------------------------------------------------------------------------
+
+_HELP_RE = re.compile(r"^(?:/help|ช่วยเหลือ|วิธีใช้)$", re.IGNORECASE)
+_HABITS_RE = re.compile(r"^(?:/habits|นิสัย)$", re.IGNORECASE)
+
+
+def _match_help(stripped: str) -> bool:
+    return _HELP_RE.match(stripped) is not None
+
+
+def _match_habits(stripped: str) -> bool:
+    return _HABITS_RE.match(stripped) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -250,13 +488,14 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     `registry` (its configured `unit`/`unit_aliases`), not a hardcoded
     water/stretch check.
 
-    ROADMAP.md v0.9.0: checked in order undo -> edit -> snooze -> query ->
-    (fall through to the parser), matching this version's own required
-    routing ("undo/edit -> snooze -> query -> extractor"). An edit-trigger
+    ROADMAP.md v0.9.0 / SPEC-v1.1.md §4 R-T7/R-D1: checked in order undo ->
+    edit -> snooze -> target -> help -> habits -> query -> (fall through to
+    the parser), matching this version's own required routing ("undo/edit ->
+    snooze -> target -> help/habits -> query -> extractor"). An edit-trigger
     phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
     immediately (pre-v0.8 behavior, unchanged) rather than also being
-    offered to the snooze/query matchers -- it already committed to "edit"
-    shape, not a snooze or a question."""
+    offered to the snooze/target/help/habits/query matchers -- it already
+    committed to "edit" shape, not any of those."""
     stripped = text.strip()
     if not stripped:
         return None
@@ -275,6 +514,16 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     snoozed, minutes = _match_snooze(stripped)
     if snoozed:
         return Command(kind="snooze", minutes=minutes)
+
+    target_command = _match_target(stripped, registry)
+    if target_command is not None:
+        return target_command
+
+    if _match_help(stripped):
+        return Command(kind="help")
+
+    if _match_habits(stripped):
+        return Command(kind="habits")
 
     if _match_query(stripped):
         return Command(kind="query")

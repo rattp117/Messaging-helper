@@ -159,6 +159,47 @@ class Database:
         )
         self._conn.commit()
 
+    def get_target(self, habit_id: str) -> float | None:
+        """SPEC-v1.1.md R-T2: the stored override goal for `habit_id`, or
+        `None` if none is set. Read live (no caching) so a `/target` write
+        takes effect on the very next call (R-T11)."""
+        row = self._conn.execute(
+            "SELECT goal FROM habit_targets WHERE habit_id = ?", (habit_id,)
+        ).fetchone()
+        return float(row["goal"]) if row is not None else None
+
+    def set_target(self, habit_id: str, goal: float) -> None:
+        """SPEC-v1.1.md R-T2: upsert -- a second `/target` for the same
+        habit replaces the previous override rather than erroring or
+        stacking rows."""
+        self._conn.execute(
+            "INSERT INTO habit_targets (habit_id, goal, updated_at) "
+            "VALUES (?, ?, datetime('now','localtime')) "
+            "ON CONFLICT(habit_id) DO UPDATE SET goal = excluded.goal, updated_at = excluded.updated_at",
+            (habit_id, goal),
+        )
+        self._conn.commit()
+
+    def clear_target(self, habit_id: str) -> None:
+        """SPEC-v1.1.md R-T2: delete the override row, if any; a no-op
+        (not an error) when no override is currently set."""
+        self._conn.execute("DELETE FROM habit_targets WHERE habit_id = ?", (habit_id,))
+        self._conn.commit()
+
+    def all_targets(self) -> dict[str, float]:
+        """SPEC-v1.1.md R-T2: every currently-overridden habit id -> its
+        goal, for `/target` (no args)'s "show all" reply."""
+        rows = self._conn.execute("SELECT habit_id, goal FROM habit_targets").fetchall()
+        return {row["habit_id"]: float(row["goal"]) for row in rows}
+
+    def get_log(self, log_id: int) -> sqlite3.Row | None:
+        """SPEC-v1.1.md R-T2/R-U5: fetch a single log row by id, regardless
+        of `deleted_at` -- the undo-button callback needs to tell "already
+        soft-deleted" (AC8) from "genuinely missing" apart from "still
+        live", so this deliberately does NOT filter on `deleted_at IS
+        NULL` the way every aggregation query does."""
+        return self._conn.execute("SELECT * FROM logs WHERE id = ?", (log_id,)).fetchone()
+
     def update_value(self, log_id: int, value_num=_UNSET, value_text=_UNSET) -> None:
         """Edit (ROADMAP.md v0.5.0 AC5.3): update only the field(s) given.
         `_UNSET` (not `None`) is the "leave alone" default so a numeric-only

@@ -383,7 +383,13 @@ class _FakeTelegramChannel:
     async def send(self, text: str) -> None:
         pass
 
-    async def run(self, on_message):
+    async def send_actionable(self, text: str, buttons) -> None:
+        pass
+
+    async def set_my_commands(self, commands) -> None:
+        pass
+
+    async def run(self, on_message, on_callback=None):
         raise _StopAfterSchedulerStart()
 
     async def aclose(self) -> None:

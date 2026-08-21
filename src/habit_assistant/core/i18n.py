@@ -128,8 +128,11 @@ CATALOG: dict[str, dict[Language, str]] = {
         "th": "🤷 หารายการที่ตรงกันให้แก้ไม่เจอนะ",
     },
     "water_confirmation": {
-        "en": "✅ {water_ml} ml logged — today {total} / {goal} ml ({pct}%)",
-        "th": "✅ บันทึกน้ำ {water_ml} มล. แล้ว — วันนี้ดื่มไป {total} / {goal} มล. ({pct}%)",
+        # SPEC-v1.1.md R-T5/AC23: {goal} -> {goal:g} so a DB-stored override
+        # (a float, e.g. 2000.0) renders as "2000" not "2000.0" -- `:g` is a
+        # no-op for the plain int config default (byte-identical, AC24).
+        "en": "✅ {water_ml} ml logged — today {total} / {goal:g} ml ({pct}%)",
+        "th": "✅ บันทึกน้ำ {water_ml} มล. แล้ว — วันนี้ดื่มไป {total} / {goal:g} มล. ({pct}%)",
     },
     "stretch_confirmation": {
         "en": "✅ {stretch_min} min stretch logged — {ordinal} today",
@@ -145,8 +148,10 @@ CATALOG: dict[str, dict[Language, str]] = {
     },
     # --- undo / edit (main.py: _execute_undo / _execute_edit) ------------
     "undo_removed_water": {
-        "en": "↩️ Undone — removed {description}. Today: {total} / {goal} ml ({pct}%)",
-        "th": "↩️ ยกเลิกแล้ว — ลบ {description} วันนี้เหลือ {total} / {goal} มล. ({pct}%)",
+        # SPEC-v1.1.md R-T5/AC23: see water_confirmation's own note on
+        # {goal} -> {goal:g}.
+        "en": "↩️ Undone — removed {description}. Today: {total} / {goal:g} ml ({pct}%)",
+        "th": "↩️ ยกเลิกแล้ว — ลบ {description} วันนี้เหลือ {total} / {goal:g} มล. ({pct}%)",
     },
     "undo_removed_stretch": {
         "en": "↩️ Undone — removed {description}. {count} stretch session(s) today",
@@ -157,8 +162,10 @@ CATALOG: dict[str, dict[Language, str]] = {
         "th": "↩️ ยกเลิกแล้ว — ลบ {description}",
     },
     "edit_updated_water": {
-        "en": "✏️ Updated to {value_num:g} ml — today {total} / {goal} ml ({pct}%)",
-        "th": "✏️ แก้เป็น {value_num:g} มล. แล้ว — วันนี้ดื่มไป {total} / {goal} มล. ({pct}%)",
+        # SPEC-v1.1.md R-T5/AC23: see water_confirmation's own note on
+        # {goal} -> {goal:g}.
+        "en": "✏️ Updated to {value_num:g} ml — today {total} / {goal:g} ml ({pct}%)",
+        "th": "✏️ แก้เป็น {value_num:g} มล. แล้ว — วันนี้ดื่มไป {total} / {goal:g} มล. ({pct}%)",
     },
     "edit_updated_stretch": {
         "en": "✏️ Updated to {value_num:g} min stretch — {ordinal} today",
@@ -495,5 +502,191 @@ CATALOG: dict[str, dict[Language, str]] = {
     "garmin_day_line_flagged": {
         "en": "  {day}: you {self_reported} ml vs. Garmin {garmin} ml ⚠️ diff {diff} ml",
         "th": "  {day}: บันทึกเอง {self_reported} มล. เทียบกับ Garmin {garmin} มล. ⚠️ ต่างกัน {diff} มล.",
+    },
+    # -----------------------------------------------------------------
+    # SPEC-v1.1.md "Undo menu (Telegram discoverability) + per-habit
+    # targets" -- Feature 1 (undo-ui, core/undo_ui.py) and Feature 2
+    # (targets, core/targets_command.py). Added here as one shared-surface
+    # edit covering both features' disjoint keys (SPEC-v1.1.md §6), so the
+    # two parallel modules never need to touch this file themselves.
+    # -----------------------------------------------------------------
+    "undo_button_label": {
+        "en": "↩️ Undo",
+        "th": "↩️ ยกเลิก",
+    },
+    "already_undone": {
+        "en": "🤷 That one's already been removed.",
+        "th": "🤷 รายการนี้ถูกลบไปแล้วนะ",
+    },
+    "target_set": {
+        "en": "✅ Set {label}'s daily goal to {goal:g} {unit}. (was {previous})",
+        "th": "✅ ตั้งเป้าหมาย{label}รายวันเป็น {goal:g} {unit} แล้ว (เดิม {previous})",
+    },
+    "target_cleared": {
+        "en": "↩️ Reset {label}'s daily goal to the default {default:g} {unit}.",
+        "th": "↩️ รีเซ็ตเป้าหมาย{label}รายวันกลับเป็นค่าเริ่มต้น {default:g} {unit} แล้ว",
+    },
+    "target_cleared_nogoal": {
+        "en": "↩️ Cleared {label}'s target — back to no daily goal.",
+        "th": "↩️ ล้างเป้าหมาย{label}แล้ว — กลับไปไม่มีเป้าหมายรายวัน",
+    },
+    "target_show": {
+        "en": "🎯 {label}: {goal:g} {unit}/day{default_note}",
+        "th": "🎯 {label}: {goal:g} {unit}/วัน{default_note}",
+    },
+    "target_show_default_note": {
+        "en": " (default {default:g} {unit})",
+        "th": " (ค่าเริ่มต้น {default:g} {unit})",
+    },
+    "target_show_all_header": {
+        "en": "🎯 Daily goals:",
+        "th": "🎯 เป้าหมายรายวัน:",
+    },
+    "target_show_all_line": {
+        "en": "• {label}: {goal:g} {unit}/day{default_note}",
+        "th": "• {label}: {goal:g} {unit}/วัน{default_note}",
+    },
+    "target_show_all_line_nogoal": {
+        "en": "• {label}: — (no goal)",
+        "th": "• {label}: — (ไม่มีเป้าหมาย)",
+    },
+    "target_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "target_not_goalable": {
+        "en": "🤔 {label} doesn't have a daily goal to set.",
+        "th": "🤔 {label}ไม่มีเป้าหมายรายวันให้ตั้งนะ",
+    },
+    "target_invalid_value": {
+        "en": '🤔 A daily goal has to be a positive number, e.g. "/target {habit_id} {example}".',
+        "th": '🤔 เป้าหมายรายวันต้องเป็นตัวเลขบวกนะ เช่น "/target {habit_id} {example}"',
+    },
+    "target_usage": {
+        "en": (
+            "🤔 Usage: \"/target <habit> <value>\" to set, \"/target <habit>\" to view, "
+            "\"/target <habit> default\" to reset, or \"/target\" to see every goal."
+        ),
+        "th": (
+            "🤔 วิธีใช้: \"/target <กิจกรรม> <ค่า>\" เพื่อตั้งเป้า, \"/target <กิจกรรม>\" เพื่อดูเป้าหมาย, "
+            "\"/target <กิจกรรม> default\" เพื่อรีเซ็ต หรือ \"/target\" เพื่อดูเป้าหมายทั้งหมด"
+        ),
+    },
+    "target_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    # -----------------------------------------------------------------
+    # SPEC-v1.1.md "Undo menu + per-habit targets" -- Feature 3
+    # (discoverability, core/discoverability.py): `/help` and `/habits`
+    # (R-D5: every new string lives here, both languages). `help_log`
+    # deliberately shows BOTH an English-style and a Thai-style logging
+    # example in EVERY language variant (not just the reply language) --
+    # the bot understands both scripts for logging regardless of which
+    # language `/help` itself replies in (AC36's "EN/TH examples").
+    # -----------------------------------------------------------------
+    "help_header": {
+        "en": "🤖 Here's what I can do:",
+        "th": "🤖 นี่คือสิ่งที่ฉันทำได้:",
+    },
+    "help_log": {
+        "en": (
+            "📝 Log anything in plain text, English or Thai — '500ml' or 'น้ำ 500 มล.', "
+            "'10 min stretch' or 'ยืดเส้น 10 นาที' — or just tell me about your day."
+        ),
+        "th": (
+            "📝 พิมพ์บันทึกได้เลยแบบธรรมชาติ ทั้งไทยและอังกฤษ — 'น้ำ 500 มล.' หรือ '500ml', "
+            "'ยืดเส้น 10 นาที' หรือ '10 min stretch' — หรือเล่าให้ฟังว่าวันนี้เป็นยังไง"
+        ),
+    },
+    "help_undo": {
+        "en": "↩️ Undo your last entry: tap the ↩️ Undo button under any confirmation, or type /undo (ยกเลิก).",
+        "th": "↩️ ยกเลิกรายการล่าสุด: แตะปุ่ม ↩️ ยกเลิก ใต้ข้อความยืนยัน หรือพิมพ์ /undo (ยกเลิก)",
+    },
+    "help_target": {
+        "en": (
+            "🎯 Set a daily goal: /target water 2000, or just say 'from now on I want to drink "
+            "2.5L a day'. Check one: /target water. Clear it: /target water default."
+        ),
+        "th": (
+            "🎯 ตั้งเป้าหมายรายวัน: /target water 2000 หรือพิมพ์ว่า 'ต่อไปอยากดื่มน้ำวันละ 2.5 ลิตร' ก็ได้ "
+            "ดูเป้าหมาย: /target water รีเซ็ต: /target water default"
+        ),
+    },
+    "help_query": {
+        "en": "📊 Ask me questions: 'how much water this week?' or 'did I stretch today?'",
+        "th": "📊 ถามได้เลย เช่น 'อาทิตย์นี้ดื่มน้ำไปเท่าไหร่?' หรือ 'วันนี้ยืดเส้นหรือยัง?'",
+    },
+    "help_streaks": {
+        "en": "🔥 Streaks are celebrated at {milestones}-day milestones.",
+        "th": "🔥 ต่อเนื่องครบ {milestones} วัน จะมีข้อความให้กำลังใจ",
+    },
+    "help_daily_summary_on": {
+        "en": "🌙 A daily summary is sent at {time}.",
+        "th": "🌙 สรุปประจำวันจะส่งให้ตอน {time}",
+    },
+    "help_daily_summary_off": {
+        "en": "🌙 The daily summary is currently turned off.",
+        "th": "🌙 ตอนนี้ปิดการสรุปประจำวันอยู่",
+    },
+    "help_weekly_review": {
+        "en": "📈 A weekly review is sent every {day} at {time}.",
+        "th": "📈 สรุปประจำสัปดาห์จะส่งทุกวัน {day} เวลา {time}",
+    },
+    "help_snooze": {
+        "en": "⏰ Snooze a reminder: type 'snooze' or 'snooze 30' (default {minutes} min).",
+        "th": "⏰ เลื่อนการแจ้งเตือน: พิมพ์ 'เลื่อน' หรือ 'เลื่อน 30 นาที' (ค่าเริ่มต้น {minutes} นาที)",
+    },
+    "help_quiet_hours_on": {
+        "en": "🌙 Quiet hours (no reminders sent): {windows}.",
+        "th": "🌙 ช่วงเวลางดแจ้งเตือน: {windows}",
+    },
+    "help_quiet_hours_off": {
+        "en": "🌙 No quiet hours are currently configured.",
+        "th": "🌙 ตอนนี้ยังไม่ได้ตั้งช่วงเวลางดแจ้งเตือน",
+    },
+    "habits_overview_header": {
+        "en": "📋 Your habits:",
+        "th": "📋 กิจกรรมของคุณ:",
+    },
+    "habits_overview_line": {
+        "en": "• {label} ({kind}) — {goal_phrase} · {today_phrase}",
+        "th": "• {label} ({kind}) — {goal_phrase} · {today_phrase}",
+    },
+    "habits_overview_goal_target": {
+        "en": "{goal:g} {unit}/day (your target)",
+        "th": "{goal:g} {unit}/วัน (เป้าหมายของคุณ)",
+    },
+    "habits_overview_goal_default": {
+        "en": "{goal:g} {unit}/day (default)",
+        "th": "{goal:g} {unit}/วัน (ค่าเริ่มต้น)",
+    },
+    "habits_overview_goal_none": {
+        "en": "no goal",
+        "th": "ไม่มีเป้าหมาย",
+    },
+    "habits_overview_today_quantity": {
+        "en": "today {total:g} {unit}",
+        "th": "วันนี้ {total:g} {unit}",
+    },
+    "habits_overview_today_count": {
+        "en": "today {total:g} time(s)",
+        "th": "วันนี้ {total:g} ครั้ง",
+    },
+    "habit_kind_numeric": {
+        "en": "numeric",
+        "th": "ตัวเลข",
+    },
+    "habit_kind_duration": {
+        "en": "duration",
+        "th": "ระยะเวลา",
+    },
+    "habit_kind_text": {
+        "en": "text",
+        "th": "ข้อความ",
+    },
+    "habit_kind_boolean": {
+        "en": "yes/no",
+        "th": "ทำ/ไม่ทำ",
     },
 }

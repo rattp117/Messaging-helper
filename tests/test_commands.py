@@ -766,20 +766,20 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_4(tmp_path):
-    """Pinned regression guard (not tautological): as of ROADMAP.md v0.7.0
-    ("Multi-Habit Extensibility", migration 004: `habit_type`) there are
-    exactly 4 migrations, and a fresh DB must land on version 4. Bump this
-    literal deliberately the next time a migration is added -- unlike a
-    bare `== len(MIGRATIONS)` comparison, this fails if a migration is
+def test_fresh_db_migrates_to_schema_version_5(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.1.md
+    "Undo menu + per-habit targets" (migration 005: `habit_targets`) there
+    are exactly 5 migrations, and a fresh DB must land on version 5. Bump
+    this literal deliberately the next time a migration is added -- unlike
+    a bare `== len(MIGRATIONS)` comparison, this fails if a migration is
     silently added/removed without the test being updated.
-    CHANGED (v0.7.0): was `== 3` / `test_..._schema_version_3` before
-    migration 004 (`habit_type`) was added -- see IMPL.md."""
-    assert len(MIGRATIONS) == 4
+    CHANGED (v1.1.0): was `== 4` / `test_..._schema_version_4` before
+    migration 005 (`habit_targets`) was added -- see IMPL.md."""
+    assert len(MIGRATIONS) == 5
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 4
+    assert database.schema_version == 5
     database.close()
 
 

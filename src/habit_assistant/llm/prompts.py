@@ -1,5 +1,6 @@
 """Prompt templates for the Ollama/Qwen calls: message extraction, a short
-diary reflection line, and the weekly-review narrative.
+diary reflection line, the weekly-review narrative, natural-language query
+intent, and (v1.1.0, module `targets`) full-NL target-setting intent.
 
 v0.7.0 (ROADMAP.md "Multi-Habit Extensibility", SPEC-v0.7.md §4 R5, module
 M1): `build_extraction_system_prompt(registry)` replaces the old fixed
@@ -300,4 +301,113 @@ def build_query_intent_user_prompt(text: str) -> str:
     """Same shape as `build_extraction_user_prompt`, exposed as its own
     function for symmetry and so `core/query.py` doesn't need to know the
     literal wrapping format."""
+    return f"Message: {text}"
+
+
+# ---------------------------------------------------------------------------
+# v1.1.0 -- full-NL target-setting intent prompt (SPEC-v1.1.md §4 R-T13-
+# R-T16, module `targets`). `core/target_nl.classify_target_intent` calls
+# this to classify a free-form message like "from now on I want to drink
+# 2.5L a day" into `{category, goal, confidence}`. The single most
+# important instruction here (R-T14/AC32) is telling the model to tell a
+# FUTURE goal change apart from a message that merely LOGS an amount
+# already done -- "I drank 2.5L" and "from now on I want to drink 2.5L a
+# day" share almost every token but must classify oppositely.
+# ---------------------------------------------------------------------------
+
+_TARGET_SYSTEM_PROMPT_HEADER = """You are a target-setting intent classifier for a habit-tracking bot. The \
+user might be SETTING OR CHANGING A FUTURE DAILY GOAL for one of their tracked habits, or they might simply \
+be LOGGING AN AMOUNT THEY ALREADY DID today -- these look similar but are very different and must not be \
+confused. Extract exactly three keys as a single JSON object: "category" (the habit id whose goal is being \
+set, or "unknown"), "goal" (the new daily goal amount, already converted to the habit's own base unit -- \
+e.g. "2.5L" -> 2500 for a millilitre-based habit, "3 liters" -> 3000, "2 bottles a day" -> 2 x the bottle's \
+ml value -- or null when category is "unknown"), and "confidence" (a number from 0 to 1).
+
+Only answer a real habit category when the message CLEARLY sets or changes a FUTURE daily goal (e.g. "from \
+now on I want to drink 2.5L a day", "let's aim for 3 liters of water each day", "change my water target to \
+2 bottles a day", "from now on I want to stretch 20 minutes a day"). A message that merely reports an amount \
+already consumed or done (e.g. "I drank 2.5L", "500ml", "did 10 min stretch") is a LOG, not a goal change -- \
+always answer "unknown" with confidence <= 0.4 for those, even when the numbers look identical to a genuine \
+goal-setting message. When in doubt, prefer "unknown" -- a missed goal-setting message can still be set \
+explicitly with "/target"; a log wrongly turned into a goal change cannot be undone as a log.
+
+Tracked (goal-able) habits:"""
+
+_TARGET_SYSTEM_PROMPT_FOOTER = """
+If the message doesn't clearly set a future daily goal for one of the habits above, or you cannot \
+confidently tell, or it is a log of an amount already done, use category "unknown", goal null, and \
+confidence <= 0.4.
+
+Examples (follow this exact shape -- three keys, always present, no extras):"""
+
+_TARGET_LOG_NOT_GOAL_EXAMPLE = 'Message: I drank 2.5L -> {"category": "unknown", "goal": null, "confidence": 0.2}'
+_TARGET_OFFTOPIC_EXAMPLE = (
+    'Message: what is the capital of France? -> {"category": "unknown", "goal": null, "confidence": 0.1}'
+)
+
+_TARGET_RESPONSE_INSTRUCTIONS = """
+Respond with JSON only, matching the given schema exactly (category, goal, confidence -- no extra keys, no \
+missing keys). No prose, no explanation, no markdown."""
+
+
+def _target_category_line(habit: "Habit") -> str:
+    unit_bit = f" (base unit: {habit.unit_en})" if habit.unit_en else ""
+    alias_bit = ""
+    if habit.unit_aliases:
+        aliases = ", ".join(
+            f"{alias} = {multiplier:g} {habit.unit_en}" for alias, multiplier in habit.unit_aliases.items()
+        )
+        alias_bit = f"; casual units: {aliases}"
+    return f'- "{habit.id}": {habit.label_en}{unit_bit}{alias_bit}.'
+
+
+def _target_examples_for_habit(habit: "Habit") -> list[str]:
+    unit = habit.unit_en or ""
+    return [
+        f'Message: from now on I want to {habit.label_en} 20{unit} a day -> '
+        f'{{"category": "{habit.id}", "goal": 20, "confidence": 0.9}}'
+    ]
+
+
+def build_target_intent_system_prompt(registry: "HabitRegistry") -> str:
+    """Generate the target-intent system prompt from the live
+    `HabitRegistry` (mirrors `build_query_intent_system_prompt`'s shape):
+    one category line + a "set a future goal" few-shot example per
+    goal-able (`numeric`/`duration`) habit only -- a text/boolean habit
+    can never carry a goal (R-T3's `is_goalable`), so it's omitted from
+    the prompt's own habit list entirely (the JSON schema's `category`
+    enum still covers every registered habit id, per
+    `build_target_intent_schema`; `core/target_nl._validate_intent`'s own
+    `is_goalable` check is the actual enforcement, this is just prompt
+    hygiene so the model isn't invited to name a habit that can't have a
+    goal). Always includes the "log, not a goal change" and off-topic
+    "unknown" examples (R-T14/AC32)."""
+    goalable = [habit for habit in registry if habit.type in ("numeric", "duration")]
+    category_lines = [_target_category_line(habit) for habit in goalable]
+    category_lines.append(
+        '- "unknown": the message is not a clear future daily-goal change for any habit above, or it is a '
+        "log of an amount already done, or you cannot confidently tell."
+    )
+
+    example_lines: list[str] = []
+    for habit in goalable:
+        example_lines.extend(_target_examples_for_habit(habit))
+    example_lines.append(_TARGET_LOG_NOT_GOAL_EXAMPLE)
+    example_lines.append(_TARGET_OFFTOPIC_EXAMPLE)
+
+    return "\n".join(
+        [
+            _TARGET_SYSTEM_PROMPT_HEADER,
+            *category_lines,
+            _TARGET_SYSTEM_PROMPT_FOOTER,
+            *example_lines,
+            _TARGET_RESPONSE_INSTRUCTIONS,
+        ]
+    )
+
+
+def build_target_intent_user_prompt(text: str) -> str:
+    """Same shape as `build_query_intent_user_prompt`, exposed as its own
+    function for symmetry and so `core/target_nl.py` doesn't need to know
+    the literal wrapping format."""
     return f"Message: {text}"

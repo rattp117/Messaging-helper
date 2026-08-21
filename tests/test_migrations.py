@@ -295,11 +295,15 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     assert current_version(conn) == 3
     conn.close()
 
-    # Open through the real Database class -- this is where migration 004 runs.
+    # Open through the real Database class -- this also runs migration 005
+    # (SPEC-v1.1.md, additive `habit_targets`) since it's now unconditionally
+    # part of MIGRATIONS; a v3-shaped DB opened today lands on version 5,
+    # not 4, but everything asserted below about migration 004's own
+    # effect (habit_type backfill, untouched logs rows) still holds.
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 4
+    assert db.schema_version == 5
 
     after_rows = [
         tuple(r)
@@ -321,16 +325,146 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 4
-    assert reopened.schema_version == 4
+    assert reopened.schema_version_before == 5
+    assert reopened.schema_version == 5
     reopened.close()
 
 
-def test_fresh_db_reports_schema_version_4(tmp_path):
+def test_fresh_db_has_habit_type_column(tmp_path):
+    # SPEC-v1.1.md added migration 005 after this one (004); a fresh DB now
+    # lands on the latest version (5, asserted separately below), not
+    # hardcoded here -- this test only cares that habit_type exists.
     db = Database(tmp_path / "fresh_v4.db")
-    assert db.schema_version == 4
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)").fetchall()}
     assert "habit_type" in cols
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.1.md "Undo menu + per-habit targets" (AC12): migration 005
+# (`habit_targets`) on a fresh DB and on a v4-shaped DB, both built on
+# throwaway `tmp_path` files -- never the live `data/habits.db`.
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_db_reports_schema_version_5_with_habit_targets_table(tmp_path):
+    db = Database(tmp_path / "fresh_v5.db")
+    assert db.schema_version == 5
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "habit_targets" in tables
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
+    assert cols == {"habit_id", "goal", "updated_at"}
+    db.close()
+
+
+def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched(tmp_path):
+    db_path = tmp_path / "v4_copy.db"
+
+    # Hand-build a v4-shaped DB (migrations 001-004 already applied): logs
+    # + habit_type, no habit_targets yet, user_version=4.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL,
+          habit_type  TEXT NULL
+        );
+        CREATE INDEX idx_logs_ts_cat ON logs(ts, category);
+        CREATE INDEX idx_logs_category ON logs(category);
+        CREATE INDEX idx_logs_deleted_at ON logs(deleted_at);
+        PRAGMA user_version = 4;
+        """
+    )
+    conn.execute(
+        "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source, habit_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("2026-08-10T09:00:00", "water", 500.0, None, "500ml", "reply", "numeric"),
+    )
+    conn.commit()
+    before_rows = [
+        tuple(r)
+        for r in conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source, habit_type FROM logs ORDER BY id"
+        )
+    ]
+    assert current_version(conn) == 4
+    conn.close()
+
+    db = Database(db_path)
+
+    assert db.schema_version_before == 4
+    assert db.schema_version == 5
+
+    after_rows = [
+        tuple(r)
+        for r in db._conn.execute(
+            "SELECT id, ts, category, value_num, value_text, raw_message, source, habit_type FROM logs ORDER BY id"
+        )
+    ]
+    assert after_rows == before_rows  # logs untouched, byte-for-byte (R-T1: no ALTER/DROP on logs)
+
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "habit_targets" in tables
+    db.close()
+
+    # Re-running (reopen) applies nothing further (idempotent, AC12).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 5
+    assert reopened.schema_version == 5
+    reopened.close()
+
+
+def test_habit_targets_get_set_clear_all(tmp_path):
+    db = Database(tmp_path / "targets.db")
+
+    assert db.get_target("water") is None
+    assert db.all_targets() == {}
+
+    db.set_target("water", 2000.0)
+    assert db.get_target("water") == 2000.0
+    assert db.all_targets() == {"water": 2000.0}
+
+    db.set_target("water", 1800.0)  # upsert -- replaces, doesn't stack
+    assert db.get_target("water") == 1800.0
+    assert db.all_targets() == {"water": 1800.0}
+
+    db.set_target("stretch", 20.0)
+    assert db.all_targets() == {"water": 1800.0, "stretch": 20.0}
+
+    db.clear_target("water")
+    assert db.get_target("water") is None
+    assert db.all_targets() == {"stretch": 20.0}
+
+    db.clear_target("water")  # no-op, not an error, when absent
+    assert db.get_target("water") is None
+    db.close()
+
+
+def test_get_log_returns_row_regardless_of_deleted_at(tmp_path):
+    db = Database(tmp_path / "getlog.db")
+    from habit_assistant.storage.models import LogEntry
+
+    row_id = db.insert_log(LogEntry(None, "2026-08-19T09:00:00", "water", 500.0, None, "500ml", "reply"))
+
+    live = db.get_log(row_id)
+    assert live is not None
+    assert live["id"] == row_id
+    assert live["deleted_at"] is None
+
+    db.soft_delete(row_id)
+    still_returned = db.get_log(row_id)
+    assert still_returned is not None
+    assert still_returned["deleted_at"] is not None  # get_log does NOT filter deleted rows
+
+    assert db.get_log(row_id + 999) is None  # genuinely missing id
     db.close()
 
 

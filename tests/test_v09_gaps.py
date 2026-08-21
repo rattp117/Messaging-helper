@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -127,10 +127,24 @@ class _FixedDatetime(datetime):
         return cls._fixed.replace(tzinfo=tz) if tz is not None else cls._fixed
 
 
-def _freeze_reminders_clock(monkeypatch, hour: int, minute: int) -> None:
-    fixed = _FixedDatetime(2026, 8, 19, hour, minute, 0)
+def _freeze_reminders_clock(monkeypatch, hour: int, minute: int, day: date | None = None) -> None:
+    """Freezes `core/reminders.py`'s own `datetime.now(tz)` at `day` (real
+    "today" by default -- date-drift-proof, per TEST-v1.1-integration.md's
+    repair of the pre-existing hardcoded-2026-08-19 flakes) and the given
+    wall-clock time. The quiet-hours tests below only care about the
+    time-of-day, so defaulting the date to real "today" doesn't change
+    their behavior; the goal-met tests need it to line up with a seeded
+    log's timestamp (see `_frozen_today_ts`)."""
+    frozen_day = day if day is not None else date.today()
+    fixed = _FixedDatetime(frozen_day.year, frozen_day.month, frozen_day.day, hour, minute, 0)
     frozen = type("_Frozen", (_FixedDatetime,), {"_fixed": fixed})
     monkeypatch.setattr("habit_assistant.core.reminders.datetime", frozen)
+
+
+def _frozen_today_ts(hour: int = 9) -> str:
+    """An ISO timestamp on real "today", matching whatever date
+    `_freeze_reminders_clock`'s default freezes to."""
+    return f"{date.today().isoformat()}T{hour:02d}:00:00"
 
 
 # ===========================================================================
@@ -141,8 +155,9 @@ def _freeze_reminders_clock(monkeypatch, hour: int, minute: int) -> None:
 # ===========================================================================
 
 
-async def test_goal_met_reminder_skipped_via_real_scheduled_job_and_logged(db, caplog):
-    _seed(db, "2026-08-19T09:00:00", "water", 3000.0)  # over the 2500ml default goal
+async def test_goal_met_reminder_skipped_via_real_scheduled_job_and_logged(db, caplog, monkeypatch):
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
+    _seed(db, _frozen_today_ts(), "water", 3000.0)  # over the 2500ml default goal, on the frozen "today"
     config = Config()
     channel = FakeChannel()
     scheduler = AsyncIOScheduler()
@@ -176,10 +191,11 @@ async def test_goal_not_met_reminder_sent_via_real_scheduled_job(db):
     assert state.last_habit_id == "water"
 
 
-async def test_goal_exactly_met_is_skipped_via_real_scheduled_job_matching_documented_ge(db, caplog):
+async def test_goal_exactly_met_is_skipped_via_real_scheduled_job_matching_documented_ge(db, caplog, monkeypatch):
     """IMPL.md / code (`_goal_already_met`): `total >= habit.goal` -- held
     to the documented ">=" contract, not re-derived independently."""
-    _seed(db, "2026-08-19T09:00:00", "water", 2500.0)  # exactly the goal
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
+    _seed(db, _frozen_today_ts(), "water", 2500.0)  # exactly the goal, on the frozen "today"
     config = Config()
     channel = FakeChannel()
     scheduler = AsyncIOScheduler()
@@ -379,7 +395,8 @@ async def test_snooze_scheduled_job_fires_once_and_is_removed_from_scheduler(db)
 # ===========================================================================
 
 
-async def test_skip_if_goal_met_false_disables_only_that_habit_others_still_skip(db):
+async def test_skip_if_goal_met_false_disables_only_that_habit_others_still_skip(db, monkeypatch):
+    _freeze_reminders_clock(monkeypatch, 9, 0)  # pins "today" for _today_str, date-drift-proof
     config = Config.model_validate(
         {
             "habits": [
@@ -405,8 +422,8 @@ async def test_skip_if_goal_met_false_disables_only_that_habit_others_still_skip
         }
     )
     registry = HabitRegistry.from_config(config)
-    _seed(db, "2026-08-19T06:00:00", "water", 3000.0)  # over goal
-    _seed(db, "2026-08-19T06:00:00", "sleep", 9.0)  # over goal
+    _seed(db, _frozen_today_ts(6), "water", 3000.0)  # over goal, on the frozen "today"
+    _seed(db, _frozen_today_ts(6), "sleep", 9.0)  # over goal, on the frozen "today"
     channel = FakeChannel()
     scheduler = AsyncIOScheduler()
 

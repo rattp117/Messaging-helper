@@ -13,8 +13,8 @@ through (AC10.5's "reuses v0.7 aggregation").
 
 Streak definition (ROADMAP.md v0.10.0 scope item 1):
 - goal-bearing habit (an *effective* goal is configured -- see
-  `effective_goal`): a day "qualifies" when that day's total
-  (`db.sum_value`) meets or exceeds the goal.
+  `core/targets.py:effective_goal`, SPEC-v1.1.md R-T3): a day "qualifies"
+  when that day's total (`db.sum_value`) meets or exceeds the goal.
 - non-goal habit: a day "qualifies" on any entry -- `count_true` (truthy
   rows only) for boolean habits ("done-days"), `count` (any row) for
   duration/text/numeric-without-goal.
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, targets
 from habit_assistant.core.habits import Habit
 
 if TYPE_CHECKING:
@@ -42,23 +42,27 @@ if TYPE_CHECKING:
 # confirmation/summary into an unbounded table scan.
 _MAX_LOOKBACK_DAYS = 3650
 
-
-def effective_goal(habit: Habit, config: "Config") -> float | None:
-    """The goal actually used for streak/summary/milestone purposes. The
-    built-in `water` habit's goal has always lived in the legacy
-    `config.reminders.water.goal_ml` (SPEC-v0.7.md's "byte-identical to
-    v0.6.0" contract -- `core/review.py`'s pre-v0.10 `_water_goal_ml` did
-    the same thing) rather than `habit.goal`; both default to 2500, but a
-    config that sets them differently must keep behaving like v0.6.0/
-    v0.7.0 did. Every other habit just uses its own configured `goal`."""
-    if habit.id == "water":
-        return config.reminders.water.goal_ml
-    return habit.goal
+# Sentinel: "no pre-resolved goal was passed" (distinct from a resolved
+# goal of `None`, which means "this habit genuinely has no goal right
+# now"). SPEC-v1.1.md R-T6: `day_qualifies` resolves its own goal via
+# `targets.effective_goal` (a DB read) when this default is left in place
+# -- fine for a single-day call site, but `compute_streak`'s backward walk
+# below passes its own once-resolved `goal` explicitly instead, so the
+# walk issues at most one `db.get_target` call per invocation, not one per
+# day (AC26).
+_GOAL_UNSET = object()
 
 
-def day_qualifies(db: "Database", config: "Config", habit: Habit, day: str) -> bool:
-    """Does `day` ('YYYY-MM-DD') count toward this habit's streak?"""
-    goal = effective_goal(habit, config)
+def day_qualifies(
+    db: "Database", config: "Config", habit: Habit, day: str, goal: float | None = _GOAL_UNSET  # type: ignore[assignment]
+) -> bool:
+    """Does `day` ('YYYY-MM-DD') count toward this habit's streak? `goal`
+    lets a caller that already resolved `targets.effective_goal` (e.g.
+    `compute_streak`'s loop, R-T6) pass it straight through instead of
+    triggering a second DB read; omit it to resolve fresh (the common
+    case for a single-day check)."""
+    if goal is _GOAL_UNSET:
+        goal = targets.effective_goal(db, habit, config)
     if goal:
         return db.sum_value(habit.id, day) >= goal
     if habit.type == "boolean":
@@ -71,11 +75,17 @@ def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: dat
     walking backward until the first gap (AC10.1). Shared by
     `core/review.py`'s weekly summary and this module's own
     milestone-crossing check (AC10.5) -- one function, one number,
-    everywhere a streak is surfaced."""
+    everywhere a streak is surfaced.
+
+    SPEC-v1.1.md R-T6: `targets.effective_goal` is resolved ONCE here, up
+    front, and passed to every `day_qualifies` call in the walk below --
+    not re-resolved (i.e. not a fresh `db.get_target` read) per day, even
+    though the walk can span up to `_MAX_LOOKBACK_DAYS` iterations (AC26)."""
+    goal = targets.effective_goal(db, habit, config)
     streak = 0
     day = end_date
     for _ in range(_MAX_LOOKBACK_DAYS):
-        if not day_qualifies(db, config, habit, day.isoformat()):
+        if not day_qualifies(db, config, habit, day.isoformat(), goal=goal):
             break
         streak += 1
         day -= timedelta(days=1)
@@ -142,7 +152,7 @@ def compute_daily_summary(
     today_str = today.isoformat()
     lines: list[DailySummaryLine] = []
     for habit in registry:
-        goal = effective_goal(habit, config)
+        goal = targets.effective_goal(db, habit, config)
         if goal or habit.type == "numeric":
             # Goal-bearing (any type) or a goal-less numeric habit: both are
             # inherently summed quantities (e.g. ml), matching what
