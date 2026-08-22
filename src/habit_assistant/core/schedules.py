@@ -36,7 +36,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import i18n
+from habit_assistant.core import audit, i18n
 from habit_assistant.core.reminders import effective_reminder_times
 
 if TYPE_CHECKING:
@@ -95,38 +95,73 @@ def _execute_show(db: "Database", config: "Config", habit: "Habit", lang: i18n.L
     )
 
 
-def _execute_off(db: "Database", habit: "Habit", lang: i18n.Language, user_id: str) -> str:
+def _execute_off(db: "Database", habit: "Habit", lang: i18n.Language, user_id: str, source: str) -> str:
+    # SPEC-v1.3.md §2.1: remind_off's old_value is the prior stored times
+    # (JSON) -- read BEFORE the write, same "capture in hand" convention as
+    # every other capture site here.
+    previous_times = db.get_reminder_times(user_id, habit.id)
     try:
         db.set_reminder_times(user_id, habit.id, ["off"])
     except Exception:
         logger.exception("Failed to turn off reminders for user %r habit %r", user_id, habit.id)
         return i18n.t("remind_save_failed", lang)
+    audit.record(
+        db,
+        actor=user_id,
+        action="remind_off",
+        source=source,
+        entity=habit.id,
+        old_value=previous_times,
+        new_value="off",
+    )
     return i18n.t("remind_off", lang, label=habit.label(lang))
 
 
-def _execute_default(db: "Database", habit: "Habit", lang: i18n.Language, user_id: str) -> str:
+def _execute_default(db: "Database", habit: "Habit", lang: i18n.Language, user_id: str, source: str) -> str:
+    previous_times = db.get_reminder_times(user_id, habit.id)
     try:
         db.clear_reminder_times(user_id, habit.id)
     except Exception:
         logger.exception("Failed to clear reminder override for user %r habit %r", user_id, habit.id)
         return i18n.t("remind_save_failed", lang)
+    audit.record(
+        db,
+        actor=user_id,
+        action="remind_default",
+        source=source,
+        entity=habit.id,
+        old_value=previous_times,
+        new_value=None,
+    )
     return i18n.t(
         "remind_cleared", lang, label=habit.label(lang), times=_format_times_list(list(habit.reminder_times), lang)
     )
 
 
-def _execute_set(db: "Database", habit: "Habit", tokens: list[str], lang: i18n.Language, user_id: str) -> str:
+def _execute_set(
+    db: "Database", habit: "Habit", tokens: list[str], lang: i18n.Language, user_id: str, source: str
+) -> str:
     validated = _validate_and_dedupe_times(tokens)
     if isinstance(validated, str):
         return i18n.t("remind_invalid_time", lang, token=validated)
     if len(validated) > MAX_REMINDER_TIMES:
         return i18n.t("remind_too_many_times", lang, max=MAX_REMINDER_TIMES)
 
+    previous_times = db.get_reminder_times(user_id, habit.id)
     try:
         db.set_reminder_times(user_id, habit.id, validated)
     except Exception:
         logger.exception("Failed to set reminder times for user %r habit %r", user_id, habit.id)
         return i18n.t("remind_save_failed", lang)
+    audit.record(
+        db,
+        actor=user_id,
+        action="remind_set",
+        source=source,
+        entity=habit.id,
+        old_value=previous_times,
+        new_value=validated,
+    )
     return i18n.t("remind_set", lang, label=habit.label(lang), times=_format_times_list(validated, lang))
 
 
@@ -138,6 +173,7 @@ async def execute_remind(
     registry: "HabitRegistry",
     lang: i18n.Language,
     user_id: str,
+    source: str = "command",
 ) -> str:
     """Validate and perform the `/remind` op described by `command`
     (`core/commands.dispatch`'s `kind="remind"` output), for `user_id`,
@@ -149,7 +185,12 @@ async def execute_remind(
     (already-landed) `user_id` kwarg -- every DB read/write below is
     scoped to the acting user, so two users' `/remind` overrides for the
     same habit are fully independent (R-D4/R-D2's own pattern, applied to
-    `user_reminder_times`)."""
+    `user_reminder_times`).
+
+    SPEC-v1.3.md R-C1: `source` defaults to `"command"` (every current
+    `/remind` caller is the deterministic command path; there is no
+    full-NL `/remind` intent in this codebase, unlike `/target`). `show`
+    is read-only (AC-C7) and never records."""
     habit_id = command.category or ""
     habit = registry.get(habit_id)
     if habit is None:
@@ -159,7 +200,7 @@ async def execute_remind(
     if times == []:
         return _execute_show(db, config, habit, lang, user_id)
     if times == ["off"]:
-        return _execute_off(db, habit, lang, user_id)
+        return _execute_off(db, habit, lang, user_id, source)
     if times == ["default"]:
-        return _execute_default(db, habit, lang, user_id)
-    return _execute_set(db, habit, times, lang, user_id)
+        return _execute_default(db, habit, lang, user_id, source)
+    return _execute_set(db, habit, times, lang, user_id, source)

@@ -25,7 +25,7 @@ import re
 
 from habit_assistant.channels.base import Button, Channel
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import audit, i18n, targets
 from habit_assistant.core.habits import HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -123,7 +123,15 @@ def describe_log(row, registry: HabitRegistry, lang: i18n.Language) -> str:
 
 
 async def send_undo_confirmation(
-    db: Database, channel: Channel, config: Config, clock, registry: HabitRegistry, lang: i18n.Language, row
+    db: Database,
+    channel: Channel,
+    config: Config,
+    clock,
+    registry: HabitRegistry,
+    lang: i18n.Language,
+    row,
+    *,
+    source: str = "command",
 ) -> None:
     """R-U5/R-U8: soft-delete `row` and send the "removed + recomputed
     today total" confirmation -- the single formatter shared by the
@@ -139,9 +147,29 @@ async def send_undo_confirmation(
     established (the text `/undo` path resolved `row` from the acting
     user's own `last_log`; the button path verified `row["user_id"] ==`
     the tapping chat, R-C3) -- `row["user_id"]` is simply that same,
-    already-verified value."""
+    already-verified value.
+
+    SPEC-v1.3.md R-C2: `source` defaults to `"command"` (the text `/undo`
+    path never needs to pass it explicitly); `handle_undo_callback` below
+    passes `"button"`. The removed value (`row["value_num"]` if set, else
+    `row["value_text"]` for a text-valued habit like `diary`) is captured
+    BEFORE `db.soft_delete` -- not that it would change either way, since
+    soft-delete only stamps `deleted_at` and never touches the value
+    columns -- and `audit.record` is called AFTER the soft-delete
+    succeeds, fail-open (R-W2): a recorder failure never affects this
+    confirmation."""
     user_id = row["user_id"]
+    removed_value = row["value_num"] if row["value_num"] is not None else row["value_text"]
     db.soft_delete(row["id"])
+    audit.record(
+        db,
+        actor=user_id,
+        action="undo",
+        source=source,
+        entity=row["category"],
+        old_value=removed_value,
+        new_value=None,
+    )
     description = describe_log(row, registry, lang)
     today_str = clock().date().isoformat()
     category = row["category"]
@@ -249,4 +277,4 @@ async def handle_undo_callback(
         await channel.send(chat_id, i18n.t("already_undone", lang))
         return
 
-    await send_undo_confirmation(db, channel, config, clock, registry, lang, row)
+    await send_undo_confirmation(db, channel, config, clock, registry, lang, row, source="button")

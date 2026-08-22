@@ -172,7 +172,36 @@ is still carried through verbatim (lowercased) as `Command.pref_value`
 table write, and the bilingual reply happen (same recognize-shape/
 execute split as `target`/`remind`). Grouped with `remind`/`access` for
 readability -- disjoint trigger text from every other kind means exact
-placement doesn't change behavior."""
+placement doesn't change behavior.
+
+v1.3.0 (SPEC-v1.3.md §4 R-V1, module `audit-view`): one more LLM-free
+kind, `"audit"` -- the owner-only `/audit [N]` recent-activity viewer,
+plus the optional Thai alias `ประวัติ [N]` (SPEC-v1.3.md §10: "Natural-
+language phrasing for /audit" is explicitly out of scope -- deterministic
+command + this one Thai alias only). `Command.limit` carries the parsed
+N (an `int`), or `None` for a missing/non-numeric N -- `core/audit_view.
+render_recent` treats `None` as "use the default limit" (R-V2/§3.3's own
+"`/audit abc` (non-numeric N) falls back to the default limit"
+contract), same recognize-shape/execute split as every settings-style
+command above. The slash form stays fully permissive (any tail, parsed
+best-effort) -- an explicit "/" prefix is the same near-zero
+false-positive surface `/target`/`/remind`/`/lang`/`/quiet` already rely
+on. The Thai alias, by contrast, is anchored to the WHOLE stripped
+message with an optional PURELY-NUMERIC tail only (whole-message match,
+optionally followed by whitespace + digits, nothing else) -- unlike a
+registry habit token, "ประวัติ" ("history") is an
+ordinary Thai word that can open real prose (e.g. "ประวัติศาสตร์...",
+"เขาเขียนประวัติส่วนตัว..."), so this mirrors `/help`'s `_HELP_RE`/
+`/habits`' `_HABITS_RE` own "whole-message, no partial/prefix match"
+conservatism (never `เตือน`'s permissive-tail shape) rather than
+`preferences`'s heavier whitelist machinery -- a glued continuation like
+"ประวัติศาสตร์" can never match at all (§ can't reach `$` with trailing
+non-digit, non-whitespace text after "ประวัติ"). Grouped with `access`'s
+other owner-only admin commands for readability (disjoint trigger text,
+so exact placement doesn't change behavior); whether the acting chat
+actually IS the owner is enforced downstream (`main.py`'s integration-
+step `access.classify(...) == "owner"` re-check, R-V3) -- this layer
+only recognizes shape, same split as every command above."""
 
 from __future__ import annotations
 
@@ -209,6 +238,8 @@ CommandKind = Literal[
     "quiet",
     # module `schedules` (R-S5): /remind.
     "remind",
+    # module `audit-view` (SPEC-v1.3.md R-V1): /audit.
+    "audit",
 ]
 
 
@@ -235,6 +266,12 @@ class Command:
     # times -- [] = show, ["off"] = off, ["default"] = reset, else an
     # HH:MM list to set. Not yet populated by dispatch().
     times: list[str] | None = None
+    # SPEC-v1.3.md §5 (module `audit-view`, R-V1): the parsed N for
+    # "audit" (e.g. "/audit 5" -> 5). `None` for a bare "/audit"/"ประวัติ",
+    # a non-numeric tail ("/audit abc"), or any other unparsed tail --
+    # `core/audit_view.render_recent` treats `None` as "use the default
+    # limit" (R-V2).
+    limit: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +710,47 @@ def _match_access(stripped: str) -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# audit -- SPEC-v1.3.md §4 R-V1 (module `audit-view`). The owner-only
+# `/audit [N]` recent-activity viewer, plus the optional Thai alias
+# `ประวัติ [N]`. See this module's own docstring (v1.3.0 section, above)
+# for the full slash-form-permissive / Thai-alias-conservative rationale.
+# ---------------------------------------------------------------------------
+
+_AUDIT_SLASH_RE = re.compile(r"^/audit(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+# Anchored to the WHOLE stripped message (mirrors `_HELP_RE`/`_HABITS_RE`,
+# not `เตือน`'s permissive-tail shape) -- "ประวัติ" is an ordinary Thai
+# word ("history") that opens real prose, so only a bare match or a
+# purely-numeric tail is recognized; anything else falls through to None.
+_AUDIT_TH_RE = re.compile(r"^ประวัติ(?:\s+(?P<n>\d+))?$")
+
+
+def _parse_audit_limit(rest: str | None) -> int | None:
+    """The first whitespace-delimited token after "/audit", parsed as a
+    plain non-negative integer -- missing, non-numeric, or any other
+    garbage tail -> `None` (R-V2/§3.3: "a non-numeric N uses the default
+    limit"), never a rejected match -- `/audit <anything>` always
+    recognizes as an "audit" command, mirroring `/target`'s/`/remind`'s
+    own "recognized shape -> always a Command" permissiveness."""
+    if rest is None:
+        return None
+    token = rest.strip().split(None, 1)[0]
+    return int(token) if token.isdigit() else None
+
+
+def _match_audit(stripped: str) -> "Command | None":
+    match = _AUDIT_SLASH_RE.match(stripped)
+    if match is not None:
+        return Command(kind="audit", limit=_parse_audit_limit(match.group("rest")))
+
+    th_match = _AUDIT_TH_RE.match(stripped)
+    if th_match is not None:
+        n = th_match.group("n")
+        return Command(kind="audit", limit=int(n) if n else None)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # lang / quiet -- SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`). Slash
 # forms `/lang [en|th|auto]` and `/quiet [HH:MM-HH:MM[,...]|off]` (bare, no
 # value, is a valid shape too -- `core/preferences.py`'s `execute_lang`/
@@ -910,7 +988,10 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     §4 R-P1/R-P2 (module `preferences`) likewise inserts `lang`/`quiet`
     (`/lang`/`ภาษา`, `/quiet`/`เงียบ`) right after `access`'s admin block and
     before `help`/`habits` -- same disjoint-trigger reasoning, so exact
-    placement doesn't change behavior either. An edit-trigger
+    placement doesn't change behavior either. SPEC-v1.3.md §4 R-V1 (module
+    `audit-view`) inserts one more, `audit` (`/audit`/`ประวัติ`), right
+    after `access`'s admin block too -- same disjoint-trigger reasoning.
+    An edit-trigger
     phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
     immediately (pre-v0.8 behavior, unchanged) rather than also being
     offered to the snooze/target/help/habits/query matchers -- it already
@@ -950,6 +1031,14 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     access_command = _match_access(stripped)
     if access_command is not None:
         return access_command
+
+    # SPEC-v1.3.md §4 R-V1 (module `audit-view`): `/audit`/`ประวัติ` --
+    # disjoint trigger text from every pattern above/below, grouped here
+    # with `access`'s other owner-only admin commands for readability
+    # (same rationale as `remind`/`access`/`lang`/`quiet` above).
+    audit_command = _match_audit(stripped)
+    if audit_command is not None:
+        return audit_command
 
     # SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`): `/lang`/`ภาษา` and
     # `/quiet`/`เงียบ` -- disjoint trigger text from every pattern above/

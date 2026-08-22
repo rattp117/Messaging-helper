@@ -183,6 +183,39 @@ def _migration_006_multiuser(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007_audit_log(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.3.md "Audit log" (§4 R-M1): purely additive -- unlike
+    migration 006 (the ONE sanctioned break), this one touches NO existing
+    table/column/row at all, just a new table + two indexes (AC-A1). One
+    row per state-changing action (`core/audit.py:record`, the single
+    writer): `user_id` is the ACTOR, `target_user_id` is who an ADMIN
+    action was done TO (NULL for a self-action); `entity`/`old_value`/
+    `new_value` are all nullable text (a non-habit-scoped action, e.g.
+    `lang_set`, has `entity = NULL`; a create-only transition, e.g.
+    `user_pending`, has `old_value = NULL`). `idx_audit_ts` serves
+    `prune_audit`'s own `WHERE ts < ?` scan; `idx_audit_user` serves a
+    future "this user's own history" lookup (not built by this pass, but
+    cheap to index for now rather than retrofit later)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts             TEXT NOT NULL,
+          user_id        TEXT NOT NULL,
+          action         TEXT NOT NULL,
+          entity         TEXT,
+          old_value      TEXT,
+          new_value      TEXT,
+          source         TEXT NOT NULL,
+          target_user_id TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, ts)")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -193,6 +226,7 @@ MIGRATIONS: list[Migration] = [
     _migration_004_habit_type,
     _migration_005_habit_targets,
     _migration_006_multiuser,
+    _migration_007_audit_log,
 ]
 
 

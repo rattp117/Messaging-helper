@@ -21,3 +21,22 @@ class LogEntry:
     # self-describing even if the habit is later removed from config.
     # NULL for rows whose category has no known type (e.g. 'unparsed').
     habit_type: str | None = None
+
+
+@dataclass(slots=True)
+class AuditEntry:
+    """SPEC-v1.3.md "Audit log" (§5): one who/when/what/how row for the
+    `audit_log` table. `core/audit.py:record` is the ONLY place that
+    constructs one -- capture sites (undo_ui, targets_command, schedules,
+    preferences, access, main.py) call `record(...)` with plain
+    keyword arguments and never build this dataclass themselves."""
+
+    id: int | None
+    ts: str  # ISO8601 local, when the action happened (matches LogEntry.ts's own convention)
+    user_id: str  # the ACTOR (who performed the action) -- see target_user_id for who it was done TO
+    action: str  # one of core/audit.py:ACTIONS
+    entity: str | None  # a habit id for habit-scoped actions; None otherwise
+    old_value: str | None  # previous value, already stringified by record(); None when N/A
+    new_value: str | None  # new value, already stringified by record(); None when N/A
+    source: str  # one of core/audit.py:SOURCES ('command' | 'nl' | 'button' | 'admin')
+    target_user_id: str | None = None  # admin actions on ANOTHER chat; None otherwise

@@ -38,7 +38,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import i18n
+from habit_assistant.core import audit, i18n
 
 if TYPE_CHECKING:
     from habit_assistant.core.commands import Command
@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 _VALID_LANG_VALUES = {"en", "th", "auto"}
 
 
-async def execute_lang(command: "Command", *, db: "Database", lang: i18n.Language, user_id: str) -> str:
+async def execute_lang(
+    command: "Command", *, db: "Database", lang: i18n.Language, user_id: str, source: str = "command"
+) -> str:
     """SPEC-v1.2.md R-P1: set `user_id`'s reply-language preference.
     `command.pref_value` is the lowercased trigger tail `core/commands.
     dispatch` captured -- "en"/"th"/"auto", or `None` for a bare "/lang"/
@@ -68,17 +70,29 @@ async def execute_lang(command: "Command", *, db: "Database", lang: i18n.Languag
     regardless of input language" starting with this very confirmation.
     "auto" has no concrete language of its own to confirm in, so it
     falls back to the caller-supplied `lang` (byte-identical to every
-    pre-v1.2 confirmation's own posture)."""
+    pre-v1.2 confirmation's own posture).
+
+    SPEC-v1.3.md R-C1: `source` defaults to `"command"` (there is no
+    full-NL `/lang` intent in this codebase). The prior preference is read
+    BEFORE the write (`row["language_pref"]`, or `None` if `user_id` has
+    no `users` row yet -- unlikely for an already-gated active user, but
+    not this function's job to assume)."""
     raw = (command.pref_value or "").strip().lower()
     if raw not in _VALID_LANG_VALUES:
         return i18n.t("lang_usage", lang)
 
     reply_lang: i18n.Language = raw if raw in ("en", "th") else lang
     try:
+        previous_row = db.get_user(user_id)
+    except Exception:
+        previous_row = None
+    previous_pref = previous_row["language_pref"] if previous_row is not None else None
+    try:
         db.set_user_language(user_id, raw)
     except Exception:
         logger.exception("Failed to set language preference for user %r", user_id)
         return i18n.t("preferences_save_failed", reply_lang)
+    audit.record(db, actor=user_id, action="lang_set", source=source, old_value=previous_pref, new_value=raw)
     return i18n.t("lang_set", reply_lang, value=raw)
 
 
@@ -110,7 +124,9 @@ def _format_windows(windows: list[list[str]]) -> str:
     return ", ".join(f"{start}-{end}" for start, end in windows)
 
 
-async def execute_quiet(command: "Command", *, db: "Database", lang: i18n.Language, user_id: str) -> str:
+async def execute_quiet(
+    command: "Command", *, db: "Database", lang: i18n.Language, user_id: str, source: str = "command"
+) -> str:
     """SPEC-v1.2.md R-P2: set `user_id`'s quiet-hours override.
     `command.pref_value` is the lowercased trigger tail -- "off" clears to
     an explicit EMPTY list (distinct from never-set/NULL-inherit -- R-P2's
@@ -121,10 +137,22 @@ async def execute_quiet(command: "Command", *, db: "Database", lang: i18n.Langua
     them, and anything else (a malformed token, or a bare "/quiet"/
     "เงียบ" with no value at all) is rejected with `quiet_usage`/
     `quiet_invalid_window` -- no write, mirroring R-S5's "reject, don't
-    guess" contract for `/remind`."""
+    guess" contract for `/remind`.
+
+    SPEC-v1.3.md R-C1: `source` defaults to `"command"` (no full-NL
+    `/quiet` intent exists). The prior `quiet_hours_json` (already a JSON
+    string or `None` -- the column's own stored shape) is read BEFORE the
+    write and passed through to `audit.record` unchanged, exactly as
+    stored (`_stringify_value` is a no-op on an already-`str` value)."""
     raw = (command.pref_value or "").strip().lower()
     if not raw:
         return i18n.t("quiet_usage", lang)
+
+    try:
+        previous_row = db.get_user(user_id)
+    except Exception:
+        previous_row = None
+    previous_json = previous_row["quiet_hours_json"] if previous_row is not None else None
 
     if raw == "off":
         try:
@@ -132,6 +160,7 @@ async def execute_quiet(command: "Command", *, db: "Database", lang: i18n.Langua
         except Exception:
             logger.exception("Failed to clear quiet hours for user %r", user_id)
             return i18n.t("preferences_save_failed", lang)
+        audit.record(db, actor=user_id, action="quiet_off", source=source, old_value=previous_json, new_value=[])
         return i18n.t("quiet_cleared", lang)
 
     windows = _parse_quiet_windows(raw)
@@ -143,4 +172,7 @@ async def execute_quiet(command: "Command", *, db: "Database", lang: i18n.Langua
     except Exception:
         logger.exception("Failed to set quiet hours for user %r", user_id)
         return i18n.t("preferences_save_failed", lang)
+    audit.record(
+        db, actor=user_id, action="quiet_set", source=source, old_value=previous_json, new_value=windows
+    )
     return i18n.t("quiet_set", lang, windows=_format_windows(windows))

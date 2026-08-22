@@ -31,7 +31,7 @@ import re
 from typing import TYPE_CHECKING, Literal
 
 from habit_assistant.channels.base import Channel
-from habit_assistant.core import i18n
+from habit_assistant.core import audit, i18n
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -147,8 +147,26 @@ async def handle_gate(
         # reply to the asker, and notify the owner -- best-effort on the
         # write (a DB hiccup here must not crash the inbound loop; the
         # asker still gets a reply either way).
+        #
+        # SPEC-v1.3.md R-C3/R-C4/AC-P1 (privacy): the audit row records
+        # ONLY the state transition (new_value="pending") -- never `text`,
+        # which is this chat's actual message content. `audit.record` is
+        # called only when `upsert_user` itself succeeded (inside the same
+        # try) -- no phantom "became pending" row for a write that never
+        # landed. `actor` and `target_user_id` are both `chat_id` (nobody
+        # else "acted" -- the chat's own first contact caused its own
+        # transition, per core/audit.py's own docstring).
         try:
             db.upsert_user(chat_id, status="pending", display_name=display_name)
+            audit.record(
+                db,
+                actor=chat_id,
+                action="user_pending",
+                source="admin",
+                target_user_id=chat_id,
+                old_value=None,
+                new_value="pending",
+            )
         except Exception:
             logger.exception("Failed to create pending user row for chat_id=%r", chat_id)
         await channel.send(chat_id, i18n.t("access_pending", lang))
@@ -262,13 +280,31 @@ async def execute_admin(
         await channel.send(chat_id, i18n.t("admin_usage", lang))
         return
 
+    # SPEC-v1.3.md R-C3: read the prior status BEFORE the write (best-effort
+    # -- a failed pre-read degrades to old_value=None rather than blocking
+    # the approve/block action itself, same "capture must never gate the
+    # write" posture as every other capture site here).
     if command.kind in ("approve", "invite"):
+        try:
+            previous = db.get_user(target_chat)
+        except Exception:
+            previous = None
+        previous_status = previous["status"] if previous is not None else None
         try:
             db.upsert_user(target_chat, status="active")
         except Exception:
             logger.exception("Failed to approve chat_id=%r", target_chat)
             await channel.send(chat_id, i18n.t("admin_save_failed", lang))
             return
+        audit.record(
+            db,
+            actor=chat_id,
+            action="user_approve",
+            source="admin",
+            target_user_id=target_chat,
+            old_value=previous_status,
+            new_value="active",
+        )
         await channel.send(chat_id, i18n.t("admin_approved_ack", lang, chat_id=target_chat))
         target_lang = _resolve_unprompted_language_for(db, config, target_chat)
         await channel.send(target_chat, i18n.t("access_granted", target_lang))
@@ -276,10 +312,24 @@ async def execute_admin(
 
     if command.kind == "block":
         try:
+            previous = db.get_user(target_chat)
+        except Exception:
+            previous = None
+        previous_status = previous["status"] if previous is not None else None
+        try:
             db.upsert_user(target_chat, status="blocked")
         except Exception:
             logger.exception("Failed to block chat_id=%r", target_chat)
             await channel.send(chat_id, i18n.t("admin_save_failed", lang))
             return
+        audit.record(
+            db,
+            actor=chat_id,
+            action="user_block",
+            source="admin",
+            target_user_id=target_chat,
+            old_value=previous_status,
+            new_value="blocked",
+        )
         await channel.send(chat_id, i18n.t("admin_blocked_ack", lang, chat_id=target_chat))
         return

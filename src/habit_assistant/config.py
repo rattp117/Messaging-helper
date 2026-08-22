@@ -202,6 +202,24 @@ class ChartsConfig(BaseModel):
     enabled: bool = True
 
 
+class AuditConfig(BaseModel):
+    """SPEC-v1.3.md "Audit log" (§4 R-W3): how long `audit_log` rows are
+    kept. `retention_days = 365` (default) -- long enough to be useful on
+    a personal bot, bounded enough not to grow without limit; `0` means
+    "keep forever, never prune". Pruning itself runs once at startup
+    (`main.py`, not per-insert) and is not itself audited (housekeeping,
+    R-W3's own explicit carve-out)."""
+
+    retention_days: int = 365
+
+    @field_validator("retention_days")
+    @classmethod
+    def _non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("audit.retention_days must be >= 0 (0 = keep forever)")
+        return v
+
+
 class GarminConfig(BaseModel):
     """ROADMAP.md v1.0.0 Garmin hydration import (closes SPEC.md §12's
     TODO). `csv_path = ""` (default) means the feature is off -- the
@@ -329,6 +347,7 @@ class Config(BaseModel):
     gamification: GamificationConfig = GamificationConfig()
     charts: ChartsConfig = ChartsConfig()
     garmin: GarminConfig = GarminConfig()
+    audit: AuditConfig = AuditConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

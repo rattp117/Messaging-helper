@@ -17,7 +17,7 @@ import sqlite3
 from pathlib import Path
 
 from habit_assistant.storage.migrations import run_migrations
-from habit_assistant.storage.models import LogEntry
+from habit_assistant.storage.models import AuditEntry, LogEntry
 
 _UNSET = object()  # sentinel: "field not given" vs. "field explicitly set to None"
 
@@ -391,3 +391,47 @@ class Database:
             "DELETE FROM user_reminder_times WHERE user_id = ? AND habit_id = ?", (user_id, habit_id)
         )
         self._conn.commit()
+
+    # -----------------------------------------------------------------
+    # audit_log (SPEC-v1.3.md R-M1/R-W1 -- migration 007). The only
+    # writer is `core/audit.py:record`, which wraps `insert_audit` in its
+    # own fail-open try/except (R-W2) -- this method itself is a plain,
+    # unprotected insert, exactly like `insert_log`'s own shape; the
+    # fail-open contract lives one layer up, not duplicated here.
+    # -----------------------------------------------------------------
+
+    def insert_audit(self, entry: AuditEntry) -> int:
+        cursor = self._conn.execute(
+            "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.ts,
+                entry.user_id,
+                entry.action,
+                entry.entity,
+                entry.old_value,
+                entry.new_value,
+                entry.source,
+                entry.target_user_id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def recent_audit(self, limit: int) -> list[sqlite3.Row]:
+        """SPEC-v1.3.md R-V2: newest-first (`ORDER BY id DESC`, not `ts` --
+        `id` is a strictly monotonic insert order even when two rows
+        share the same second-resolution `ts`, which `ts` alone can't
+        guarantee)."""
+        return self._conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+    def prune_audit(self, cutoff_ts: str) -> int:
+        """SPEC-v1.3.md R-W3: delete every row strictly older than
+        `cutoff_ts` (plain string comparison -- `ts` is a fixed-width
+        ISO8601 local timestamp, so lexicographic order == chronological
+        order, the same convention `logs_between`'s own `ts >= ?/<= ?`
+        filters already rely on). Returns the number of rows deleted, so
+        a caller can log a non-zero prune without a second query."""
+        cursor = self._conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff_ts,))
+        self._conn.commit()
+        return cursor.rowcount

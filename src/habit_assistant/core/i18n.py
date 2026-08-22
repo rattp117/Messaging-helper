@@ -909,4 +909,95 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "😥 Couldn't save that right now — please try again in a moment.",
         "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
     },
+
+    # -----------------------------------------------------------------
+    # SPEC-v1.3.md "Audit log" -- module `audit-view` (R-V1/R-V2,
+    # core/audit_view.py): the owner-only `/audit [N]` recent-activity
+    # viewer. `audit_line`'s {detail} (entity + old→new, already
+    # humanized) is composed in PYTHON, not localized here -- same "raw
+    # technical value, only the label/skeleton localized" convention
+    # `core/access.py:_render_users_list`'s `users_list_line` already
+    # established for this app's other owner-only technical view (role/
+    # status shown verbatim, untranslated). `source` (command/nl/button/
+    # admin) is likewise shown verbatim for the same reason. Every
+    # `audit_action_*` id is one of `core/audit.py:ACTIONS`'s 13 values --
+    # spelling can't drift because `core/audit_view.py` looks each one up
+    # by the same literal.
+    # -----------------------------------------------------------------
+    "audit_header": {
+        "en": "🧾 Recent activity (last {limit}):",
+        "th": "🧾 กิจกรรมล่าสุด ({limit} รายการล่าสุด):",
+    },
+    "audit_empty": {
+        "en": "🧾 No activity recorded yet.",
+        "th": "🧾 ยังไม่มีการบันทึกกิจกรรมนะ",
+    },
+    "audit_line": {
+        "en": "• {ts} · {actor} · {action} · {detail} ({source})",
+        "th": "• {ts} · {actor} · {action} · {detail} ({source})",
+    },
+    # TEST-v1.3-view.md's finding: `core/audit_view.py:_fit_within_budget`'s
+    # footer, appended only when the fully-rendered message would exceed
+    # Telegram's `sendMessage` limit and the oldest shown rows had to be
+    # dropped to fit -- {count} is how many rows were dropped.
+    "audit_more_rows": {
+        "en": "… {count} more",
+        "th": "… อีก {count} รายการ",
+    },
+    "audit_actor_you": {
+        "en": "you",
+        "th": "คุณ",
+    },
+    "audit_action_undo": {
+        "en": "undo",
+        "th": "ยกเลิก",
+    },
+    "audit_action_edit": {
+        "en": "edit",
+        "th": "แก้ไข",
+    },
+    "audit_action_target_set": {
+        "en": "target set",
+        "th": "ตั้งเป้าหมาย",
+    },
+    "audit_action_target_clear": {
+        "en": "target cleared",
+        "th": "ล้างเป้าหมาย",
+    },
+    "audit_action_remind_set": {
+        "en": "reminder times",
+        "th": "เวลาแจ้งเตือน",
+    },
+    "audit_action_remind_off": {
+        "en": "reminder off",
+        "th": "ปิดแจ้งเตือน",
+    },
+    "audit_action_remind_default": {
+        "en": "reminder reset",
+        "th": "รีเซ็ตแจ้งเตือน",
+    },
+    "audit_action_lang_set": {
+        "en": "language",
+        "th": "ภาษา",
+    },
+    "audit_action_quiet_set": {
+        "en": "quiet hours",
+        "th": "ช่วงเวลาเงียบ",
+    },
+    "audit_action_quiet_off": {
+        "en": "quiet hours off",
+        "th": "ปิดช่วงเวลาเงียบ",
+    },
+    "audit_action_user_approve": {
+        "en": "approved",
+        "th": "อนุมัติ",
+    },
+    "audit_action_user_block": {
+        "en": "blocked",
+        "th": "บล็อก",
+    },
+    "audit_action_user_pending": {
+        "en": "pending",
+        "th": "รอดำเนินการ",
+    },
 }

@@ -1,8 +1,9 @@
 # Habit-Tracking Assistant — Development Progress
 
-- **Current version:** 1.2.0
+- **Current version:** 1.3.0
 - **Repo:** remote: git@github.com:rattp117/Messaging-helper.git (origin; push every release — user decision 2026-08-21)
-- **Status:** ✅ v1.2.0 RELEASED — multi-user: chat-ID identity, /start onboarding + owner-approval allowlist, full per-user isolation (logs/streaks/targets/reminders/quiet/lang), per-user reminder schedules (/remind, minutely tick), /lang + /quiet. All 29 ACs PASS; suite 1325/0/1; integration Vera verdict PASS incl. migration rehearsal. Deployed via service bounce (migration 006 + owner attribution on live DB). Garmin: off until user sets `[garmin] csv_path`.
+- **Status:** ✅ v1.3.0 RELEASED — audit log: append-only audit_log (migration 007, additive), fail-open recorder, capture at all mutation sites (undo/edit/target/remind/lang/quiet/admin w/ target_user), owner-only /audit [N] + ประวัติ w/ 4096-char length budget + "… N more" footer, 365-day startup prune. All 15 ACs PASS; suite 1511/0/1; integration Vera PASS incl. migration rehearsal. Deployed via bounce. Garmin: off until `[garmin] csv_path`.
+- **Note:** re-approving an already-active user records an audit row (old=new) — by design (audit records the command, not just the change).
 - **Last updated:** 2026-08-21 · **Last commit:** v1.2.0
 
 ## Stack
@@ -34,6 +35,7 @@ Python 3.11+ (uv-managed venv) · asyncio · APScheduler (AsyncIOScheduler) · h
 | 1.0.1 | 2026-08-21 | Ops: Task Scheduler persistence (task "Habit Assistant", boot+logon, S4U, restart-on-failure); launcher now self-logs + single-instance guard (kills orphan pollers → no 409s); elevated bounce script | start-assistant.ps1, bounce-assistant.ps1 | v1.0.1 |
 | 1.1.0 | 2026-08-21 | Undo inline button on every confirmation + Telegram command menu (/undo /target /help /habits); per-habit targets: DB override via migration 005, deterministic /target + full-NL fail-closed LLM intent (2.5L→2500ml, EN/TH); /help + /habits discoverability; goal source consolidated into core/targets.effective_goal; all 40 ACs PASS, 959/0/1 incl. 6 repaired legacy flakes | channels/*, core/{targets,targets_command,target_nl,undo_ui,discoverability,commands,i18n,streaks,review,charts,reminders}.py, storage/{db,migrations}.py, llm/prompts.py, main.py, 12 test files | v1.1.0 |
 | 1.2.0 | 2026-08-21 | Multi-user: users table + migration 006 (sanctioned schema break: habit_targets rebuilt UNIQUE(user_id,habit_id)) + startup owner attribution; access gate (pending/approve/block, owner admin cmds, polite denial, notify-once); per-chat channel + callback ownership; per-user targets/streaks/review/summary/undo isolation (U-ISO); per-user reminder times (/remind + minutely tick, no-restart); /lang + /quiet (Thai aliases hardened: whitelist/registry-anchored after 2 Vera rounds); menu → 8 public cmds; all 29 ACs PASS, 1325/0/1 | storage/*, channels/*, core/{access,preferences,schedules,reminders,commands,i18n,...}.py, main.py, config.toml, 20+ test files | v1.2.0 |
+| 1.3.0 | 2026-08-22 | Audit log: append-only audit_log (migration 007) w/ actor/action/entity/old→new/source/target_user; fail-open recorder (core/audit.py); capture at undo/edit/target/remind/lang/quiet/approve/block/invite/onboard (mutations only, privacy-safe); owner-only /audit [N] + ประวัติ viewer (bilingual, LLM-free, 4096-char budget + overflow footer after Vera-found bug); retention_days=365 startup prune; all 15 ACs PASS, 1511/0/1 | storage/{migrations,db,models}.py, core/{audit,audit_view,commands,i18n,undo_ui,targets_command,schedules,preferences,access}.py, main.py, config.py, config.toml, 6 test files | v1.3.0 |
 
 ## Decisions
 - 2026-08-19 — **User update: runtime host is this Windows box** (24/7), with Ollama remote at `http://mac-mini:11434` (verified reachable). Default model `qwen3.5:9b-mlx`. Windows keep-alive via Task Scheduler + launcher script; launchd plist kept as alternative macOS deploy.

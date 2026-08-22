@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from habit_assistant.core import i18n
+from habit_assistant.core import audit, i18n
 from habit_assistant.core import targets
 
 if TYPE_CHECKING:
@@ -110,13 +110,28 @@ def _render_show_all(
     return "\n".join(lines)
 
 
-def _execute_clear(db: "Database", config: "Config", habit: "Habit", lang: i18n.Language, user_id: str) -> str:
+def _execute_clear(
+    db: "Database", config: "Config", habit: "Habit", lang: i18n.Language, user_id: str, source: str
+) -> str:
     default_goal = targets.config_goal(habit, config)
+    # SPEC-v1.3.md §2.1: target_clear's old_value is the prior OVERRIDE
+    # (db.get_target, raw), not the prior effective goal -- distinct from
+    # target_set below, which records the prior effective goal instead.
+    previous_override = db.get_target(user_id, habit.id)
     try:
         db.clear_target(user_id, habit.id)
     except Exception:
         logger.exception("Failed to clear target for user %r habit %r", user_id, habit.id)
         return i18n.t("target_save_failed", lang)
+    audit.record(
+        db,
+        actor=user_id,
+        action="target_clear",
+        source=source,
+        entity=habit.id,
+        old_value=previous_override,
+        new_value=None,
+    )
 
     if default_goal is None:
         return i18n.t("target_cleared_nogoal", lang, label=habit.label(lang))
@@ -125,7 +140,13 @@ def _execute_clear(db: "Database", config: "Config", habit: "Habit", lang: i18n.
 
 
 def _execute_set(
-    db: "Database", config: "Config", habit: "Habit", value_num: float | None, lang: i18n.Language, user_id: str
+    db: "Database",
+    config: "Config",
+    habit: "Habit",
+    value_num: float | None,
+    lang: i18n.Language,
+    user_id: str,
+    source: str,
 ) -> str:
     if value_num is None or value_num <= 0:
         return i18n.t(
@@ -141,6 +162,15 @@ def _execute_set(
     except Exception:
         logger.exception("Failed to set target for user %r habit %r", user_id, habit.id)
         return i18n.t("target_save_failed", lang)
+    audit.record(
+        db,
+        actor=user_id,
+        action="target_set",
+        source=source,
+        entity=habit.id,
+        old_value=previous_goal,
+        new_value=value_num,
+    )
 
     return i18n.t("target_set", lang, label=habit.label(lang), goal=value_num, unit=unit, previous=previous_text)
 
@@ -153,6 +183,7 @@ async def execute_target(
     registry: "HabitRegistry",
     lang: i18n.Language,
     user_id: str,
+    source: str = "command",
 ) -> str:
     """Validate and perform the target op described by `command`
     (`core/commands.dispatch`'s `kind="target"` output, or an equivalent
@@ -161,7 +192,14 @@ async def execute_target(
     every failure mode -- unknown habit, non-goalable habit, invalid
     value, a DB write error -- resolves to a friendly catalog message.
     SPEC-v1.2.md R-D2: every DB read/write here is scoped to `user_id` --
-    two users' targets for the same habit are fully independent (AC-U1)."""
+    two users' targets for the same habit are fully independent (AC-U1).
+
+    SPEC-v1.3.md R-C1: `source` defaults to `"command"` -- `main.py`'s
+    integration wiring passes `"nl"` for the full-NL target-intent path
+    (`core/target_nl.classify_target_intent`); every other caller (the
+    deterministic `/target` command) keeps the default. Only `set`/`clear`
+    write to the DB and record an audit row; `show`/`show_all`/`usage` are
+    read-only (AC-C7, §2.2) and never call `audit.record`."""
     if command.target_action is None or command.target_action == "usage":
         return i18n.t("target_usage", lang)
 
@@ -179,8 +217,8 @@ async def execute_target(
     if command.target_action == "show":
         return _render_show(db, config, habit, lang, user_id)
     if command.target_action == "clear":
-        return _execute_clear(db, config, habit, lang, user_id)
+        return _execute_clear(db, config, habit, lang, user_id, source)
     if command.target_action == "set":
-        return _execute_set(db, config, habit, command.value_num, lang, user_id)
+        return _execute_set(db, config, habit, command.value_num, lang, user_id, source)
 
     return i18n.t("target_usage", lang)  # defensive, unreachable given Command's Literal type

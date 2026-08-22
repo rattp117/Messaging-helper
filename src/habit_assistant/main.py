@@ -26,6 +26,8 @@ from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
 from habit_assistant.core import (
     access,
+    audit,
+    audit_view,
     commands,
     discoverability,
     i18n,
@@ -255,6 +257,21 @@ async def _execute_edit(
         return
 
     db.update_value(row["id"], value_num=command.value_num)
+    # SPEC-v1.3.md R-C1/AC-C2 (integration step): the one capture site that
+    # belongs to main.py itself rather than either parallel audit module --
+    # `row` was fetched above BEFORE the write, so `row["value_num"]` is
+    # still the pre-update value here, exactly like every other capture
+    # site's own "read old, write, record" shape (core/audit.py's own
+    # fail-open contract -- no try/except needed around this call).
+    audit.record(
+        db,
+        actor=user_id,
+        action="edit",
+        source="command",
+        entity=command.category,
+        old_value=row["value_num"],
+        new_value=command.value_num,
+    )
     today_str = clock().date().isoformat()
     habit = registry.get(command.category)
 
@@ -758,8 +775,14 @@ async def handle_inbound_message(
                     value_num=intent.goal_base_unit,
                     target_action="set",
                 )
+                # SPEC-v1.3.md §2.1/R-C1 (integration step): the full-NL
+                # path is the one `target_set` call site that must NOT
+                # default to "command" -- distinguishing "/target water
+                # 2000" from "from now on I want to drink 2.5L a day" in
+                # the audit trail is the entire point of `source`'s
+                # existence for this action.
                 reply = await targets_command.execute_target(
-                    set_command, db=db, config=config, registry=registry, lang=lang, user_id=user_id
+                    set_command, db=db, config=config, registry=registry, lang=lang, user_id=user_id, source="nl"
                 )
                 if dry_run:
                     print(reply)
@@ -1074,6 +1097,18 @@ async def async_main(args: argparse.Namespace) -> None:
     # first run this is a no-op (AC-M2), so it's safe to call on every
     # startup unconditionally.
     db.attribute_legacy_to_owner(secrets.telegram_chat_id)
+    # SPEC-v1.3.md R-W3: retention, run ONCE at startup (cheap housekeeping,
+    # not per-insert) -- `retention_days = 0` means "keep forever", so
+    # skip the DELETE (and the cutoff computation) entirely rather than
+    # passing a cutoff that would prune nothing anyway; pruning itself is
+    # NOT audited (R-W3's own explicit carve-out -- no `audit.record` call
+    # here). Placed right after `attribute_legacy_to_owner` -- both are
+    # "once, at real-process startup" housekeeping over the same `db`.
+    if config.audit.retention_days > 0:
+        cutoff = (datetime.now() - timedelta(days=config.audit.retention_days)).isoformat(timespec="seconds")
+        pruned = db.prune_audit(cutoff)
+        if pruned:
+            logger.info("Pruned %d audit_log row(s) older than %s (retention_days=%d)", pruned, cutoff, config.audit.retention_days)
     llm = OllamaClient(
         config.ollama.base_url,
         config.ollama.model_chain,
@@ -1357,6 +1392,25 @@ async def async_main(args: argparse.Namespace) -> None:
                 chat_id=chat_id,
                 lang=lang,
             )
+            return
+
+        # SPEC-v1.3.md R-V3 (integration step): `/audit` is owner-only,
+        # same "intercept here, before handle_inbound_message" reasoning
+        # as the admin block above -- LLM-free, must work with Ollama
+        # down, and `audit_view.render_recent` needs `owner_chat_id`
+        # (to render the owner's own rows as "you"), which `handle_
+        # inbound_message` doesn't have. A non-owner gets NO reply at
+        # all (reveals nothing, same posture as approve/block/users/
+        # invite) -- `access.classify` re-checked here even though
+        # `handle_gate` already let this chat proceed (active does not
+        # imply owner, the same belt-and-suspenders `execute_admin`
+        # itself already applies to its own four owner-only kinds).
+        if command is not None and command.kind == "audit":
+            if access.classify(db, chat_id) == "owner":
+                reply = audit_view.render_recent(
+                    db, config, lang, limit=command.limit, owner_chat_id=secrets.telegram_chat_id
+                )
+                await channel.send(chat_id, reply)
             return
 
         await handle_inbound_message(

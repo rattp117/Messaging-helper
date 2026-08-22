@@ -1168,7 +1168,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 6
+        assert db.schema_version == 7  # SPEC-v1.3.md's additive migration 007 (audit_log) also lands now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

@@ -766,21 +766,20 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_6(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.2.md
-    "Multi-user support" (migration 006: users/logs.user_id/habit_targets
-    rebuild/user_reminder_times) there are exactly 6 migrations, and a
-    fresh DB must land on version 6. Bump this literal deliberately the
-    next time a migration is added -- unlike a bare `== len(MIGRATIONS)`
-    comparison, this fails if a migration is silently added/removed
-    without the test being updated.
-    CHANGED (v1.2.0): was `== 5` / `test_..._schema_version_5` before
-    migration 006 (multi-user) was added -- see IMPL-v1.2-shared.md."""
-    assert len(MIGRATIONS) == 6
+def test_fresh_db_migrates_to_schema_version_7(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.3.md
+    "Audit log" (migration 007: audit_log + its indexes, purely additive)
+    there are exactly 7 migrations, and a fresh DB must land on version
+    7. Bump this literal deliberately the next time a migration is added
+    -- unlike a bare `== len(MIGRATIONS)` comparison, this fails if a
+    migration is silently added/removed without the test being updated.
+    CHANGED (v1.3.0): was `== 6` / `test_..._schema_version_6` before
+    migration 007 (audit log) was added -- see IMPL-v1.3-shared.md."""
+    assert len(MIGRATIONS) == 7
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 6
+    assert database.schema_version == 7
     database.close()
 
 

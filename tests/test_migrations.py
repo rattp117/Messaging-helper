@@ -296,17 +296,18 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     conn.close()
 
     # Open through the real Database class -- this also runs migrations 005
-    # (SPEC-v1.1.md, additive `habit_targets`) and 006 (SPEC-v1.2.md,
-    # `users`/`logs.user_id`/habit_targets rebuild/`user_reminder_times`)
-    # since both are now unconditionally part of MIGRATIONS; a v3-shaped DB
-    # opened today lands on version 6, not 4, but everything asserted below
-    # about migration 004's own effect (habit_type backfill, untouched logs
-    # rows) still holds -- migration 006's `logs.user_id` column addition
-    # doesn't touch the columns selected below.
+    # (SPEC-v1.1.md, additive `habit_targets`), 006 (SPEC-v1.2.md,
+    # `users`/`logs.user_id`/habit_targets rebuild/`user_reminder_times`),
+    # and 007 (SPEC-v1.3.md, additive `audit_log`) since all three are now
+    # unconditionally part of MIGRATIONS; a v3-shaped DB opened today lands
+    # on version 7, not 4, but everything asserted below about migration
+    # 004's own effect (habit_type backfill, untouched logs rows) still
+    # holds -- neither 006's `logs.user_id` column addition nor 007's new
+    # `audit_log` table touches the columns selected below.
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 6
+    assert db.schema_version == 7
 
     after_rows = [
         tuple(r)
@@ -328,8 +329,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 6
-    assert reopened.schema_version == 6
+    assert reopened.schema_version_before == 7
+    assert reopened.schema_version == 7
     reopened.close()
 
 
@@ -350,12 +351,13 @@ def test_fresh_db_has_habit_type_column(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_db_reports_schema_version_6_with_habit_targets_table(tmp_path):
-    # SPEC-v1.2.md added migration 006 after this one (005); a fresh DB now
-    # lands on version 6, and habit_targets was rebuilt with a surrogate
-    # `id` PK + `user_id` (R-M1) instead of the old `habit_id`-only PK.
+def test_fresh_db_reports_schema_version_7_with_habit_targets_table(tmp_path):
+    # SPEC-v1.2.md added migration 006 (this test's own focus, habit_
+    # targets rebuilt with a surrogate `id` PK + `user_id`, R-M1) and
+    # SPEC-v1.3.md then added migration 007 (audit_log, additive) after
+    # it; a fresh DB now lands on version 7, not 6.
     db = Database(tmp_path / "fresh_v6.db")
-    assert db.schema_version == 6
+    assert db.schema_version == 7
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
@@ -406,11 +408,12 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     db = Database(db_path)
 
-    # SPEC-v1.2.md: opening a v4-shaped DB today also applies migration 006
-    # (users/logs.user_id/habit_targets rebuild/user_reminder_times), so it
-    # lands on version 6, not 5.
+    # SPEC-v1.2.md/SPEC-v1.3.md: opening a v4-shaped DB today also applies
+    # migration 006 (users/logs.user_id/habit_targets rebuild/
+    # user_reminder_times) and migration 007 (audit_log), so it lands on
+    # version 7, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 6
+    assert db.schema_version == 7
 
     after_rows = [
         tuple(r)
@@ -426,8 +429,8 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 6
-    assert reopened.schema_version == 6
+    assert reopened.schema_version_before == 7
+    assert reopened.schema_version == 7
     reopened.close()
 
 
@@ -573,8 +576,12 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     db = Database(db_path)
 
+    # SPEC-v1.3.md added migration 007 (audit_log, additive) after this
+    # one; a v5-shaped DB opened today lands on version 7, not 6, but
+    # everything asserted below about migration 006's own effect (users/
+    # logs.user_id/habit_targets rebuild/user_reminder_times) still holds.
     assert db.schema_version_before == 5
-    assert db.schema_version == 6
+    assert db.schema_version == 7
 
     # logs values preserved, byte-for-byte; new user_id column present and NULL.
     after_logs = [
@@ -608,8 +615,8 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     # Re-running (reopen) applies nothing further (idempotent, AC-M1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 6
-    assert reopened.schema_version == 6
+    assert reopened.schema_version_before == 7
+    assert reopened.schema_version == 7
     reopened.close()
 
 
@@ -624,6 +631,183 @@ def test_fresh_db_has_users_and_user_reminder_times_tables(tmp_path):
     }
     reminder_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(user_reminder_times)").fetchall()}
     assert reminder_cols == {"user_id", "habit_id", "time"}
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.3.md "Audit log" (AC-A1): migration 007 -- `audit_log` + its two
+# indexes, PURELY additive (unlike 006, the one sanctioned break -- this
+# migration touches no existing table/column/row at all). Built on a
+# v6-shaped DB, never the live `data/habits.db`.
+# ---------------------------------------------------------------------------
+
+
+def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_path):
+    db_path = tmp_path / "v6_copy.db"
+
+    # Hand-build a v6-shaped DB (migrations 001-006 already applied): the
+    # full pre-audit-log multiuser schema, user_version=6, with a real
+    # user + log + target row so "touches no existing row" is actually
+    # exercised, not just asserted against an empty DB.
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL,
+          habit_type  TEXT NULL,
+          user_id     TEXT NULL
+        );
+        CREATE INDEX idx_logs_ts_cat ON logs(ts, category);
+        CREATE INDEX idx_logs_category ON logs(category);
+        CREATE INDEX idx_logs_deleted_at ON logs(deleted_at);
+        CREATE INDEX idx_logs_user ON logs(user_id, category, ts);
+        CREATE TABLE habit_targets (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    TEXT,
+          habit_id   TEXT NOT NULL,
+          goal       REAL NOT NULL,
+          updated_at TEXT,
+          UNIQUE(user_id, habit_id)
+        );
+        CREATE TABLE users (
+          chat_id                TEXT PRIMARY KEY,
+          role                   TEXT NOT NULL DEFAULT 'member',
+          status                 TEXT NOT NULL DEFAULT 'pending',
+          display_name           TEXT,
+          language_pref          TEXT NOT NULL DEFAULT 'auto',
+          quiet_hours_json       TEXT,
+          snooze_default_minutes INTEGER,
+          created_at             TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE TABLE user_reminder_times (
+          user_id  TEXT NOT NULL,
+          habit_id TEXT NOT NULL,
+          time     TEXT NOT NULL,
+          PRIMARY KEY (user_id, habit_id, time)
+        );
+        PRAGMA user_version = 6;
+        """
+    )
+    conn.execute(
+        "INSERT INTO users (chat_id, role, status) VALUES ('owner-chat-id', 'owner', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO logs (ts, category, value_num, value_text, raw_message, source, habit_type, user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("2026-08-10T09:00:00", "water", 500.0, None, "500ml", "reply", "numeric", "owner-chat-id"),
+    )
+    conn.execute(
+        "INSERT INTO habit_targets (user_id, habit_id, goal) VALUES ('owner-chat-id', 'water', 2500.0)"
+    )
+    conn.commit()
+    before_users = [tuple(r) for r in conn.execute("SELECT chat_id, role, status FROM users")]
+    before_logs = [
+        tuple(r) for r in conn.execute("SELECT id, ts, category, value_num, user_id FROM logs ORDER BY id")
+    ]
+    before_targets = [tuple(r) for r in conn.execute("SELECT id, user_id, habit_id, goal FROM habit_targets")]
+    assert current_version(conn) == 6
+    conn.close()
+
+    # Open through the real Database class -- migration 007 runs here.
+    db = Database(db_path)
+
+    assert db.schema_version_before == 6
+    assert db.schema_version == 7
+
+    # Every pre-existing table/row is untouched, byte-for-byte -- the
+    # additive-only guarantee AC-A1 requires (unlike 006's own sanctioned
+    # rebuild of habit_targets, this migration rebuilds nothing).
+    after_users = [tuple(r) for r in db._conn.execute("SELECT chat_id, role, status FROM users")]
+    after_logs = [
+        tuple(r) for r in db._conn.execute("SELECT id, ts, category, value_num, user_id FROM logs ORDER BY id")
+    ]
+    after_targets = [tuple(r) for r in db._conn.execute("SELECT id, user_id, habit_id, goal FROM habit_targets")]
+    assert after_users == before_users
+    assert after_logs == before_logs
+    assert after_targets == before_targets
+
+    # The new table + both indexes exist, with exactly the columns R-M1 specifies.
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "audit_log" in tables
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    assert cols == {
+        "id", "ts", "user_id", "action", "entity", "old_value", "new_value",
+        "source", "target_user_id", "created_at",
+    }
+    indexes = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"idx_audit_ts", "idx_audit_user"} <= indexes
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()["n"] == 0
+    db.close()
+
+    # Re-running (reopen) applies nothing further (idempotent, AC-A1).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 7
+    assert reopened.schema_version == 7
+    reopened.close()
+
+
+def test_fresh_db_has_audit_log_table_with_expected_shape(tmp_path):
+    db = Database(tmp_path / "fresh_v7.db")
+    assert db.schema_version == 7
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "audit_log" in tables
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    assert cols == {
+        "id", "ts", "user_id", "action", "entity", "old_value", "new_value",
+        "source", "target_user_id", "created_at",
+    }
+    db.close()
+
+
+def test_insert_recent_and_prune_audit_round_trip(tmp_path):
+    """`storage/db.py`'s three audit accessors, exercised directly against
+    a real on-disk DB -- the actual round-trip `core/audit.py:record`
+    (tested separately) builds on top of."""
+    from datetime import datetime, timedelta
+
+    from habit_assistant.storage.models import AuditEntry
+
+    db = Database(tmp_path / "audit_accessors.db")
+
+    row_id = db.insert_audit(
+        AuditEntry(
+            id=None,
+            ts="2026-08-20T09:00:00",
+            user_id="owner-chat-id",
+            action="target_set",
+            entity="water",
+            old_value="2500",
+            new_value="2000",
+            source="command",
+        )
+    )
+    assert isinstance(row_id, int) and row_id > 0
+
+    old_ts = (datetime.now() - timedelta(days=400)).isoformat(timespec="seconds")
+    db.insert_audit(
+        AuditEntry(None, old_ts, "owner-chat-id", "undo", "water", "500", None, "button")
+    )
+
+    recent = db.recent_audit(10)
+    assert len(recent) == 2
+    assert recent[0]["action"] == "undo"  # newest first (id DESC)
+    assert recent[1]["action"] == "target_set"
+
+    cutoff = (datetime.now() - timedelta(days=365)).isoformat(timespec="seconds")
+    pruned = db.prune_audit(cutoff)
+    assert pruned == 1  # only the 400-day-old row
+
+    remaining = db.recent_audit(10)
+    assert len(remaining) == 1
+    assert remaining[0]["action"] == "target_set"
     db.close()
 
 
