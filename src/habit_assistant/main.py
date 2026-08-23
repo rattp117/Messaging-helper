@@ -30,6 +30,7 @@ from habit_assistant.core import (
     audit_view,
     commands,
     discoverability,
+    history_view,
     i18n,
     preferences,
     query,
@@ -147,6 +148,12 @@ QUIET_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
 REMIND_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "View or set your reminder times for a habit",
     "th": "ดูหรือตั้งเวลาแจ้งเตือนของกิจกรรม",
+}
+# SPEC-v1.4.md §4 R-A2/§9 item 1: `/history` is the caller's OWN data
+# (unlike owner-only, admin-hidden `/audit`) -- added to the PUBLIC menu.
+HISTORY_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Show your recent entries (including undone ones)",
+    "th": "ดูรายการล่าสุดของคุณ (รวมรายการที่ยกเลิกแล้ว)",
 }
 
 
@@ -734,6 +741,23 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "history":
+            # SPEC-v1.4.md R-A1: deterministic, LLM-free, read-only, and --
+            # unlike `/audit` -- available to ANY active user for their OWN
+            # data (no owner check; the access gate in `on_message` already
+            # established this chat is active before `handle_inbound_
+            # message` was ever called). Same "before the deferral check"
+            # placement as `help`/`habits`/`target` above, so it works with
+            # Ollama down.
+            reply = history_view.render_history(
+                db, config, registry, lang, user_id=user_id, category=command.category, limit=command.limit
+            )
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
         if dry_run:
             print({"kind": command.kind, "category": command.category, "value_num": command.value_num})
             return
@@ -1186,16 +1210,17 @@ async def async_main(args: argparse.Namespace) -> None:
     except Exception:
         logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
 
-    # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11
-    # integration step: register the bot command menu once at startup --
-    # `/start` + `/undo` (undo_ui's own contribution) + `/target` (this
-    # integration step's, see TARGET_COMMAND_DESCRIPTIONS above) + `/help`
-    # + `/habits` (discoverability) + `/remind` + `/lang` + `/quiet` (see
-    # START_/REMIND_/LANG_/QUIET_COMMAND_DESCRIPTIONS above for why the
-    # four true admin commands are deliberately excluded), English
-    # default + a Thai set. A transport error here is logged and never
-    # crashes startup (AC2) -- same belt-and-suspenders posture as the
-    # schema-conformance probe just above.
+    # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11 and
+    # SPEC-v1.4.md R-A2 integration steps: register the bot command menu
+    # once at startup -- `/start` + `/undo` (undo_ui's own contribution) +
+    # `/target` (this integration step's, see TARGET_COMMAND_DESCRIPTIONS
+    # above) + `/help` + `/habits` (discoverability) + `/remind` + `/lang`
+    # + `/quiet` + `/history` (see START_/REMIND_/LANG_/QUIET_/HISTORY_
+    # COMMAND_DESCRIPTIONS above for why the four true admin commands --
+    # and owner-only `/audit` -- are deliberately excluded), English
+    # default + a Thai set. 9 public commands total. A transport error
+    # here is logged and never crashes startup (AC2) -- same belt-and-
+    # suspenders posture as the schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
         lang: (
@@ -1206,6 +1231,7 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("remind", REMIND_COMMAND_DESCRIPTIONS[lang])]
             + [("lang", LANG_COMMAND_DESCRIPTIONS[lang])]
             + [("quiet", QUIET_COMMAND_DESCRIPTIONS[lang])]
+            + [("history", HISTORY_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }

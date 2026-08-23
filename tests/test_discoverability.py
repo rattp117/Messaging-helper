@@ -912,7 +912,12 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     `invite`, R-A4, owner-only) are deliberately excluded from this
     GLOBAL menu (`setMyCommands` has no per-chat scoping, R-C1) -- this
     test's exact-set check is exactly what would catch one of them
-    leaking in by accident."""
+    leaking in by accident.
+
+    UPDATED AGAIN at SPEC-v1.4.md's own integration step (IMPL-v1.4.md):
+    `history` joined the public menu too (9 total) -- unlike owner-only,
+    admin-hidden `/audit` (SPEC-v1.3.md), `/history` is every active
+    user's own data (R-A2)."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -922,7 +927,7 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
 
     channel = _AsyncMainFakeChannel.last_instance
     registered = channel.set_my_commands_calls[0]
-    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet"}
+    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
         assert set(names) == expected, f"{lang}: {names}"

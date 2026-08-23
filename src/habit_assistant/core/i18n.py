@@ -1000,4 +1000,43 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "pending",
         "th": "รอดำเนินการ",
     },
+
+    # -----------------------------------------------------------------
+    # Module `history` (/history, ย้อนหลัง -- SPEC-v1.4.md R-R1-R-R5,
+    # core/history_view.py). Disjoint from every `audit_*` key above --
+    # this module owns its own catalog block, same convention as every
+    # other parallel/sequential module before it. `history_line`'s
+    # `{undone}` is either "" (a live row) or the localized
+    # `history_undone_marker` text (a soft-deleted row) -- the marker
+    # itself carries its own leading spacing so `history_line`'s template
+    # doesn't need a conditional space.
+    # -----------------------------------------------------------------
+    "history_header": {
+        "en": "🧾 Your last {limit} entries:",
+        "th": "🧾 {limit} รายการล่าสุดของคุณ:",
+    },
+    "history_header_filtered": {
+        "en": "🧾 Your last {limit} {habit} entries:",
+        "th": "🧾 {limit} รายการล่าสุดของ{habit}",
+    },
+    "history_line": {
+        "en": '• {ts} · {description} · "{message}"{undone}',
+        "th": '• {ts} · {description} · "{message}"{undone}',
+    },
+    "history_undone_marker": {
+        "en": "  (undone)",
+        "th": "  (ยกเลิกแล้ว)",
+    },
+    "history_empty": {
+        "en": "🧾 No entries yet.",
+        "th": "🧾 ยังไม่มีรายการนะ",
+    },
+    "history_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "history_more_rows": {
+        "en": "… {count} more",
+        "th": "… อีก {count} รายการ",
+    },
 }

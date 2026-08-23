@@ -583,7 +583,9 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
     registered = channel.set_my_commands_calls[0]
     for lang, entries in registered.items():
         names = {name for name, _desc in entries}
-        assert names == {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet"}
+        # SPEC-v1.4.md's own integration step added "history" to this set
+        # (R-A2 -- every active user's own data, unlike owner-only /audit).
+        assert names == {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history"}
         assert not names & {"approve", "block", "users", "invite"}
 
 

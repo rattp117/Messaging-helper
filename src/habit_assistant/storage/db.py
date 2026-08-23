@@ -115,6 +115,37 @@ class Database:
             (user_id, start_ts, end_ts),
         ).fetchall()
 
+    def recent_logs(self, user_id: str, limit: int, category: str | None = None) -> list[sqlite3.Row]:
+        """SPEC-v1.4.md R-D1 (module `history`, `/history [N]`): `user_id`'s
+        most recent logged entries, newest-first (`ORDER BY ts DESC, id
+        DESC` -- the same tie-break convention `last_log` already uses, so
+        two entries sharing a `ts` still resolve deterministically to
+        "most recently inserted"). Two deliberate differences from every
+        OTHER read in this file:
+        - Does **NOT** filter `deleted_at IS NULL` -- a soft-deleted
+          (undone) entry is still part of the caller's own history and
+          must be shown, clearly marked (`history_view.py`'s job), not
+          silently hidden the way every aggregation query hides it.
+        - **Excludes** `category = 'unparsed'` unconditionally (even when
+          `category` is not given) -- a deferred/still-unparsed row was
+          never a confirmed entry (SPEC-v1.4.md §4 R-D1's own "item 5,
+          recommended default"), so it has no place in a statement of
+          what the user actually logged.
+        `category`, when given, filters to exactly that habit id (the
+        optional `/history <habit> [N]` filter, R-D2) -- `None` means
+        every habit. Strictly scoped to `user_id` (U-ISO, AC-9)."""
+        if category is None:
+            return self._conn.execute(
+                "SELECT * FROM logs WHERE user_id = ? AND category != 'unparsed' "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM logs WHERE user_id = ? AND category != 'unparsed' AND category = ? "
+            "ORDER BY ts DESC, id DESC LIMIT ?",
+            (user_id, category, limit),
+        ).fetchall()
+
     def pending_unparsed(self) -> list[sqlite3.Row]:
         """ROADMAP.md v0.4.0 AC3.3: rows deferred while the LLM was
         unavailable, still waiting to be re-parsed. A plain query against

@@ -26,6 +26,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from habit_assistant.core import i18n
+from habit_assistant.core.render_budget import MAX_VALUE_CHARS, TELEGRAM_MESSAGE_BUDGET, fit_within_budget
+from habit_assistant.core.render_budget import truncate as _truncate
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -37,26 +39,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
 
-# TEST-v1.3-view.md's finding: the 50-row cap alone does not bound message
-# length -- a plausible mix of `remind_set` edits at 50 rows already
-# exceeds Telegram's hard `sendMessage` limit (`channels/telegram.py:
-# send()` posts `text` as-is, no chunking). Two independent mitigations,
-# both scoped entirely to this module:
-#   1. `_MAX_VALUE_CHARS` -- per-value truncation (SPEC-v1.3.md §9: "the
-#      viewer truncates the value display"), keeps a pathologically long
-#      single old/new value (e.g. a MAX_REMINDER_TIMES=24 schedule) from
-#      dominating one row.
-#   2. `_TELEGRAM_MESSAGE_BUDGET` -- a STRUCTURAL total-length guard
-#      (`_fit_within_budget`): the actual guarantee. Per-value truncation
-#      alone does not bound the TOTAL message (50 rows of even short,
-#      untruncated values can still add up past 4096 -- exactly Vera's
-#      failing case, each row's value well under the per-value cap), so
-#      `render_recent` always verifies the fully-rendered message against
-#      this budget and drops the oldest shown rows (the tail of a
-#      newest-first list) until it fits, appending a bilingual "N more"
-#      footer -- regardless of which field caused the overflow.
-_MAX_VALUE_CHARS = 60
-_TELEGRAM_MESSAGE_BUDGET = 4096
+# SPEC-v1.4.md R-B1/R-B2: the length-budget machinery below (per-value
+# truncation + the structural total-message-length guard,
+# TEST-v1.3-view.md's own finding that the 50-row cap alone does not
+# bound message length) now lives in `core/render_budget.py`, shared with
+# `core/history_view.py` (v1.4.0) -- imported above, not redefined here.
+# This module keeps only the two aliases (`_truncate`, and
+# `_MAX_VALUE_CHARS`/`_TELEGRAM_MESSAGE_BUDGET` below) so every call site
+# already written against this file's own private names needed zero
+# further edits -- a pure extract-and-delegate, output byte-identical
+# (AC-3, the regression guard is the existing audit-view test suite
+# passing unmodified).
+_MAX_VALUE_CHARS = MAX_VALUE_CHARS
+_TELEGRAM_MESSAGE_BUDGET = TELEGRAM_MESSAGE_BUDGET
 
 # `core/audit.py:ACTIONS`'s 13 values -> the i18n catalog id for their
 # localized label (R-V2: "Action/labels localize via core/i18n.py").
@@ -95,17 +90,6 @@ def _effective_limit(limit: int | None) -> int:
     if limit is None:
         return DEFAULT_LIMIT
     return min(limit, MAX_LIMIT)
-
-
-def _truncate(text: str, max_chars: int = _MAX_VALUE_CHARS) -> str:
-    """SPEC-v1.3.md §9: "the viewer truncates the value display." A single
-    ellipsis character replaces the tail past `max_chars` -- no attempt to
-    cut on a nicer boundary (item/word), since this is a technical log
-    view (mirrors `core/undo_ui.py:describe_log`'s own diary-snippet
-    truncation, which is likewise a flat character cut, not word-aware)."""
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 1] + "…"
 
 
 def _humanize_stored_value(raw: str | None) -> str:
@@ -192,33 +176,13 @@ def _detail(row) -> str:
 
 
 def _fit_within_budget(header: str, row_lines: list[str], lang: i18n.Language) -> str:
-    """TEST-v1.3-view.md's finding: the 50-row cap plus per-value
-    truncation (`_humanize_stored_value`) still does not structurally
-    bound the TOTAL message -- many short, untruncated rows can add up
-    past Telegram's `_TELEGRAM_MESSAGE_BUDGET` just as easily as a few
-    long ones. This is the actual guarantee: drop the OLDEST shown rows
-    (the tail of `row_lines`, since `render_recent` builds it
-    newest-first) one at a time until `header` + the kept rows + a
-    bilingual "N more" footer fits, so the caller's `channel.send` never
-    receives a message `channels/telegram.py` would get a 400 back for.
-    `row_lines` is never empty when this is called (`render_recent` only
-    calls it after confirming the FULL message overflows, which requires
-    at least one row)."""
-    kept = list(row_lines)
-    while True:
-        dropped = len(row_lines) - len(kept)
-        parts = [header, *kept]
-        if dropped:
-            parts.append(i18n.t("audit_more_rows", lang, count=dropped))
-        candidate = "\n".join(parts)
-        if len(candidate) <= _TELEGRAM_MESSAGE_BUDGET or not kept:
-            # `not kept` is a defensive floor, not a reachable case in
-            # practice: header + one footer line is well under the budget
-            # by construction (both are short, fixed-shape catalog
-            # strings), so the loop above always finds a fit before
-            # `kept` empties out.
-            return candidate
-        kept.pop()
+    """SPEC-v1.4.md R-B1/R-B2: thin wrapper over the now-shared
+    `render_budget.fit_within_budget`, supplying the bilingual
+    `audit_more_rows` footer this module owns -- the length/drop logic
+    itself lives in `core/render_budget.py` (shared with `core/
+    history_view.py`'s own `history_more_rows` footer). Output
+    byte-identical to the pre-extraction inline version (AC-3)."""
+    return fit_within_budget(header, row_lines, render_footer=lambda dropped: i18n.t("audit_more_rows", lang, count=dropped))
 
 
 def render_recent(db: "Database", config: "Config", lang: i18n.Language, *, limit: int | None, owner_chat_id: str) -> str:

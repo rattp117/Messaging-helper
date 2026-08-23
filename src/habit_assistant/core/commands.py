@@ -240,13 +240,18 @@ CommandKind = Literal[
     "remind",
     # module `audit-view` (SPEC-v1.3.md R-V1): /audit.
     "audit",
+    # module `history` (SPEC-v1.4.md R-D2): /history. Reuses Command's
+    # existing `category` (habit filter, or an unresolved token flagged
+    # for `history_view.render_history`'s own `history_invalid_habit`
+    # reply) and `limit` fields (the parsed N) -- no new fields needed.
+    "history",
 ]
 
 
 @dataclass(slots=True)
 class Command:
     kind: CommandKind
-    category: str | None = None  # a configured habit id -- "edit", and "target" (set/show/clear)
+    category: str | None = None  # a configured habit id -- "edit", "target" (set/show/clear), and "history" (filter)
     value_num: float | None = None  # new value -- "edit", and "target" (the new goal, in base unit) for "set"
     minutes: int | None = None  # explicit snooze minutes -- only set for "snooze"; None = use the configured default
     # SPEC-v1.1.md §5: which target operation -- only set for kind="target".
@@ -270,7 +275,9 @@ class Command:
     # "audit" (e.g. "/audit 5" -> 5). `None` for a bare "/audit"/"ประวัติ",
     # a non-numeric tail ("/audit abc"), or any other unparsed tail --
     # `core/audit_view.render_recent` treats `None` as "use the default
-    # limit" (R-V2).
+    # limit" (R-V2). SPEC-v1.4.md §5 (module `history`, R-D2): reused
+    # verbatim for "history"'s own parsed N -- same "None = default limit"
+    # contract, this time honored by `core/history_view.render_history`.
     limit: int | None = None
 
 
@@ -751,6 +758,106 @@ def _match_audit(stripped: str) -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# history -- SPEC-v1.4.md §4 R-D2 (module `history`). `/history [<habit>]
+# [<N>]`, plus the Thai alias `ย้อนหลัง` ("retrospective/past" -- NOT
+# `ประวัติ`, which `/audit` already owns, AC-5's own explicit "must not
+# collide" requirement). Tail grammar (SPEC-v1.4.md §2.1), in order:
+# [<habit>] [<N>] -- first token a registry habit id/label -> filter; else
+# digits -> N; a second \d+ token after a resolved habit -> N.
+#
+# The slash form stays fully permissive (mirrors `/target`/`/remind`/
+# `/audit`'s own posture -- nobody types "/history" by accident, so any
+# tail, however malformed, still produces a Command; an unresolved first
+# token is carried through raw via `_resolve_target_category`'s own
+# "resolved id, else the raw lowercased token" fallback, letting
+# `history_view.render_history`'s own `registry.get(category)` check
+# report the friendly `history_invalid_habit` reply -- same recognize-
+# shape-here/validate-there split as `/target`'s AC16 pattern).
+#
+# The Thai alias `ย้อนหลัง` is, by contrast, an ordinary Thai WORD that can
+# open real prose ("ย้อนหลังไปสามปีที่แล้ว...", "looking back three years
+# ago...") -- same false-positive risk class `เตือน`/`ภาษา`/`เงียบ` were
+# each found to have (TEST-v1.2/1.3-*.md's own hardening rounds), so this
+# alias is hardened FROM THE START rather than retrofitted later: the
+# tail, when present, must be built entirely from a REGISTRY-anchored
+# habit token and/or a purely-numeric token (mirrors `_build_remind_th_
+# pattern`'s own registry-alternation precedent). The mandatory trailing
+# `$` anchor is what actually does the work -- any unrecognized trailing
+# text (ordinary prose after "ย้อนหลัง") leaves characters unconsumed by
+# either optional group, so the whole match fails and falls through to
+# `None`, never partially matching (AC-5's adversarial-corpus requirement).
+# ---------------------------------------------------------------------------
+
+_HISTORY_SLASH_RE = re.compile(r"^/history(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+
+
+def _parse_history_tail(rest: str | None, registry: "HabitRegistry") -> tuple[str | None, int | None]:
+    """SPEC-v1.4.md §2.1's tail grammar: `[<habit>] [<N>]`, in that order.
+    First token: a registry habit id/label -> filter (`category`, via
+    `_resolve_target_category`'s existing resolved-id-or-raw-token
+    fallback); else digits -> N (`limit`), no filter. A second `\\d+`
+    token after a resolved habit -> N. Any token beyond the first two is
+    ignored (mirrors this file's other slash-form tails' own leniency
+    toward trailing content -- `execute_target`/`schedules.execute_remind`
+    apply the SAME "the view layer, not this shape-only layer, is what
+    rejects a malformed request" posture)."""
+    if rest is None:
+        return None, None
+    parts = rest.strip().split()
+    if not parts:
+        return None, None
+    first = parts[0]
+    if first.isdigit():
+        return None, int(first)
+    category = _resolve_target_category(first, registry)
+    if len(parts) > 1 and parts[1].isdigit():
+        return category, int(parts[1])
+    return category, None
+
+
+def _build_history_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "ย้อนหลัง[<habit>][<N>]" -- habit token built from the LIVE
+    registry's ids/Thai labels, same false-positive mitigation as
+    `_build_remind_th_pattern`/`_build_target_th_set_pattern` (only a
+    message naming a habit this bot actually tracks, and/or a bare
+    number, can ever match at all). Returns `None` if the registry has no
+    matchable Thai/id tokens (defensive; every shipped config has at
+    least water's "น้ำ") -- in that case only the bare form or a
+    purely-numeric tail can match."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
+    return re.compile(rf"^ย้อนหลัง{habit_group}(?:\s+(?P<n>\d+))?$")
+
+
+def _match_history(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    slash_match = _HISTORY_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        category, limit = _parse_history_tail(slash_match.group("rest"), registry)
+        return Command(kind="history", category=category, limit=limit)
+
+    th_pattern = _build_history_th_pattern(registry)
+    if th_pattern is not None:
+        th_match = th_pattern.match(stripped)
+        if th_match is not None:
+            group_dict = th_match.groupdict()
+            habit_raw = group_dict.get("habit")
+            n_raw = group_dict.get("n")
+            # The habit token came straight out of the registry-built
+            # alternation above, so it is always resolvable -- the `or`
+            # fallback is defensive only, never actually hit (mirrors
+            # `_match_remind`'s own identical comment for its Thai path).
+            category = (_resolve_habit_token(habit_raw, registry) or habit_raw.lower()) if habit_raw else None
+            return Command(kind="history", category=category, limit=int(n_raw) if n_raw else None)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # lang / quiet -- SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`). Slash
 # forms `/lang [en|th|auto]` and `/quiet [HH:MM-HH:MM[,...]|off]` (bare, no
 # value, is a valid shape too -- `core/preferences.py`'s `execute_lang`/
@@ -1051,6 +1158,14 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     quiet_command = _match_quiet(stripped)
     if quiet_command is not None:
         return quiet_command
+
+    # SPEC-v1.4.md §4 R-D2 (module `history`): `/history`/`ย้อนหลัง` --
+    # disjoint trigger text from every pattern above/below (and explicitly
+    # does NOT collide with `/audit`'s own `ประวัติ`, AC-5), grouped here
+    # with the other settings/view-style slash commands for readability.
+    history_command = _match_history(stripped, registry)
+    if history_command is not None:
+        return history_command
 
     if _match_help(stripped):
         return Command(kind="help")
