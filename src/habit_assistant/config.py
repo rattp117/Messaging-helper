@@ -66,6 +66,11 @@ class OllamaConfig(BaseModel):
     confidence_threshold: float = 0.55
     retry_attempts: int = 2
     retry_backoff_seconds: float = 1.0
+    # SPEC-v1.5.md R-L4: gates the once-per-model startup schema probe.
+    # Default true preserves current (pre-v1.5) behavior; false skips it
+    # (module `preparse`'s own wiring point, not read by the shared
+    # surface itself).
+    probe_on_startup: bool = True
 
     @property
     def model_chain(self) -> list[str]:
@@ -93,7 +98,14 @@ class BackupConfig(BaseModel):
 
 
 class HealthConfig(BaseModel):
-    interval_seconds: float = 60.0
+    """SPEC-v1.5.md R-L3: the health monitor's own liveness-ping interval
+    (`/api/version` + Telegram `getMe`) -- NOT an inference call, so
+    raising it is a low-risk way to cut dependency-ping traffic. Default
+    raised from 60 to 300 in v1.5.0; the pre-parser (module `preparse`)
+    is what actually keeps most messages off Ollama during an outage, so
+    a slower liveness ping is an acceptable trade (SPEC-v1.5.md §9)."""
+
+    interval_seconds: float = 300.0
 
 
 class QuietHoursConfig(BaseModel):
@@ -117,6 +129,21 @@ class QuietHoursConfig(BaseModel):
             if not _HHMM_RE.match(start) or not _HHMM_RE.match(end):
                 raise ValueError(f"quiet_hours window {(start, end)!r} entries must match HH:MM")
         return v
+
+
+class CheckinConfig(BaseModel):
+    """SPEC-v1.5.md §4 Feature 1 "Hourly check-ins" (R-K2), OQ1 RESOLVED
+    (b): opt-in for everyone. `enabled = false` by default -- an
+    unconfigured install (owner included) receives NO check-ins until
+    the user runs `/checkin on` (AC-8). `window` is the "HH:MM-HH:MM"
+    default applied when a user enables without specifying their own
+    window (`users.checkin_window = "on"` via `/checkin on`); parsing/
+    validating that string format is module `checkins`' own concern
+    (`core/checkins.py:effective_checkin`), not this shared config
+    surface -- this class only carries the two raw values."""
+
+    enabled: bool = False
+    window: str = "08:00-20:00"
 
 
 class SnoozeConfig(BaseModel):
@@ -343,6 +370,7 @@ class Config(BaseModel):
     health: HealthConfig = HealthConfig()
     i18n: I18nConfig = I18nConfig()
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
+    checkin: CheckinConfig = CheckinConfig()
     snooze: SnoozeConfig = SnoozeConfig()
     gamification: GamificationConfig = GamificationConfig()
     charts: ChartsConfig = ChartsConfig()

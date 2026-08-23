@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from habit_assistant.config import (
+    CheckinConfig,
     Config,
     ConfigError,
     HabitConfig,
@@ -304,3 +305,59 @@ def test_load_config_toml_with_quiet_hours_and_snooze(tmp_path):
     config = load_config(path)
     assert config.quiet_hours.windows == [("23:00", "07:00")]
     assert config.snooze.default_minutes == 45
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.5.md §6 shared surface: `[checkin]` (opt-in default), `[ollama]
+# probe_on_startup`, `[health] interval_seconds` default raised to 300.
+# ---------------------------------------------------------------------------
+
+
+def test_checkin_disabled_by_default():
+    """AC-8 / OQ1 RESOLVED (b): an unconfigured install (owner included)
+    gets no check-ins until `/checkin on`."""
+    assert Config().checkin.enabled is False
+
+
+def test_checkin_default_window_is_08_to_20():
+    assert Config().checkin.window == "08:00-20:00"
+
+
+def test_checkin_overridable_via_config():
+    config = Config(checkin=CheckinConfig(enabled=True, window="09:00-18:00"))
+    assert config.checkin.enabled is True
+    assert config.checkin.window == "09:00-18:00"
+
+
+def test_load_config_toml_with_checkin_section(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[checkin]\nenabled = true\nwindow = "09:00-18:00"\n', encoding="utf-8")
+    config = load_config(path)
+    assert config.checkin.enabled is True
+    assert config.checkin.window == "09:00-18:00"
+
+
+def test_ollama_probe_on_startup_defaults_to_true():
+    """R-L4: default true preserves pre-v1.5 behavior (the probe always ran)."""
+    assert Config().ollama.probe_on_startup is True
+
+
+def test_load_config_toml_can_disable_probe_on_startup(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[ollama]\nprobe_on_startup = false\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.ollama.probe_on_startup is False
+
+
+def test_health_interval_seconds_default_raised_to_300():
+    """R-L3: raised from 60 (pre-v1.5) to 300."""
+    assert Config().health.interval_seconds == 300.0
+
+
+def test_load_config_toml_can_pin_a_shorter_health_interval(tmp_path):
+    """AC-17: a pinned shorter value still works -- this repo's own live
+    config.toml pins 60, unchanged from pre-v1.5.0."""
+    path = tmp_path / "config.toml"
+    path.write_text("[health]\ninterval_seconds = 60\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.health.interval_seconds == 60.0

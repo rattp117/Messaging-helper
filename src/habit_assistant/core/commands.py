@@ -209,6 +209,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from habit_assistant.core import units
+
 if TYPE_CHECKING:
     from habit_assistant.core.habits import HabitRegistry
 
@@ -245,6 +247,11 @@ CommandKind = Literal[
     # for `history_view.render_history`'s own `history_invalid_habit`
     # reply) and `limit` fields (the parsed N) -- no new fields needed.
     "history",
+    # SPEC-v1.5.md §4 R-K8 (module `checkins`): /checkin's own kind, plus
+    # its Thai alias เช็คอิน. `/dnd` (Thai งดรบกวน, R-D5) is a PURE alias of
+    # "quiet" -- it produces `Command(kind="quiet", ...)`, the exact same
+    # shape `_match_quiet` already does, so no new kind is needed for it.
+    "checkin",
 ]
 
 
@@ -266,6 +273,13 @@ class Command:
     # token -- `execute_quiet` reports `quiet_invalid_window`); `None` for
     # a bare "/lang"/"/quiet" (or Thai-alias-with-no-value, which doesn't
     # match at all) with no value -- also `lang_usage`/`quiet_usage`.
+    # SPEC-v1.5.md §5 (module `checkins`): also reused for "checkin"'s own
+    # tail ("on"/"off"/"default"/"HH:MM-HH:MM", or `None` for a bare
+    # "/checkin"/"เช็คอิน" -- R-K8's own "empty = show" grammar, NOT a usage
+    # error unlike bare "/lang"/"/quiet"). "/dnd"/"งดรบกวน" (R-D5) is a pure
+    # alias of "quiet" -- it populates THIS SAME field with the same
+    # "22:00-07:00[,...]"/"off" shape `_match_quiet` already produces, no
+    # dedicated field of its own.
     pref_value: str | None = None
     # SPEC-v1.2.md §5 skeleton (module `schedules`): "remind"'s parsed
     # times -- [] = show, ["off"] = off, ["default"] = reset, else an
@@ -306,10 +320,15 @@ _EDIT_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
-# NUMBER, optionally followed directly (or space-separated) by a unit token
-# (any run of non-whitespace characters -- Thai and Latin unit strings both
-# come through as a single such run, e.g. "ml", "มล.", "min", "glass").
-_VALUE_RE = re.compile(r"^(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>\S+)?\s*$")
+# SPEC-v1.5.md §4 R-L5: the unit-lookup/-resolution machinery (below,
+# `_build_unit_lookup`/`_resolve_unit`) and this value regex moved to
+# `core/units.py` so `core/preparse.py` (v1.5.0's deterministic
+# pre-parser) can reuse the EXACT same logic instead of a second copy --
+# imported here under their original private names so every call site in
+# THIS file needed zero further edits (pure extract-and-delegate, byte-
+# identical behavior, AC-2's own regression guard is the existing command
+# test suite passing unmodified).
+_VALUE_RE = units.VALUE_RE
 
 # ---------------------------------------------------------------------------
 # snooze -- ROADMAP.md v0.9.0 (AC9.3). English "snooze"/"snooze 30"/
@@ -967,6 +986,106 @@ def _match_quiet(stripped: str) -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# checkin / dnd -- SPEC-v1.5.md §4 R-K8/R-D5 (module `checkins`). `/checkin`
+# is a new deterministic, LLM-free per-user setter (on/off/default/HH:MM-
+# HH:MM window, bare = show, R-K8) plus its Thai alias `เช็คอิน`. `/dnd`
+# (Thai `งดรบกวน`) is a PURE alias of `/quiet` -- it produces the exact same
+# `Command(kind="quiet", pref_value=...)` shape `_match_quiet` above already
+# does (R-D5: same storage, same `preferences.execute_quiet`), so no new
+# `Command` field or `CommandKind` value is needed for it at all -- only one
+# more recognizer feeding the SAME "quiet" kind.
+#
+# `/checkin`'s slash form stays fully permissive, mirroring every other
+# settings-style slash command above (`/lang`/`/quiet`/`/remind`/`/target`):
+# an explicit "/" prefix is a near-zero false-positive surface, so any tail,
+# however malformed, still produces a Command -- `core/checkins.
+# execute_checkin` is where a bad window becomes a friendly usage reply, not
+# this shape-only layer. A bare `/checkin` (no tail) is deliberately NOT a
+# usage error here -- R-K8's own grammar gives it a distinct meaning ("empty
+# = show"), unlike `/lang`/`/quiet`'s bare form.
+#
+# The Thai alias `เช็คอิน` (a common transliterated loanword -- a hotel/
+# flight/social-media "check-in") carries the same false-positive risk class
+# already hardened for `เตือน`/`ภาษา`/`เงียบ`/`ย้อนหลัง` above: it can open
+# ordinary prose. Anchored to the WHOLE stripped message (a glued
+# continuation like "เช็คอินแล้ว" -- no space -- never matches at all, the
+# anchor alone rules it out) PLUS, when a tail IS present after a space, it
+# must have the exact valid-argument SHAPE (`on`/`off`/`default`, or an
+# `HH:MM-HH:MM` window) -- an ordinary spaced continuation ("เช็คอิน
+# ร้านอาหารอร่อยมาก") still falls through to `None`. A BARE "เช็คอิน" (the
+# whole message, nothing else) DOES match, same "show" meaning as the slash
+# form -- mirrors `ย้อนหลัง`'s own established precedent (`_build_history_
+# th_pattern`, above) of a bare match on a common word being acceptable
+# when the grammar itself defines a meaning for the empty-tail case, rather
+# than `เตือน`'s stricter "always requires a real habit token" gate (checkin
+# has no habit token to anchor on).
+#
+# `/dnd`'s Thai alias `งดรบกวน` mirrors `เงียบ`'s own mandatory-value shape
+# (`_QUIET_TH_VALUE_RE`, reused verbatim here) -- no bare-match meaning
+# exists for `/dnd` any more than it does for `/quiet` itself (both are
+# usage-reply-on-bare, not show-on-bare), so the Thai alias requires a
+# value just like `เงียบ` does.
+# ---------------------------------------------------------------------------
+
+_CHECKIN_SLASH_RE = re.compile(r"^/checkin(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_CHECKIN_TH_RE = re.compile(r"^เช็คอิน(?:\s+(?P<rest>\S.*))?$")
+_CHECKIN_TAIL_WORDS = {"on", "off", "default"}
+_CHECKIN_WINDOW_SHAPE_RE = re.compile(r"^\d{1,2}:\d{2}-\d{1,2}:\d{2}$")
+
+_DND_SLASH_RE = re.compile(r"^/dnd(?:\s+(?P<value>\S.*))?$", re.IGNORECASE)
+_DND_TH_RE = re.compile(r"^งดรบกวน\s+(?P<value>\S+)$")
+
+
+def _checkin_tail_has_valid_shape(tail: str) -> bool:
+    """Gate for the Thai bare-word trigger's OWN tail (see the block
+    comment above) -- `on`/`off`/`default`, or an `HH:MM-HH:MM`-SHAPED
+    token (real HH:MM range validation is still `core/checkins.
+    execute_checkin`'s job, mirrors `_remind_tail_has_valid_shape`'s
+    identical recognize-shape/validate split)."""
+    lowered = tail.strip().lower()
+    if lowered in _CHECKIN_TAIL_WORDS:
+        return True
+    return _CHECKIN_WINDOW_SHAPE_RE.match(lowered) is not None
+
+
+def _match_checkin(stripped: str) -> "Command | None":
+    slash_match = _CHECKIN_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        rest = slash_match.group("rest")
+        return Command(kind="checkin", pref_value=rest.strip().lower() if rest else None)
+
+    th_match = _CHECKIN_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    rest = th_match.group("rest")
+    if rest is None:
+        return Command(kind="checkin", pref_value=None)  # bare -> show (R-K8)
+    tail = rest.strip()
+    if not _checkin_tail_has_valid_shape(tail):
+        return None
+    return Command(kind="checkin", pref_value=tail.lower())
+
+
+def _match_dnd(stripped: str) -> "Command | None":
+    """R-D5: a pure alias of `/quiet` -- produces the SAME `Command(kind=
+    "quiet", ...)` shape `_match_quiet` does, so it routes to the exact
+    same `preferences.execute_quiet`/`quiet_hours_json` storage with zero
+    new plumbing."""
+    slash_match = _DND_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        value = slash_match.group("value")
+        return Command(kind="quiet", pref_value=value.strip().lower() if value else None)
+
+    th_match = _DND_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    value = th_match.group("value")
+    if _QUIET_TH_VALUE_RE.match(value) is None:
+        return None
+    return Command(kind="quiet", pref_value=value.lower())
+
+
+# ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
 # interrogative markers only: none of these substrings/endings can occur in
 # a normal habit log (verified against the full adversarial corpus in
@@ -996,42 +1115,12 @@ def _match_undo(stripped: str) -> bool:
     return any(pattern.match(stripped) for pattern in _UNDO_PATTERNS)
 
 
-def _build_unit_lookup(registry: "HabitRegistry") -> dict[str, tuple[str, float]]:
-    """Map a lowercased unit token -> (habit_id, multiplier), built from
-    every numeric/duration habit's own `unit` (multiplier 1) and
-    `unit_aliases` (each alias's configured multiplier). Iterated in
-    registry order with `setdefault`, so an earlier habit's token claims
-    the slot over a later habit's identical token (first-match-wins,
-    SPEC-v0.7.md §9 risk 6). `str.lower()` is a no-op on Thai text, so this
-    single pass handles both scripts uniformly."""
-    lookup: dict[str, tuple[str, float]] = {}
-    for habit in registry:
-        if habit.type not in ("numeric", "duration"):
-            continue
-        if habit.unit_en:
-            lookup.setdefault(habit.unit_en.strip().lower(), (habit.id, 1.0))
-        if habit.unit_th:
-            lookup.setdefault(habit.unit_th.strip().lower(), (habit.id, 1.0))
-        for alias, multiplier in habit.unit_aliases.items():
-            lookup.setdefault(alias.strip().lower(), (habit.id, float(multiplier)))
-    return lookup
-
-
-def _resolve_unit(lookup: dict[str, tuple[str, float]], unit_lower: str) -> tuple[str, float] | None:
-    """Exact match first; then a trailing "." stripped (some configured
-    Thai units, e.g. "มล.", already include the dot in the exact-match
-    lookup, but a model/user-typed variant might drop or add one); then a
-    simple trailing-"s" singularization (covers "mins" -> "min",
-    "bottles" -> "bottle"). Irregular plurals (e.g. "glasses") are not
-    guessed at -- configure them as an explicit `unit_aliases` entry if
-    needed (see IMPL-v0.7-M1.md Known limitations)."""
-    if unit_lower in lookup:
-        return lookup[unit_lower]
-    if unit_lower.endswith(".") and unit_lower[:-1] in lookup:
-        return lookup[unit_lower[:-1]]
-    if len(unit_lower) > 1 and unit_lower.endswith("s") and unit_lower[:-1] in lookup:
-        return lookup[unit_lower[:-1]]
-    return None
+# SPEC-v1.5.md §4 R-L5: aliases onto `core/units.py`'s own public
+# functions (see this file's own `_VALUE_RE` comment above for the full
+# extraction rationale) -- every call site below (`_parse_target_value`,
+# `_parse_edit_value`) is unchanged.
+_build_unit_lookup = units.build_unit_lookup
+_resolve_unit = units.resolve_unit
 
 
 def _default_numeric_habit(registry: "HabitRegistry") -> str | None:
@@ -1158,6 +1247,19 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     quiet_command = _match_quiet(stripped)
     if quiet_command is not None:
         return quiet_command
+
+    # SPEC-v1.5.md §4 R-K8/R-D5 (module `checkins`): `/checkin`/`เช็คอิน`
+    # and `/dnd`/`งดรบกวน` (a pure "quiet"-kind alias) -- disjoint trigger
+    # text from every pattern above/below, grouped here with the other
+    # settings-style slash commands for readability (same rationale as
+    # `remind`/`access`/`lang`/`quiet` above).
+    checkin_command = _match_checkin(stripped)
+    if checkin_command is not None:
+        return checkin_command
+
+    dnd_command = _match_dnd(stripped)
+    if dnd_command is not None:
+        return dnd_command
 
     # SPEC-v1.4.md §4 R-D2 (module `history`): `/history`/`ย้อนหลัง` --
     # disjoint trigger text from every pattern above/below (and explicitly

@@ -304,13 +304,19 @@ async def test_fallback_first_model_valid_second_model_never_called():
 
 async def test_below_threshold_confidence_yields_clarifying_question_and_no_row(db):
     """AC2.3/AC7: a schema-valid water extraction whose confidence (0.3) is
-    below the configured threshold (0.55) must clarify, not log."""
+    below the configured threshold (0.55) must clarify, not log.
+
+    SPEC-v1.5.md AC-14: uses "drank some water" rather than a bare
+    "500ml" -- a whole-message "NUMBER UNIT" shape now resolves via
+    `core/preparse.py:deterministic_parse` (always confidence 1.0) before
+    `parse_message`/the threshold check is ever reached, which would make
+    this test pass for the wrong reason."""
     content = json_payload(category="water", value=500, confidence=0.3)
     llm = _StaticLLM(content)
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
+    await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
     assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
@@ -318,13 +324,18 @@ async def test_below_threshold_confidence_yields_clarifying_question_and_no_row(
 
 async def test_at_threshold_confidence_is_logged(db):
     """Threshold comparison is exclusive (`< threshold` fails, `==
-    threshold` passes) -- confidence exactly at the boundary is kept."""
+    threshold` passes) -- confidence exactly at the boundary is kept.
+
+    SPEC-v1.5.md AC-14: uses "drank some water" for the same reason as
+    `test_below_threshold_confidence_yields_clarifying_question_and_no_row`
+    above -- a bare "500ml" would now resolve via the pre-parser and pass
+    regardless of this test's own threshold boundary."""
     content = json_payload(category="water", value=500, confidence=0.55)
     llm = _StaticLLM(content)
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
+    await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == ["✅ 500 ml logged — today 500 / 2500 ml (20%)"]
     rows = db.logs_between(OWNER, *ANY_TIME_WINDOW)
@@ -346,13 +357,18 @@ async def test_above_threshold_confidence_is_logged(db):
 
 async def test_custom_threshold_from_config_is_honored(db):
     """A confidence that would pass the default threshold must still be
-    demoted under a stricter, user-configured threshold."""
+    demoted under a stricter, user-configured threshold.
+
+    SPEC-v1.5.md AC-14: uses "drank some water" rather than a bare
+    "500ml" for the same reason as the two threshold tests above -- the
+    pre-parser would otherwise resolve it before this test's own
+    threshold logic is ever reached."""
     content = json_payload(category="water", value=500, confidence=0.6)
     llm = _StaticLLM(content)
     channel = _RecordingChannel()
     config = Config.model_validate({"ollama": {"confidence_threshold": 0.9}})
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
+    await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
     assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []
@@ -478,7 +494,12 @@ async def test_handler_path_survives_total_llm_outage_no_exception_escapes(db):
     """End-to-end through handle_inbound_message with a real, mocked
     OllamaClient (not the _StaticLLM stand-in): every model in the chain
     unreachable must still resolve to the clarifying question, never an
-    unhandled exception reaching the inbound loop."""
+    unhandled exception reaching the inbound loop.
+
+    SPEC-v1.5.md AC-14/AC-16: uses "drank some water" rather than a bare
+    "500ml" -- the pre-parser would otherwise resolve it deterministically
+    and log successfully without ever reaching (or needing) the LLM chain
+    this test means to exercise."""
     llm = make_client(
         model_responses_handler({"model-a": CONNECT_ERROR, "model-b": CONNECT_ERROR}),
         models=["model-a", "model-b"],
@@ -486,7 +507,7 @@ async def test_handler_path_survives_total_llm_outage_no_exception_escapes(db):
     channel = _RecordingChannel()
     config = Config()
 
-    await handle_inbound_message("500ml", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
+    await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
     assert channel.sent == [CLARIFYING_QUESTION]
     assert db.logs_between(OWNER, *ANY_TIME_WINDOW) == []

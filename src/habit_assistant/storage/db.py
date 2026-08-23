@@ -369,6 +369,58 @@ class Database:
         )
         self._conn.commit()
 
+    def get_checkin_window(self, chat_id: str) -> str | None:
+        """SPEC-v1.5.md R-K2/R-K8 (`/checkin`, module `checkins`): the raw
+        stored value -- `None` (no row, or an un-set column) means
+        "inherit `config.checkin.enabled`/`config.checkin.window`"
+        (OQ1 resolved (b): that inherited default is itself OFF, AC-8);
+        `"off"` means explicitly disabled; any other string is a stored
+        `"HH:MM-HH:MM"` window (enabled). This method does no
+        interpretation at all -- `checkins.effective_checkin` (module
+        `checkins`) is where the three-way meaning above is resolved,
+        same "storage returns raw, the owning module interprets" split
+        `get_reminder_times`/`effective_reminder_times` already use."""
+        row = self.get_user(chat_id)
+        return row["checkin_window"] if row is not None else None
+
+    def set_checkin_window(self, chat_id: str, value: str | None) -> None:
+        """Upsert -- mirrors `set_user_language`/`set_user_quiet_hours`'s
+        own shape exactly. `value = None` reverts to "inherit config"
+        (`/checkin default`); `"off"` disables; any other string is the
+        window to store verbatim (`/checkin on` stores the CONFIG
+        default window explicitly, per R-K8's own "stays enabled
+        regardless of the config default" requirement -- that
+        resolution happens in `checkins.execute_checkin`, not here)."""
+        self._conn.execute(
+            "INSERT INTO users (chat_id, checkin_window) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET checkin_window = excluded.checkin_window",
+            (chat_id, value),
+        )
+        self._conn.commit()
+
+    def get_last_announced_version(self, chat_id: str) -> str | None:
+        """SPEC-v1.5.md R-N2/R-N3 (module `announce`): `None` means "never
+        announced anything to this chat" -- true for every pre-v1.5 row
+        (migration 008's own no-backfill design) and for a brand-new
+        user, so both cases correctly receive the CURRENT version's note
+        on the next `announce_release` run rather than being silently
+        skipped."""
+        row = self.get_user(chat_id)
+        return row["last_announced_version"] if row is not None else None
+
+    def set_last_announced_version(self, chat_id: str, version: str) -> None:
+        """Upsert, mirrors the other three `users`-column setters above.
+        `announce.announce_release` (R-N2) calls this ONLY after a
+        successful send -- a send/DB failure must leave the previous
+        value (or `NULL`) in place so that user is retried next startup,
+        never marked as caught-up on a failed attempt."""
+        self._conn.execute(
+            "INSERT INTO users (chat_id, last_announced_version) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET last_announced_version = excluded.last_announced_version",
+            (chat_id, version),
+        )
+        self._conn.commit()
+
     def list_users(self) -> list[sqlite3.Row]:
         """SPEC-v1.2.md R-A4 (`/users`, module `access`): every user, in
         the order they first contacted the bot."""

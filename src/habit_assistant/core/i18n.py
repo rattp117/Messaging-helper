@@ -920,7 +920,7 @@ CATALOG: dict[str, dict[Language, str]] = {
     # established for this app's other owner-only technical view (role/
     # status shown verbatim, untranslated). `source` (command/nl/button/
     # admin) is likewise shown verbatim for the same reason. Every
-    # `audit_action_*` id is one of `core/audit.py:ACTIONS`'s 13 values --
+    # `audit_action_*` id is one of `core/audit.py:ACTIONS`'s 16 values --
     # spelling can't drift because `core/audit_view.py` looks each one up
     # by the same literal.
     # -----------------------------------------------------------------
@@ -988,6 +988,18 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "quiet hours off",
         "th": "ปิดช่วงเวลาเงียบ",
     },
+    "audit_action_checkin_set": {
+        "en": "check-in on",
+        "th": "เปิดเช็คอิน",
+    },
+    "audit_action_checkin_off": {
+        "en": "check-in off",
+        "th": "ปิดเช็คอิน",
+    },
+    "audit_action_checkin_default": {
+        "en": "check-in reset",
+        "th": "รีเซ็ตเช็คอิน",
+    },
     "audit_action_user_approve": {
         "en": "approved",
         "th": "อนุมัติ",
@@ -1038,5 +1050,97 @@ CATALOG: dict[str, dict[Language, str]] = {
     "history_more_rows": {
         "en": "… {count} more",
         "th": "… อีก {count} รายการ",
+    },
+
+    # -----------------------------------------------------------------
+    # Module `checkins` (/checkin, เช็คอิน -- SPEC-v1.5.md §4 R-K1-R-K8,
+    # core/checkins.py). Disjoint from every key above -- this module owns
+    # its own catalog block, same convention as every other parallel/
+    # sequential module before it. `/dnd`/`งดรบกวน` (R-D5) is a PURE alias
+    # of `/quiet` -- it reuses `quiet_set`/`quiet_cleared`/`quiet_usage`/
+    # `quiet_invalid_window`/`preferences_save_failed` verbatim (no new
+    # keys needed for it at all).
+    #
+    # `checkin_set_on`/`checkin_set_off`/`checkin_set_window`/`checkin_show`
+    # are SPEC-v1.5.md §3.2's own named ids. `/checkin default` deliberately
+    # reuses `checkin_show`'s own two variants (via `_build_show_reply`,
+    # `core/checkins.py`) rather than a fifth id -- the reply after a reset
+    # is just "here's your current (now-inherited) effective state", the
+    # same shape a bare `/checkin` already shows.
+    # -----------------------------------------------------------------
+    "checkin_set_on": {
+        "en": "✅ Check-ins turned on for you — hourly nudges from {start} to {end}.",
+        "th": "✅ เปิดเช็คอินให้คุณแล้ว — แจ้งเตือนทุกชั่วโมงตั้งแต่ {start} ถึง {end}",
+    },
+    "checkin_set_off": {
+        "en": "🔕 Check-ins turned off for you.",
+        "th": "🔕 ปิดเช็คอินให้คุณแล้ว",
+    },
+    "checkin_set_window": {
+        "en": "✅ Check-in window set: {start}-{end}. Hourly nudges in that range.",
+        "th": "✅ ตั้งช่วงเวลาเช็คอินแล้ว: {start}-{end} จะแจ้งเตือนทุกชั่วโมงในช่วงนี้",
+    },
+    "checkin_show": {
+        "en": "🌤️ Check-ins: on, {start}-{end}.",
+        "th": "🌤️ เช็คอิน: เปิดอยู่ {start}-{end}",
+    },
+    "checkin_show_off": {
+        "en": "🌤️ Check-ins: off.",
+        "th": "🌤️ เช็คอิน: ปิดอยู่",
+    },
+    "checkin_usage": {
+        "en": (
+            '🤔 Usage: "/checkin on", "/checkin off", "/checkin 09:00-18:00", '
+            'or "/checkin default" (Thai: "เช็คอิน ...").'
+        ),
+        "th": (
+            '🤔 วิธีใช้: "/checkin on", "/checkin off", "/checkin 09:00-18:00" '
+            'หรือ "/checkin default" (หรือ "เช็คอิน ...")'
+        ),
+    },
+    "checkin_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    # --- the hourly check-in message itself (core/checkins.py: R-K6) -----
+    "checkin_header": {
+        "en": "🌤️ Quick check-in",
+        "th": "🌤️ เช็คอินด่วน",
+    },
+    "checkin_line_progress": {
+        "en": "• {label}: {total:g} / {goal:g} {unit}",
+        "th": "• {label}: {total:g} / {goal:g} {unit}",
+    },
+    "checkin_line_not_yet": {
+        "en": "• {label}: not yet today",
+        "th": "• {label}: ยังไม่ได้ทำวันนี้",
+    },
+    "checkin_invite": {
+        "en": "Log anything you've done? 💬",
+        "th": "ทำอะไรไปแล้วบ้าง อยากบันทึกไหม? 💬",
+    },
+    "checkin_generic_nudge": {
+        "en": "🌤️ Quick check-in — log anything you've done today?",
+        "th": "🌤️ เช็คอินด่วน — วันนี้ทำอะไรไปแล้วบ้าง อยากบันทึกไหม?",
+    },
+    # --- /help additions (SPEC-v1.5.md §11: "the check-in + DND lines,
+    # opt-in framing" -- data only; wiring these two lines into
+    # `core/discoverability.build_help_text` is an integration-time append,
+    # same precedent as `help_lang`/`help_quiet_cmd`/`help_remind_cmd`'s own
+    # documented "added after this module itself landed" note just above
+    # in this file's `help_*` block) ---------------------------------------
+    "help_checkin_cmd": {
+        "en": (
+            '🌤️ Get hourly check-in nudges (off by default): /checkin on (08:00-20:00), '
+            '/checkin 09:00-18:00, or /checkin off (Thai: "เช็คอิน ...").'
+        ),
+        "th": (
+            '🌤️ เปิดแจ้งเตือนเช็คอินรายชั่วโมง (ปิดโดยค่าเริ่มต้น): /checkin on (08:00-20:00), '
+            '/checkin 09:00-18:00 หรือ /checkin off (หรือ "เช็คอิน ...")'
+        ),
+    },
+    "help_dnd_cmd": {
+        "en": '🌙 /dnd is another name for /quiet — same do-not-disturb hours (Thai: "งดรบกวน ...").',
+        "th": '🌙 /dnd คือชื่ออีกชื่อของ /quiet — ตั้งช่วงเวลางดรบกวนแบบเดียวกัน (หรือ "งดรบกวน ...")',
     },
 }

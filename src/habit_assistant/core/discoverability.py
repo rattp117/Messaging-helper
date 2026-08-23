@@ -85,6 +85,13 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     lines.append(i18n.t("help_lang", lang))
     lines.append(i18n.t("help_quiet_cmd", lang))
     lines.append(i18n.t("help_remind_cmd", lang))
+    # SPEC-v1.5.md §6/§11 integration step (IMPL-v1.5-checkins.md's own
+    # documented "Known limitations" #1, same precedent as the three
+    # lines above): `/checkin` + `/dnd` mentions, added after the
+    # `checkins` module itself landed (the catalog keys are its own; this
+    # module isn't among its owned files).
+    lines.append(i18n.t("help_checkin_cmd", lang))
+    lines.append(i18n.t("help_dnd_cmd", lang))
 
     return "\n\n".join(lines)
 

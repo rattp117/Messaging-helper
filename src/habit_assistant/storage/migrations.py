@@ -216,6 +216,28 @@ def _migration_007_audit_log(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, ts)")
 
 
+def _migration_008_checkin_and_announce(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.5.md §4/§5 (shared surface): two additive, all-`NULL`,
+    NO-BACKFILL columns on `users` -- unlike migration 004's habit_type
+    backfill or 006's owner-attribution follow-up, neither column here
+    gets a value-filling pass, because `NULL` IS the correct value for
+    every existing row by construction:
+    - `checkin_window`: `NULL` means "inherit the config default", and
+      OQ1 resolved (b) -- `config.checkin.enabled` itself defaults to
+      `False` -- so a `NULL` row is opted OUT by construction (AC-8),
+      not merely "using some default that happens to be on".
+      Backfilling anything here would be actively wrong.
+    - `last_announced_version`: `NULL` means "never announced anything
+      to this chat" -- exactly true for every pre-v1.5 row, so an
+      existing user correctly receives the v1.5.0 self-announcement on
+      first startup (R-N5's own "existing users... do receive the
+      v1.5.0 note" -- the whole reason this column starts empty).
+    Idempotent the same way every migration here is: the runner only
+    ever applies this once, guarded by `PRAGMA user_version` (AC-1)."""
+    conn.execute("ALTER TABLE users ADD COLUMN checkin_window TEXT NULL")
+    conn.execute("ALTER TABLE users ADD COLUMN last_announced_version TEXT NULL")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -227,6 +249,7 @@ MIGRATIONS: list[Migration] = [
     _migration_005_habit_targets,
     _migration_006_multiuser,
     _migration_007_audit_log,
+    _migration_008_checkin_and_announce,
 ]
 
 

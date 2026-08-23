@@ -298,16 +298,17 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     # Open through the real Database class -- this also runs migrations 005
     # (SPEC-v1.1.md, additive `habit_targets`), 006 (SPEC-v1.2.md,
     # `users`/`logs.user_id`/habit_targets rebuild/`user_reminder_times`),
-    # and 007 (SPEC-v1.3.md, additive `audit_log`) since all three are now
-    # unconditionally part of MIGRATIONS; a v3-shaped DB opened today lands
-    # on version 7, not 4, but everything asserted below about migration
-    # 004's own effect (habit_type backfill, untouched logs rows) still
-    # holds -- neither 006's `logs.user_id` column addition nor 007's new
-    # `audit_log` table touches the columns selected below.
+    # 007 (SPEC-v1.3.md, additive `audit_log`), and 008 (SPEC-v1.5.md,
+    # additive `users.checkin_window`/`users.last_announced_version`)
+    # since all four are now unconditionally part of MIGRATIONS; a
+    # v3-shaped DB opened today lands on version 8, not 4, but everything
+    # asserted below about migration 004's own effect (habit_type
+    # backfill, untouched logs rows) still holds -- none of 006/007/008's
+    # additions touch the columns selected below.
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 7
+    assert db.schema_version == 8
 
     after_rows = [
         tuple(r)
@@ -329,8 +330,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 7
-    assert reopened.schema_version == 7
+    assert reopened.schema_version_before == 8
+    assert reopened.schema_version == 8
     reopened.close()
 
 
@@ -351,13 +352,14 @@ def test_fresh_db_has_habit_type_column(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_db_reports_schema_version_7_with_habit_targets_table(tmp_path):
+def test_fresh_db_reports_schema_version_8_with_habit_targets_table(tmp_path):
     # SPEC-v1.2.md added migration 006 (this test's own focus, habit_
-    # targets rebuilt with a surrogate `id` PK + `user_id`, R-M1) and
-    # SPEC-v1.3.md then added migration 007 (audit_log, additive) after
-    # it; a fresh DB now lands on version 7, not 6.
+    # targets rebuilt with a surrogate `id` PK + `user_id`, R-M1);
+    # SPEC-v1.3.md added migration 007 (audit_log); SPEC-v1.5.md added
+    # migration 008 (checkin_window/last_announced_version) -- a fresh DB
+    # now lands on version 8, not 6.
     db = Database(tmp_path / "fresh_v6.db")
-    assert db.schema_version == 7
+    assert db.schema_version == 8
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
@@ -408,12 +410,12 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     db = Database(db_path)
 
-    # SPEC-v1.2.md/SPEC-v1.3.md: opening a v4-shaped DB today also applies
-    # migration 006 (users/logs.user_id/habit_targets rebuild/
-    # user_reminder_times) and migration 007 (audit_log), so it lands on
-    # version 7, not 5.
+    # SPEC-v1.2.md/SPEC-v1.3.md/SPEC-v1.5.md: opening a v4-shaped DB today
+    # also applies migration 006 (users/logs.user_id/habit_targets
+    # rebuild/user_reminder_times), 007 (audit_log), and 008 (checkin_
+    # window/last_announced_version), so it lands on version 8, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 7
+    assert db.schema_version == 8
 
     after_rows = [
         tuple(r)
@@ -429,8 +431,8 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 7
-    assert reopened.schema_version == 7
+    assert reopened.schema_version_before == 8
+    assert reopened.schema_version == 8
     reopened.close()
 
 
@@ -576,12 +578,14 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     db = Database(db_path)
 
-    # SPEC-v1.3.md added migration 007 (audit_log, additive) after this
-    # one; a v5-shaped DB opened today lands on version 7, not 6, but
-    # everything asserted below about migration 006's own effect (users/
-    # logs.user_id/habit_targets rebuild/user_reminder_times) still holds.
+    # SPEC-v1.3.md added migration 007 (audit_log, additive) and
+    # SPEC-v1.5.md added migration 008 (checkin_window/last_announced_
+    # version, additive) after this one; a v5-shaped DB opened today
+    # lands on version 8, not 6, but everything asserted below about
+    # migration 006's own effect (users/logs.user_id/habit_targets
+    # rebuild/user_reminder_times) still holds.
     assert db.schema_version_before == 5
-    assert db.schema_version == 7
+    assert db.schema_version == 8
 
     # logs values preserved, byte-for-byte; new user_id column present and NULL.
     after_logs = [
@@ -615,8 +619,8 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     # Re-running (reopen) applies nothing further (idempotent, AC-M1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 7
-    assert reopened.schema_version == 7
+    assert reopened.schema_version_before == 8
+    assert reopened.schema_version == 8
     reopened.close()
 
 
@@ -625,9 +629,11 @@ def test_fresh_db_has_users_and_user_reminder_times_tables(tmp_path):
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"users", "user_reminder_times"} <= tables
     user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
+    # SPEC-v1.5.md's migration 008 added checkin_window/last_announced_version.
     assert user_cols == {
         "chat_id", "role", "status", "display_name", "language_pref",
         "quiet_hours_json", "snooze_default_minutes", "created_at",
+        "checkin_window", "last_announced_version",
     }
     reminder_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(user_reminder_times)").fetchall()}
     assert reminder_cols == {"user_id", "habit_id", "time"}
@@ -716,11 +722,12 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
     assert current_version(conn) == 6
     conn.close()
 
-    # Open through the real Database class -- migration 007 runs here.
+    # Open through the real Database class -- migration 007 runs here
+    # (SPEC-v1.5.md's own additive migration 008 also cascades now).
     db = Database(db_path)
 
     assert db.schema_version_before == 6
-    assert db.schema_version == 7
+    assert db.schema_version == 8
 
     # Every pre-existing table/row is untouched, byte-for-byte -- the
     # additive-only guarantee AC-A1 requires (unlike 006's own sanctioned
@@ -749,14 +756,14 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
 
     # Re-running (reopen) applies nothing further (idempotent, AC-A1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 7
-    assert reopened.schema_version == 7
+    assert reopened.schema_version_before == 8
+    assert reopened.schema_version == 8
     reopened.close()
 
 
 def test_fresh_db_has_audit_log_table_with_expected_shape(tmp_path):
     db = Database(tmp_path / "fresh_v7.db")
-    assert db.schema_version == 7
+    assert db.schema_version == 8
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "audit_log" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
@@ -808,6 +815,179 @@ def test_insert_recent_and_prune_audit_round_trip(tmp_path):
     remaining = db.recent_audit(10)
     assert len(remaining) == 1
     assert remaining[0]["action"] == "target_set"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.5.md "Hourly check-ins + DND + LLM-call minimization + release
+# announcements" (AC-1): migration 008 -- `users.checkin_window` +
+# `users.last_announced_version`, both additive/nullable, NO backfill
+# (unlike migration 004's habit_type backfill) -- `NULL` is itself the
+# correct, opted-out/never-announced value for every existing row. Built
+# on a v7-shaped DB, never the live `data/habits.db`.
+# ---------------------------------------------------------------------------
+
+
+def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_existing(tmp_path):
+    db_path = tmp_path / "v7_copy.db"
+
+    # Hand-build a v7-shaped DB (migrations 001-007 already applied): the
+    # full pre-checkin/announce schema, user_version=7, with a real user
+    # row (including a NON-NULL quiet_hours_json, so "touches no existing
+    # column value" is genuinely exercised).
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL,
+          habit_type  TEXT NULL,
+          user_id     TEXT NULL
+        );
+        CREATE TABLE habit_targets (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    TEXT,
+          habit_id   TEXT NOT NULL,
+          goal       REAL NOT NULL,
+          updated_at TEXT,
+          UNIQUE(user_id, habit_id)
+        );
+        CREATE TABLE users (
+          chat_id                TEXT PRIMARY KEY,
+          role                   TEXT NOT NULL DEFAULT 'member',
+          status                 TEXT NOT NULL DEFAULT 'pending',
+          display_name           TEXT,
+          language_pref          TEXT NOT NULL DEFAULT 'auto',
+          quiet_hours_json       TEXT,
+          snooze_default_minutes INTEGER,
+          created_at             TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE TABLE user_reminder_times (
+          user_id  TEXT NOT NULL,
+          habit_id TEXT NOT NULL,
+          time     TEXT NOT NULL,
+          PRIMARY KEY (user_id, habit_id, time)
+        );
+        CREATE TABLE audit_log (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts             TEXT NOT NULL,
+          user_id        TEXT NOT NULL,
+          action         TEXT NOT NULL,
+          entity         TEXT,
+          old_value      TEXT,
+          new_value      TEXT,
+          source         TEXT NOT NULL,
+          target_user_id TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        PRAGMA user_version = 7;
+        """
+    )
+    conn.execute(
+        "INSERT INTO users (chat_id, role, status, quiet_hours_json) "
+        "VALUES ('owner-chat-id', 'owner', 'active', '[[\"22:00\",\"07:00\"]]')"
+    )
+    conn.commit()
+    before_users = [
+        tuple(r) for r in conn.execute("SELECT chat_id, role, status, quiet_hours_json FROM users")
+    ]
+    assert current_version(conn) == 7
+    conn.close()
+
+    # Open through the real Database class -- migration 008 runs here.
+    db = Database(db_path)
+
+    assert db.schema_version_before == 7
+    assert db.schema_version == 8
+
+    # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
+    after_users = [
+        tuple(r) for r in db._conn.execute("SELECT chat_id, role, status, quiet_hours_json FROM users")
+    ]
+    assert after_users == before_users
+
+    # The two new columns exist and are NULL for the pre-existing row --
+    # NO backfill (AC-1's own explicit requirement, unlike migration 004).
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert {"checkin_window", "last_announced_version"} <= cols
+    row = db._conn.execute(
+        "SELECT checkin_window, last_announced_version FROM users WHERE chat_id = 'owner-chat-id'"
+    ).fetchone()
+    assert row["checkin_window"] is None
+    assert row["last_announced_version"] is None
+    db.close()
+
+    # Re-running (reopen) applies nothing further (idempotent, AC-1).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 8
+    assert reopened.schema_version == 8
+    reopened.close()
+
+
+def test_fresh_db_has_checkin_and_announce_columns_all_null(tmp_path):
+    db = Database(tmp_path / "fresh_v8.db")
+    assert db.schema_version == 8
+    db.upsert_user("u1", role="member", status="active")
+    assert db.get_checkin_window("u1") is None
+    assert db.get_last_announced_version("u1") is None
+    db.close()
+
+
+def test_get_set_checkin_window_round_trip(tmp_path):
+    db = Database(tmp_path / "checkin.db")
+    db.upsert_user("u1", role="member", status="active")
+
+    assert db.get_checkin_window("u1") is None  # inherit config default
+    db.set_checkin_window("u1", "off")
+    assert db.get_checkin_window("u1") == "off"
+    db.set_checkin_window("u1", "09:00-18:00")
+    assert db.get_checkin_window("u1") == "09:00-18:00"
+    db.set_checkin_window("u1", None)  # /checkin default -- revert to NULL
+    assert db.get_checkin_window("u1") is None
+
+    # A second user's window is completely independent.
+    db.upsert_user("u2", role="member", status="active")
+    db.set_checkin_window("u2", "off")
+    assert db.get_checkin_window("u1") is None
+    assert db.get_checkin_window("u2") == "off"
+    db.close()
+
+
+def test_set_checkin_window_upserts_a_row_if_none_exists_yet(tmp_path):
+    db = Database(tmp_path / "checkin2.db")
+    assert db.get_user("ghost") is None
+    db.set_checkin_window("ghost", "09:00-18:00")
+    assert db.get_checkin_window("ghost") == "09:00-18:00"
+    assert db.get_user("ghost") is not None
+    db.close()
+
+
+def test_get_set_last_announced_version_round_trip(tmp_path):
+    db = Database(tmp_path / "announce.db")
+    db.upsert_user("u1", role="member", status="active")
+
+    assert db.get_last_announced_version("u1") is None  # never announced anything
+    db.set_last_announced_version("u1", "1.5.0")
+    assert db.get_last_announced_version("u1") == "1.5.0"
+    db.set_last_announced_version("u1", "1.6.0")  # a later version overwrites, doesn't stack
+    assert db.get_last_announced_version("u1") == "1.6.0"
+
+    db.upsert_user("u2", role="member", status="active")
+    assert db.get_last_announced_version("u2") is None  # independent of u1
+    db.close()
+
+
+def test_get_checkin_window_and_last_announced_version_for_nonexistent_user_is_none(tmp_path):
+    db = Database(tmp_path / "ghost.db")
+    assert db.get_checkin_window("ghost") is None
+    assert db.get_last_announced_version("ghost") is None
     db.close()
 
 

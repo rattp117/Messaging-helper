@@ -72,10 +72,15 @@ def _habit(id_: str, type_: str, **kw) -> Habit:
 def test_no_migration_was_added_for_history(tmp_path):
     """SPEC-v1.4.md's own §1: "Purely additive... needs no migration."
     `/history` reads the pre-existing `logs` table only -- pinned here so
-    a future accidental migration addition for this feature is caught."""
-    assert len(MIGRATIONS) == 7  # unchanged from SPEC-v1.3.md's own migration 007 (audit_log)
+    a future accidental migration addition for this feature is caught.
+    UPDATED (v1.5.0): the absolute count now includes SPEC-v1.5.md's own
+    migration 008 (`checkin_window`/`last_announced_version`) -- v1.4
+    itself still added none, which is all this test ever claimed; the
+    literal just has to track the CURRENT total like every other pinned
+    migration-count guard in this suite."""
+    assert len(MIGRATIONS) == 8
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 7
+    assert db.schema_version == 8
     db.close()
 
 

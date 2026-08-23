@@ -409,9 +409,17 @@ def test_ac12_edit_value_resolves_via_a_non_default_habit_alias():
     assert command == commands.Command(kind="edit", category="sleep", value_num=7.0)
 
 
-def test_ac12_ambiguous_unit_resolves_first_match_in_registry_order():
-    """SPEC-v0.7.md §9 risk 6: two duration habits sharing the same unit
-    token ("min") resolve to the FIRST one in registry order."""
+def test_ac12_ambiguous_unit_falls_through_to_none_regardless_of_registry_order():
+    """SPEC-v0.7.md §9 risk 6's original note ("resolves to the FIRST habit
+    in registry order") is SUPERSEDED by SPEC-v1.5.md's integration punch
+    list #3 (TEST-v1.5-preparse.md Finding 1): `core/units.build_unit_lookup`
+    now excludes a token claimed by two DIFFERENT habits from the lookup
+    entirely, so an ambiguous unit resolves to `None` -- `_parse_edit_value`
+    (which shares that lookup, R-L5) can no longer silently guess which
+    habit "20 min" means; `dispatch` falls through to `None` (not a
+    recognized command), same as any other unresolvable unit, letting the
+    LLM path handle it with context instead of misattributing the edit to
+    whichever habit happened to be listed first."""
     from habit_assistant.core.habits import Habit
 
     def duration_habit(id_: str) -> Habit:
@@ -433,7 +441,10 @@ def test_ac12_ambiguous_unit_resolves_first_match_in_registry_order():
 
     command = commands.dispatch("edit that to 20 min", registry)
 
-    assert command.category == "stretch"  # first in registry order, not "yoga"
+    assert command is None
+
+    reordered = HabitRegistry([duration_habit("yoga"), duration_habit("stretch")])
+    assert commands.dispatch("edit that to 20 min", reordered) is None
 
 
 # ===========================================================================
@@ -545,7 +556,21 @@ def test_dispatch_returns_none_for_normal_habit_messages(message):
     assert commands.dispatch(message, DEFAULT_REGISTRY) is None
 
 
-@pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)
+# SPEC-v1.5.md R-L1 (module `preparse`, AC-14): "500ml" is a whole-message
+# "NUMBER UNIT" shape -- it now resolves via `core/preparse.py:
+# deterministic_parse` BEFORE `parse_message` is ever reached, so it no
+# longer belongs in the "must still reach the LLM parser" parametrization
+# below (see `test_ac14_bare_number_unit_resolves_via_preparse_not_the_llm_
+# parser` just below for its own dedicated coverage, mirroring this test's
+# shape). Still fully valid for `test_dispatch_returns_none_for_normal_
+# habit_messages` above (dispatch() correctly returns None for it either
+# way, unaffected by preparse) and for `did 10 min stretch`, which is NOT a
+# whole-message "NUMBER UNIT" shape (extra surrounding words) and so still
+# correctly falls through to the LLM parser, unchanged.
+MESSAGES_THAT_MUST_STILL_REACH_THE_LLM_PARSER = [m for m in ADVERSARIAL_MESSAGES if m != "500ml"]
+
+
+@pytest.mark.parametrize("message", MESSAGES_THAT_MUST_STILL_REACH_THE_LLM_PARSER)
 async def test_normal_habit_messages_reach_parser_exactly_once(db, fixed_clock, monkeypatch, message):
     channel = FakeChannel()
     config = Config()
@@ -564,10 +589,40 @@ async def test_normal_habit_messages_reach_parser_exactly_once(db, fixed_clock, 
     assert calls == [message]  # called exactly once, with the original text
 
 
+async def test_ac14_bare_number_unit_resolves_via_preparse_not_the_llm_parser(db, fixed_clock, monkeypatch):
+    """SPEC-v1.5.md AC-14: unlike every other message in ADVERSARIAL_
+    MESSAGES, "500ml" is a whole-message "NUMBER UNIT" shape -- it now
+    resolves via `core/preparse.py:deterministic_parse` and never reaches
+    `parse_message` (or the LLM `_NeverCalledLLM` would raise on) at all."""
+    channel = FakeChannel()
+    config = Config()
+    calls: list[str] = []
+
+    async def counting_parse_message(text, llm, registry, confidence_threshold=None):
+        calls.append(text)
+        return ExtractionResult.unknown()
+
+    monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
+
+    await handle_inbound_message(
+        "500ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+    )
+
+    assert calls == []  # parse_message never reached
+    assert "500" in channel.sent[-1]
+
+
 async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands_ran(db, fixed_clock, monkeypatch):
     """Regression guard mirroring Luna's own smoke test: running undo/edit
     commands earlier in a session must not leave any state that causes a
-    later, perfectly normal log to be misclassified."""
+    later, perfectly normal log to be misclassified.
+
+    SPEC-v1.5.md AC-14: the final log uses "300ml water" (not a whole-
+    message "NUMBER UNIT" shape, so it still reaches `parse_message`,
+    unlike a bare "500ml" -- see `test_ac14_bare_number_unit_resolves_via_
+    preparse_not_the_llm_parser` for that shape's own dedicated coverage)
+    to keep this test's original "still reaches the parser exactly once"
+    assertion meaningful."""
     channel = FakeChannel()
     config = Config()
     _seed(db, "2026-08-19T09:00:00", "water", 500.0, raw="500ml")
@@ -584,9 +639,11 @@ async def test_command_layer_does_not_intercept_a_normal_log_even_after_commands
 
     monkeypatch.setattr("habit_assistant.main.parse_message", counting_parse_message)
 
-    await handle_inbound_message("500ml", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock)
+    await handle_inbound_message(
+        "300ml water", db=db, user_id="owner", llm=_NeverCalledLLM(), channel=channel, config=config, clock=fixed_clock
+    )
 
-    assert calls == ["500ml"]
+    assert calls == ["300ml water"]
     assert "logged" in channel.sent[-1]
 
 
@@ -726,7 +783,42 @@ async def test_normal_message_while_llm_down_is_still_deferred_not_intercepted(d
     """Control case: a message that is NOT a recognized command must still
     fall through to the existing v0.4.0 deferral path while Ollama is
     DOWN -- proves the new command-dispatch step doesn't broaden and start
-    swallowing messages it shouldn't."""
+    swallowing messages it shouldn't.
+
+    SPEC-v1.5.md AC-16 flips this specific outcome for a bare "500ml"
+    (a whole-message "NUMBER UNIT" shape now resolves via the pre-parser
+    and logs successfully even with Ollama down -- see the dedicated
+    `test_ac16_bare_number_unit_logs_successfully_while_llm_down_not_
+    deferred` test right below). This test now uses "not feeling great
+    today" (never a "NUMBER UNIT" shape) so its own original point --
+    non-preparseable messages still defer while Ollama is down -- stays
+    meaningful."""
+    channel = FakeChannel()
+    config = Config()
+    health_monitor = _FrozenHealthMonitor(ollama_up=False)
+
+    await handle_inbound_message(
+        "not feeling great today",
+        db=db, user_id="owner",
+        llm=_NeverCalledLLM(),
+        channel=channel,
+        config=config,
+        clock=fixed_clock,
+        health_monitor=health_monitor,
+    )
+
+    assert channel.sent == [DEFERRED_ACK_MESSAGE]
+    pending = db.pending_unparsed()
+    assert len(pending) == 1
+    assert pending[0]["raw_message"] == "not feeling great today"
+
+
+async def test_ac16_bare_number_unit_logs_successfully_while_llm_down_not_deferred(db, fixed_clock):
+    """SPEC-v1.5.md AC-16: the pre-parser gate sits BEFORE the health-
+    monitor deferral check in `handle_inbound_message` -- a whole-message
+    "NUMBER UNIT" shape like "500ml" now logs successfully (and confirms)
+    even while Ollama is DOWN, using `_NeverCalledLLM` to prove zero LLM
+    calls along the way. Companion to the control case just above."""
     channel = FakeChannel()
     config = Config()
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
@@ -741,10 +833,9 @@ async def test_normal_message_while_llm_down_is_still_deferred_not_intercepted(d
         health_monitor=health_monitor,
     )
 
-    assert channel.sent == [DEFERRED_ACK_MESSAGE]
-    pending = db.pending_unparsed()
-    assert len(pending) == 1
-    assert pending[0]["raw_message"] == "500ml"
+    assert channel.sent != [DEFERRED_ACK_MESSAGE]
+    assert "500" in channel.sent[-1]
+    assert db.pending_unparsed() == []
 
 
 async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fixed_clock, capsys):
@@ -766,20 +857,22 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_7(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.3.md
-    "Audit log" (migration 007: audit_log + its indexes, purely additive)
-    there are exactly 7 migrations, and a fresh DB must land on version
-    7. Bump this literal deliberately the next time a migration is added
-    -- unlike a bare `== len(MIGRATIONS)` comparison, this fails if a
-    migration is silently added/removed without the test being updated.
-    CHANGED (v1.3.0): was `== 6` / `test_..._schema_version_6` before
-    migration 007 (audit log) was added -- see IMPL-v1.3-shared.md."""
-    assert len(MIGRATIONS) == 7
+def test_fresh_db_migrates_to_schema_version_8(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.5.md
+    "Hourly check-ins + DND + LLM-call minimization + release
+    announcements" (migration 008: `users.checkin_window` +
+    `users.last_announced_version`, purely additive) there are exactly 8
+    migrations, and a fresh DB must land on version 8. Bump this literal
+    deliberately the next time a migration is added -- unlike a bare
+    `== len(MIGRATIONS)` comparison, this fails if a migration is
+    silently added/removed without the test being updated.
+    CHANGED (v1.5.0): was `== 7` / `test_..._schema_version_7` before
+    migration 008 was added -- see IMPL-v1.5-shared.md."""
+    assert len(MIGRATIONS) == 8
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 7
+    assert database.schema_version == 8
     database.close()
 
 

@@ -34,6 +34,10 @@ timeout_seconds = 30
 confidence_threshold = 0.55
 retry_attempts = 2
 retry_backoff_seconds = 1.5
+# SPEC-v1.5.md R-L4: gates the once-per-model startup schema probe. true
+# (default, unchanged behavior) runs it at startup; false skips it for
+# whoever wants to save the round trip.
+probe_on_startup = true
 
 [reminders.water]
 times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
@@ -57,6 +61,12 @@ time = "20:00"
 dir = "data/backups"
 retain = 14
 
+# SPEC-v1.5.md R-L3: liveness ping only (/api/version + Telegram getMe),
+# not an inference call. The code default is now 300s (v1.5.0, raised
+# from 60s -- fewer dependency pings, blunted by the deterministic
+# pre-parser keeping most messages off Ollama during an outage). This
+# deployment keeps its existing pinned value below (AC-17: a shorter
+# pinned value still works, incl. DOWN->UP recovery within the interval).
 [health]
 interval_seconds = 60
 
@@ -74,6 +84,15 @@ windows = []
 
 [snooze]
 default_minutes = 30
+
+# SPEC-v1.5.md "Hourly check-ins" (R-K2), OQ1 RESOLVED (b): opt-in for
+# everyone -- off by default, including the owner. `window` is the
+# default hourly window applied when a user runs `/checkin on` without
+# specifying their own; `/checkin HH:MM-HH:MM` overrides it per-user
+# (stored in `users.checkin_window`), `/checkin off` disables again.
+[checkin]
+enabled = false
+window = "08:00-20:00"
 
 # ROADMAP.md v0.10.0 "Streaks, Gentle Gamification & Daily Summary".
 # `enabled` gates only the milestone encouragement line appended to a

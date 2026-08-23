@@ -21,18 +21,22 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+from habit_assistant import __version__
 from habit_assistant.channels.base import Button, Channel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, ConfigError, load_config, load_secrets
 from habit_assistant.core import (
     access,
+    announce,
     audit,
     audit_view,
+    checkins,
     commands,
     discoverability,
     history_view,
     i18n,
     preferences,
+    preparse,
     query,
     schedules,
     streaks,
@@ -47,7 +51,7 @@ from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
-from habit_assistant.core.reminders import ReminderState, is_quiet_hours_now, run_due_reminders, send_reminder
+from habit_assistant.core.reminders import ReminderState, in_dnd_now, run_due_reminders, send_reminder
 from habit_assistant.core.review import render_weekly_review_charts, run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
 from habit_assistant.llm.prompts import (
@@ -144,6 +148,16 @@ LANG_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
 QUIET_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "Set your quiet hours (no reminders sent)",
     "th": "ตั้งช่วงเวลางดแจ้งเตือนของคุณ",
+}
+# SPEC-v1.5.md §6/§11 integration step: `/checkin` joins the public menu
+# (same rationale as every other genuinely user-facing command above);
+# `/dnd` deliberately gets NO separate entry -- it's a pure alias for
+# `/quiet` (`core/commands.py:_match_dnd` produces the identical
+# `kind="quiet"` shape), so it shares `/quiet`'s existing menu entry
+# rather than duplicating it.
+CHECKIN_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Get hourly check-in nudges (off by default)",
+    "th": "เปิดแจ้งเตือนเช็คอินรายชั่วโมง (ปิดโดยค่าเริ่มต้น)",
 }
 REMIND_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "View or set your reminder times for a habit",
@@ -689,6 +703,14 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "checkin":
+            reply = await checkins.execute_checkin(command, db=db, config=config, lang=lang, user_id=user_id)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
         if command.kind == "query":
             # ROADMAP.md v0.8.0: read-only (AC8.5) -- never touches health_monitor
             # deferral or the extractor below; classify_query_intent fails closed
@@ -768,54 +790,68 @@ async def handle_inbound_message(
             await _execute_edit(db, channel, config, clock, command, registry, lang, user_id)
         return
 
-    if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
-        assert channel is not None, "channel is required outside dry-run"
-        now = clock()
-        ts = now.isoformat(timespec="seconds")
-        db.insert_log(LogEntry(None, user_id, ts, "unparsed", None, None, text, source))
-        await channel.send(user_id, i18n.t("deferred_ack", lang))
-        return
+    # SPEC-v1.5.md R-L1/R-L2 (integration step, module `preparse`): a
+    # zero-LLM whole-message "NUMBER UNIT" hit skips the deferral check
+    # AND the target-NL gate entirely, so it logs successfully even while
+    # Ollama is down (AC-16) and without spending a health-monitor-gated
+    # call. A miss (`None`) falls through byte-for-byte to the pre-v1.5
+    # deferral -> target-NL-gate -> parse_message sequence below,
+    # unchanged (AC-15's "falls through unchanged" half). Both branches
+    # converge on the same `result` variable feeding the exact same
+    # downstream confirmation code -- this is what guarantees AC-14's
+    # byte-identical confirmation between the two paths.
+    preparsed = preparse.deterministic_parse(text, registry)
+    if preparsed is not None:
+        result = preparsed
+    else:
+        if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
+            assert channel is not None, "channel is required outside dry-run"
+            now = clock()
+            ts = now.isoformat(timespec="seconds")
+            db.insert_log(LogEntry(None, user_id, ts, "unparsed", None, None, text, source))
+            await channel.send(user_id, i18n.t("deferred_ack", lang))
+            return
 
-    # SPEC-v1.1.md R-T12-R-T16 (OQ3, module `targets`): the full-NL
-    # target-intent step. `command` is guaranteed None here (every branch
-    # above returns) -- i.e. the message matched neither an anchored
-    # command nor query-shape -- and the health-monitor deferral check just
-    # above already returned for the Ollama-DOWN case, so reaching this
-    # point already implies "Ollama up" whenever a health_monitor is wired
-    # (R-T16: no NL classification call is made while Ollama is down; the
-    # message falls through unchanged to the deferred/parse path below).
-    # `looks_like_target_phrasing` is a cheap cost gate only (R-T13.1) --
-    # `classify_target_intent` is independently fail-closed (R-T14), so a
-    # `None` result here (gate miss, low confidence, or any classifier
-    # failure) falls straight through to the normal log-parsing path,
-    # unchanged (R-C5).
-    if health_monitor is None or health_monitor.ollama_up:
-        if target_nl.looks_like_target_phrasing(text):
-            intent = await target_nl.classify_target_intent(text, llm, registry, config)
-            if intent is not None:
-                set_command = commands.Command(
-                    kind="target",
-                    category=intent.habit_id,
-                    value_num=intent.goal_base_unit,
-                    target_action="set",
-                )
-                # SPEC-v1.3.md §2.1/R-C1 (integration step): the full-NL
-                # path is the one `target_set` call site that must NOT
-                # default to "command" -- distinguishing "/target water
-                # 2000" from "from now on I want to drink 2.5L a day" in
-                # the audit trail is the entire point of `source`'s
-                # existence for this action.
-                reply = await targets_command.execute_target(
-                    set_command, db=db, config=config, registry=registry, lang=lang, user_id=user_id, source="nl"
-                )
-                if dry_run:
-                    print(reply)
-                    return
-                assert channel is not None, "channel is required outside dry-run"
-                await channel.send(user_id, reply)
-                return  # AC29/AC30: no `logs` row is written for a target-intent hit
+        # SPEC-v1.1.md R-T12-R-T16 (OQ3, module `targets`): the full-NL
+        # target-intent step. `command` is guaranteed None here (every branch
+        # above returns) -- i.e. the message matched neither an anchored
+        # command nor query-shape -- and the health-monitor deferral check just
+        # above already returned for the Ollama-DOWN case, so reaching this
+        # point already implies "Ollama up" whenever a health_monitor is wired
+        # (R-T16: no NL classification call is made while Ollama is down; the
+        # message falls through unchanged to the deferred/parse path below).
+        # `looks_like_target_phrasing` is a cheap cost gate only (R-T13.1) --
+        # `classify_target_intent` is independently fail-closed (R-T14), so a
+        # `None` result here (gate miss, low confidence, or any classifier
+        # failure) falls straight through to the normal log-parsing path,
+        # unchanged (R-C5).
+        if health_monitor is None or health_monitor.ollama_up:
+            if target_nl.looks_like_target_phrasing(text):
+                intent = await target_nl.classify_target_intent(text, llm, registry, config)
+                if intent is not None:
+                    set_command = commands.Command(
+                        kind="target",
+                        category=intent.habit_id,
+                        value_num=intent.goal_base_unit,
+                        target_action="set",
+                    )
+                    # SPEC-v1.3.md §2.1/R-C1 (integration step): the full-NL
+                    # path is the one `target_set` call site that must NOT
+                    # default to "command" -- distinguishing "/target water
+                    # 2000" from "from now on I want to drink 2.5L a day" in
+                    # the audit trail is the entire point of `source`'s
+                    # existence for this action.
+                    reply = await targets_command.execute_target(
+                        set_command, db=db, config=config, registry=registry, lang=lang, user_id=user_id, source="nl"
+                    )
+                    if dry_run:
+                        print(reply)
+                        return
+                    assert channel is not None, "channel is required outside dry-run"
+                    await channel.send(user_id, reply)
+                    return  # AC29/AC30: no `logs` row is written for a target-intent hit
 
-    result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
+        result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
 
     if dry_run:
         print(asdict(result))
@@ -1202,25 +1238,41 @@ async def async_main(args: argparse.Namespace) -> None:
     # startup, purely for operator visibility (logged inside the client).
     # Never allowed to crash startup -- probe_schema_support() itself never
     # raises, but this is belt-and-suspenders against a future change to it.
-    extraction_schema = build_extraction_schema(registry.category_enum())
-    probe_system_prompt = build_extraction_system_prompt(registry)
-    probe_user_prompt = build_extraction_user_prompt("500ml")
-    try:
-        await llm.probe_schema_support(probe_system_prompt, probe_user_prompt, extraction_schema)
-    except Exception:
-        logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
+    # SPEC-v1.5.md R-L4/AC-18: gated by `config.ollama.probe_on_startup`
+    # (default True, preserving pre-v1.5 behavior -- the probe always ran).
+    if config.ollama.probe_on_startup:
+        extraction_schema = build_extraction_schema(registry.category_enum())
+        probe_system_prompt = build_extraction_system_prompt(registry)
+        probe_user_prompt = build_extraction_user_prompt("500ml")
+        try:
+            await llm.probe_schema_support(probe_system_prompt, probe_user_prompt, extraction_schema)
+        except Exception:
+            logger.exception("Ollama schema conformance probe failed unexpectedly; continuing startup anyway")
+
+    # SPEC-v1.5.md R-N2 (module `announce`): the running version's release
+    # note, sent once per user per version, fanned out to every active
+    # user (AC-20/AC-24). Placed after attribution (`db.attribute_legacy_
+    # to_owner` above, so the active-user set is correct first) and after
+    # `channel` is constructed, before the scheduler starts -- deliberately
+    # NOT reached by the `--seed`/`--dry-run`/`--test-reminder` CLI
+    # branches above (all of which already returned by this point), since
+    # announcing on a one-off manual invocation isn't a real "startup".
+    await announce.announce_release(db, channel, config, __version__)
 
     # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11 and
-    # SPEC-v1.4.md R-A2 integration steps: register the bot command menu
-    # once at startup -- `/start` + `/undo` (undo_ui's own contribution) +
-    # `/target` (this integration step's, see TARGET_COMMAND_DESCRIPTIONS
-    # above) + `/help` + `/habits` (discoverability) + `/remind` + `/lang`
-    # + `/quiet` + `/history` (see START_/REMIND_/LANG_/QUIET_/HISTORY_
+    # SPEC-v1.4.md R-A2 / SPEC-v1.5.md §6/§11 integration steps: register
+    # the bot command menu once at startup -- `/start` + `/undo` (undo_ui's
+    # own contribution) + `/target` (this integration step's, see
+    # TARGET_COMMAND_DESCRIPTIONS above) + `/help` + `/habits`
+    # (discoverability) + `/remind` + `/lang` + `/quiet` + `/history` +
+    # `/checkin` (see START_/REMIND_/LANG_/QUIET_/HISTORY_/CHECKIN_
     # COMMAND_DESCRIPTIONS above for why the four true admin commands --
-    # and owner-only `/audit` -- are deliberately excluded), English
-    # default + a Thai set. 9 public commands total. A transport error
-    # here is logged and never crashes startup (AC2) -- same belt-and-
-    # suspenders posture as the schema-conformance probe just above.
+    # and owner-only `/audit` -- are deliberately excluded; `/dnd` is
+    # deliberately excluded too, sharing `/quiet`'s entry, per
+    # CHECKIN_COMMAND_DESCRIPTIONS's own comment above), English default +
+    # a Thai set. 10 public commands total. A transport error here is
+    # logged and never crashes startup (AC2) -- same belt-and-suspenders
+    # posture as the schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
         lang: (
@@ -1232,6 +1284,7 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("lang", LANG_COMMAND_DESCRIPTIONS[lang])]
             + [("quiet", QUIET_COMMAND_DESCRIPTIONS[lang])]
             + [("history", HISTORY_COMMAND_DESCRIPTIONS[lang])]
+            + [("checkin", CHECKIN_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -1285,6 +1338,22 @@ async def async_main(args: argparse.Namespace) -> None:
         misfire_grace_time=30,
     )
 
+    # SPEC-v1.5.md R-K1 (module `checkins`): a sibling of `reminder_tick`
+    # on the SAME minutely cadence -- `run_due_checkins`'s own internal
+    # `hhmm.endswith(":00")` guard is what limits it to firing once per
+    # hour, so the cron trigger itself still needs to fire every minute
+    # for that guard to be evaluated.
+    scheduler.add_job(
+        checkins.run_due_checkins,
+        trigger=CronTrigger(second=0, timezone=config.app.timezone),
+        args=[channel, config, registry, db],
+        id="checkin_tick",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
     review_hour, review_minute = (int(x) for x in config.weekly_review.time.split(":"))
 
     async def weekly_review_job() -> None:
@@ -1297,6 +1366,14 @@ async def async_main(args: argparse.Namespace) -> None:
         week_end = today.isoformat() + "T23:59:59"
         for user_id in db.active_user_ids():
             if not db.logs_between(user_id, week_start, week_end):
+                continue
+            # SPEC-v1.5.md R-D3: this job previously had NO DND check at
+            # all (the audited gap) -- a user inside their own effective
+            # DND window now has their review + charts suppressed. An
+            # un-customized user's default windows are empty (`[]`), so
+            # `in_dnd_now` returns `False` and their review still fires
+            # exactly as before (AC-11).
+            if in_dnd_now(db, config, user_id):
                 continue
             # SPEC-v1.2.md R-P1 call site #3 of 5 (integration step):
             # resolved per user now, not once globally -- each active
@@ -1338,10 +1415,12 @@ async def async_main(args: argparse.Namespace) -> None:
     # ROADMAP.md v0.10.0 AC10.3/AC10.4: the end-of-day recap, gated by its
     # own `config.gamification.daily_summary` flag (independent of
     # `gamification.enabled`, which only affects milestone lines -- AC10.4
-    # "no behavioral leakage") and, like every other unprompted send,
-    # suppressed during a configured quiet-hours window (the GLOBAL
-    # window -- R-S3 only makes per-*habit reminder* times per-user, not
-    # the daily-summary send itself).
+    # "no behavioral leakage"). SPEC-v1.5.md R-D2: DND suppression moved
+    # from a single GLOBAL pre-check to a PER-USER check inside the
+    # fan-out below (the audited gap: a user was previously suppressed
+    # merely because a *global* window was active, even if they'd never
+    # customized their own DND at all -- and a user in their OWN DND
+    # window, with no global window active, was never suppressed).
     summary_hour, summary_minute = (int(x) for x in config.gamification.daily_summary_time.split(":"))
 
     async def daily_summary_job() -> None:
@@ -1350,14 +1429,19 @@ async def async_main(args: argparse.Namespace) -> None:
         # skipped (no empty summary).
         if not config.gamification.daily_summary:
             return
-        if is_quiet_hours_now(config):
-            logger.info("Suppressing daily summary: inside a quiet-hours window")
-            return
         today = date.today()
         today_str = today.isoformat()
         for user_id in db.active_user_ids():
             has_logs_today = any(db.count(user_id, habit.id, today_str) > 0 for habit in registry)
             if not has_logs_today:
+                continue
+            # SPEC-v1.5.md R-D2: per-user DND, evaluated INSIDE the
+            # fan-out (replaces the old global is_quiet_hours_now(config)
+            # pre-check). An un-customized user's effective windows fall
+            # back to config.quiet_hours.windows (empty by default), so
+            # the result is byte-identical to v1.4 for them (AC-10).
+            if in_dnd_now(db, config, user_id):
+                logger.info("Suppressing daily summary for %s: inside their own DND window", user_id)
                 continue
             # SPEC-v1.2.md R-P1 call site #4 of 5 (integration step):
             # resolved per user now, not once globally.

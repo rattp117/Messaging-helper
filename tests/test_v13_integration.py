@@ -928,7 +928,7 @@ async def test_migration_007_rehearsal_on_a_v1_2_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 7
+        assert db.schema_version == 8  # SPEC-v1.5.md's additive migration 008 also lands now
         assert db.get_target(OWNER, "water") == 2500.0
         rows = db.recent_audit(10)
         assert len(rows) == 1

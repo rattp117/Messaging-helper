@@ -126,19 +126,6 @@ def _now_hhmm(clock, tz_name: str) -> str:
     return now.strftime("%H:%M")
 
 
-def is_quiet_hours_now(config: Config) -> bool:
-    """ROADMAP.md v0.10.0: a plain "is right now inside a configured
-    GLOBAL quiet-hours window?" check, for callers outside this module
-    (e.g. `main.py`'s daily-summary job, which is a global-time fan-out --
-    R-S3 -- and stays gated by the global config windows, not any one
-    user's override) that shouldn't have to duplicate `_in_quiet_hours`'s
-    window-parsing logic or reach into a private function."""
-    if not config.quiet_hours.windows:
-        return False
-    now_local = datetime.now(ZoneInfo(config.app.timezone)).time()
-    return _in_quiet_hours(now_local, config.quiet_hours.windows)
-
-
 def effective_quiet_windows(db: Database | None, config: Config, chat_id: str) -> list[tuple[str, str]]:
     """SPEC-v1.2.md R-P2: `chat_id`'s effective quiet-hours windows --
     `users.quiet_hours_json` if set (an explicit, possibly EMPTY, list --
@@ -165,6 +152,48 @@ def effective_quiet_windows(db: Database | None, config: Config, chat_id: str) -
             "Reading effective quiet hours failed for %s; falling back to global config windows (fail-open)", chat_id
         )
         return config.quiet_hours.windows
+
+
+def in_dnd_now(db: Database, config: Config, chat_id: str, clock=datetime.now) -> bool:
+    """SPEC-v1.5.md R-D1: the ONE shared per-user Do-Not-Disturb check --
+    "is `chat_id` inside their own effective quiet-hours window right
+    now?" Built directly on the existing `effective_quiet_windows`
+    (per-user override, falling back to `config.quiet_hours.windows`) +
+    `_in_quiet_hours` (midnight-crossing-aware) -- v1.5 does NOT build a
+    parallel DND mechanism (§4's own explicit decision); this is simply
+    the one call every unprompted per-user send site now shares
+    (check-ins R-K4, the daily-summary job R-D2, the weekly-review job
+    R-D3), instead of each reimplementing the "windows lookup -> now ->
+    inside?" sequence inline the way `main.py`'s old GLOBAL
+    `is_quiet_hours_now` call sites used to.
+
+    `clock` is the same injectable-clock shape every other testable
+    "what time is it" call site in this module already uses (`_now_hhmm`
+    above) -- a naive result is treated as already being in
+    `config.app.timezone`; an aware one is converted to it. Fail-open by
+    construction: `effective_quiet_windows` itself already falls back to
+    the global config default on ANY DB read error (its own documented
+    posture, a few lines up) -- a DB hiccup here simply resolves to
+    whatever the global config's own windows say, never a raised
+    exception.
+
+    Deliberately NOT used by `send_reminder`'s own existing inline
+    quiet-hours check (SPEC-v1.5.md §2.3's suppression matrix marks the
+    per-habit reminder tick "unchanged") -- that call site keeps its own
+    real-clock `datetime.now(ZoneInfo(...))` read rather than being
+    refactored to take a `clock` param, so as to introduce zero behavior
+    risk to an already-correct, already-tested path; this function is
+    for the THREE sites the matrix marks as actually changing (or, for
+    check-ins, brand new)."""
+    windows = effective_quiet_windows(db, config, chat_id)
+    if not windows:
+        return False
+    now = clock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
+    else:
+        now = now.astimezone(ZoneInfo(config.app.timezone))
+    return _in_quiet_hours(now.time(), windows)
 
 
 def _user_language_pref(db: Database, chat_id: str) -> str:

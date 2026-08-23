@@ -184,14 +184,20 @@ def test_ac36_help_text_covers_every_required_section():
 
 
 def test_ac36_help_text_values_are_read_live_from_config_not_hardcoded():
-    config_a = Config.model_validate({"weekly_review": {"time": "20:00"}})
-    config_b = Config.model_validate({"weekly_review": {"time": "18:15"}})
+    # SPEC-v1.5.md integration step: "20:00"/"08:00"/"09:00"/"18:00" are no
+    # longer safe discriminator values here -- `help_checkin_cmd`'s own
+    # static example copy ("/checkin on (08:00-20:00), /checkin
+    # 09:00-18:00") now always appears in the rendered text regardless of
+    # `weekly_review.time`, so this test picks two times that don't
+    # collide with that fixed example text.
+    config_a = Config.model_validate({"weekly_review": {"time": "05:13"}})
+    config_b = Config.model_validate({"weekly_review": {"time": "23:52"}})
 
     text_a = discoverability.build_help_text(config_a, "en")
     text_b = discoverability.build_help_text(config_b, "en")
 
-    assert "20:00" in text_a and "18:15" not in text_a
-    assert "18:15" in text_b and "20:00" not in text_b
+    assert "05:13" in text_a and "23:52" not in text_a
+    assert "23:52" in text_b and "05:13" not in text_b
 
 
 def test_ac36_help_text_daily_summary_off_omits_a_time_but_still_has_a_section():
@@ -917,7 +923,14 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     UPDATED AGAIN at SPEC-v1.4.md's own integration step (IMPL-v1.4.md):
     `history` joined the public menu too (9 total) -- unlike owner-only,
     admin-hidden `/audit` (SPEC-v1.3.md), `/history` is every active
-    user's own data (R-A2)."""
+    user's own data (R-A2).
+
+    UPDATED AGAIN at SPEC-v1.5.md's own integration step (IMPL-v1.5-
+    integration.md): `checkin` joined the public menu too (10 total) --
+    `/dnd` deliberately did NOT get its own entry (it's a pure alias for
+    `/quiet`, sharing that existing entry), which is exactly what this
+    test's exact-set check would catch if `/dnd` leaked in as a stray
+    duplicate."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -927,7 +940,7 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
 
     channel = _AsyncMainFakeChannel.last_instance
     registered = channel.set_my_commands_calls[0]
-    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history"}
+    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
         assert set(names) == expected, f"{lang}: {names}"

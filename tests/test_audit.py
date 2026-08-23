@@ -44,9 +44,17 @@ def db(tmp_path):
 
 
 def test_actions_matches_the_spec_vocabulary_exactly():
+    """SPEC-v1.5.md integration punch list #2: `checkin_set`/`checkin_off`/
+    `checkin_default` extend the closed vocabulary, mirroring `remind_set`/
+    `remind_off`/`remind_default`'s own three-way on/off/reset shape --
+    `/checkin on` and an explicit "HH:MM-HH:MM" window both record
+    `checkin_set` (both are "enable with this window", differing only in
+    where the window string came from), `/checkin off` records
+    `checkin_off`, and `/checkin default` records `checkin_default`."""
     assert set(audit.ACTIONS) == {
         "undo", "edit", "target_set", "target_clear", "remind_set", "remind_off",
         "remind_default", "lang_set", "quiet_set", "quiet_off",
+        "checkin_set", "checkin_off", "checkin_default",
         "user_approve", "user_block", "user_pending",
     }
 

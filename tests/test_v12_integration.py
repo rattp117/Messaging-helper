@@ -271,13 +271,14 @@ async def test_full_two_user_lifecycle_onboarding_through_isolated_use(tmp_path,
     ]
     responses = [
         # Step 1 never calls chat_json at all -- STRANGER is gated off
-        # before handle_inbound_message/parse_message is ever reached, so
-        # this queue starts at step 3, the first message that actually
-        # reaches the LLM boundary.
-        _extraction("water", 500),  # step 3
+        # before handle_inbound_message/parse_message is ever reached.
+        # SPEC-v1.5.md R-L1 (module `preparse`): steps 3, 9, and 10 are all
+        # bare "500ml" -- a whole-message "NUMBER UNIT" shape that now
+        # resolves deterministically without ever reaching `chat_json` --
+        # so none of them consume a queue entry any more. Only step 4
+        # ("10 min stretch", not a whole-message "NUMBER UNIT" shape) still
+        # falls through to the LLM.
         _extraction("stretch", 10),  # step 4
-        _extraction("water", 500),  # step 9
-        _extraction("water", 500),  # step 10
     ]
     channel = await _run(monkeypatch, config, script, responses=responses)
     db = Database(tmp_path / "habits.db")
@@ -527,9 +528,15 @@ async def test_ac_x1_inbound_messages_from_two_users_are_processed_sequentially(
     seed_db.upsert_user(STRANGER, role="member", status="active")
     seed_db.close()
 
+    # SPEC-v1.5.md R-L1 (module `preparse`): a bare "500ml" now resolves
+    # deterministically, without ever reaching `chat_json` -- this test's
+    # own point is proving no interleaving BETWEEN two concurrent LLM
+    # calls, so both messages here are phrased to fall through the
+    # pre-parser (not a whole-message "NUMBER UNIT" shape) and still
+    # genuinely reach the extractor.
     script = [
-        ("message", OWNER, "500ml", None),
-        ("message", STRANGER, "10 min stretch", None),
+        ("message", OWNER, "drank some water", None),
+        ("message", STRANGER, "did some stretching", None),
     ]
     main_module = _run_async_main(
         monkeypatch, config, script, responses=[_extraction("water", 500), _extraction("stretch", 10)]
@@ -585,7 +592,9 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
         names = {name for name, _desc in entries}
         # SPEC-v1.4.md's own integration step added "history" to this set
         # (R-A2 -- every active user's own data, unlike owner-only /audit).
-        assert names == {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history"}
+        # SPEC-v1.5.md's own integration step added "checkin" too; "dnd" is
+        # deliberately absent (shares /quiet's own menu entry).
+        assert names == {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin"}
         assert not names & {"approve", "block", "users", "invite"}
 
 
@@ -836,6 +845,10 @@ async def test_query_answers_are_scoped_to_the_asking_users_own_data(tmp_path, m
     seed_db.upsert_user(b, role="member", status="active")
     seed_db.close()
 
+    # SPEC-v1.5.md R-L1 (module `preparse`): "500ml"/"300ml" now resolve
+    # deterministically without ever reaching `chat_json` -- only the two
+    # query-classification calls below still consume the mocked response
+    # queue.
     script = [
         ("message", a, "500ml", None),
         ("message", b, "300ml", None),
@@ -843,8 +856,6 @@ async def test_query_answers_are_scoped_to_the_asking_users_own_data(tmp_path, m
         ("message", b, "how much water today?", None),
     ]
     responses = [
-        _extraction("water", 500),
-        _extraction("water", 300),
         _query_intent("water", "sum", "today"),
         _query_intent("water", "sum", "today"),
     ]
@@ -872,12 +883,16 @@ async def test_daily_summary_fan_out_shows_each_users_own_totals_and_skips_a_use
     seed_db.upsert_user(c, role="member", status="active")  # logs nothing today -- must be skipped
     seed_db.close()
 
+    # SPEC-v1.5.md R-L1 (module `preparse`): "500ml" now resolves
+    # deterministically without ever reaching `chat_json` -- only "10 min
+    # stretch" (not a whole-message "NUMBER UNIT" shape) still consumes
+    # the mocked response queue.
     script = [("message", a, "500ml", None), ("message", b, "10 min stretch", None)]
     channel = await _run(
         monkeypatch,
         config,
         script,
-        responses=[_extraction("water", 500), _extraction("stretch", 10)],
+        responses=[_extraction("stretch", 10)],
         run_jobs=["daily_summary"],
     )
 
@@ -1170,7 +1185,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 7  # SPEC-v1.3.md's additive migration 007 (audit_log) also lands now
+        assert db.schema_version == 8  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 also land now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

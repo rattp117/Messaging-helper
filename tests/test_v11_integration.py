@@ -200,6 +200,37 @@ async def test_ac4_clarifying_question_carries_no_button(db, registry, monkeypat
 
 
 async def test_ac4_deferred_ack_carries_no_button(db, registry):
+    """SPEC-v1.5.md AC-14/AC-16: uses "drank some water" rather than a
+    bare "500ml" -- a whole-message "NUMBER UNIT" shape now resolves via
+    the pre-parser and logs successfully (WITH an undo button) even while
+    Ollama is down, which would defeat this test's own point. See
+    `test_ac16_bare_number_unit_while_ollama_down_logs_with_an_undo_
+    button_not_deferred` right below for that new behavior's own coverage."""
+    health_monitor = _FrozenHealthMonitor(ollama_up=False)
+    channel = FakeChannel()
+
+    await handle_inbound_message(
+        "drank some water",
+        db=db,
+        llm=FakeLLM(),
+        channel=channel,
+        config=Config(),
+        registry=registry,
+        clock=_clock(),
+        health_monitor=health_monitor,
+        user_id=CHAT_ID,
+    )
+
+    assert channel.actionable == []
+    assert channel.sent == [i18n.t("deferred_ack", "en")]
+    assert _log_count(db) == 1  # persisted verbatim as 'unparsed', not lost
+
+
+async def test_ac16_bare_number_unit_while_ollama_down_logs_with_an_undo_button_not_deferred(db, registry):
+    """SPEC-v1.5.md AC-16: the pre-parser gate sits BEFORE the health-
+    monitor deferral check -- "500ml" now logs successfully, WITH an undo
+    button, even while Ollama is down. Companion to `test_ac4_deferred_
+    ack_carries_no_button` just above."""
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
     channel = FakeChannel()
 
@@ -215,9 +246,10 @@ async def test_ac4_deferred_ack_carries_no_button(db, registry):
         user_id=CHAT_ID,
     )
 
-    assert channel.actionable == []
-    assert channel.sent == [i18n.t("deferred_ack", "en")]
-    assert _log_count(db) == 1  # persisted verbatim as 'unparsed', not lost
+    assert len(channel.actionable) == 1  # a real confirmation with an undo button, not a deferred ack
+    assert channel.sent != [i18n.t("deferred_ack", "en")]
+    assert _log_count(db) == 1
+    assert db.pending_unparsed() == []
 
 
 # ===========================================================================

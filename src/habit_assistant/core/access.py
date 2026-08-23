@@ -30,6 +30,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Literal
 
+from habit_assistant import __version__
 from habit_assistant.channels.base import Channel
 from habit_assistant.core import audit, i18n
 
@@ -296,6 +297,19 @@ async def execute_admin(
             logger.exception("Failed to approve chat_id=%r", target_chat)
             await channel.send(chat_id, i18n.t("admin_save_failed", lang))
             return
+        # SPEC-v1.5.md R-N5/AC-23: catch a newly-approved user up to the
+        # CURRENT running version, right after the approve write succeeds --
+        # so they never receive a release announcement for a version that
+        # shipped before they were let in (only FUTURE version bumps
+        # announce to them). Best-effort: a failure here must not undo or
+        # block the approve itself (the user is already active); a missed
+        # catch-up here just means `announce.announce_release`'s own
+        # idempotent per-user check will (harmlessly) send them the current
+        # version's note next startup instead.
+        try:
+            db.set_last_announced_version(target_chat, __version__)
+        except Exception:
+            logger.exception("Failed to catch up last_announced_version for newly-approved chat_id=%r", target_chat)
         audit.record(
             db,
             actor=chat_id,
