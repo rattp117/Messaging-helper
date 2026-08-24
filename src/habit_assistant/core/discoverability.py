@@ -103,6 +103,12 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     lines.append(i18n.t("help_heatmap_cmd", lang))
     lines.append(i18n.t("help_records_cmd", lang))
     lines.append(i18n.t("help_trends_cmd", lang))
+    # SPEC-v1.7.md §11 integration step (same "data only in each module's
+    # own catalog block, wiring is a later append" posture as the lines
+    # above): `/addhabit`/`/delhabit` (module `habitdef`), added after that
+    # track landed.
+    lines.append(i18n.t("help_addhabit_cmd", lang))
+    lines.append(i18n.t("help_delhabit_cmd", lang))
 
     return "\n\n".join(lines)
 

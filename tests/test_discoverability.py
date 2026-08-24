@@ -937,7 +937,11 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     public menu too (14 total) -- the nudge (module `nudge`) deliberately
     got NO entry (OQ2: no command of its own, rides `/checkin`
     enablement), which is exactly what this test's exact-set check would
-    catch if a stray `nudge` entry leaked in."""
+    catch if a stray `nudge` entry leaked in.
+
+    UPDATED AGAIN at SPEC-v1.7.md's own integration step (IMPL-v1.7-
+    integration.md): `addhabit`/`delhabit` joined the public menu too
+    (16 total, module `habitdef`, R-A2)."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -949,7 +953,7 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     registered = channel.set_my_commands_calls[0]
     expected = {
         "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
-        "dashboard", "heatmap", "records", "trends",
+        "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit",
     }
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]

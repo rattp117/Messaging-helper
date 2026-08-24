@@ -34,6 +34,7 @@ from habit_assistant.core import (
     commands,
     dashboard,
     discoverability,
+    habitdef,
     heatmap,
     history_view,
     i18n,
@@ -56,6 +57,7 @@ from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message
+from habit_assistant.core.registry_provider import RegistryProvider
 from habit_assistant.core.reminders import ReminderState, in_dnd_now, run_due_reminders, send_reminder
 from habit_assistant.core.review import render_weekly_review_charts, run_weekly_review
 from habit_assistant.llm.ollama_client import OllamaClient, build_extraction_schema
@@ -194,6 +196,17 @@ RECORDS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
 TRENDS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "See this week vs last week, at a glance",
     "th": "ดูเปรียบเทียบสัปดาห์นี้กับสัปดาห์ที่แล้วแบบย่อ",
+}
+# SPEC-v1.7.md §4 R-A2/§11 integration step (module `habitdef`): `/addhabit`
+# and `/delhabit` join the public menu -- same rationale as every other
+# genuinely user-facing command above.
+ADDHABIT_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Add your own custom habit",
+    "th": "เพิ่มนิสัยของคุณเอง",
+}
+DELHABIT_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Remove a habit you created",
+    "th": "ลบนิสัยที่คุณสร้างไว้",
 }
 
 
@@ -558,6 +571,7 @@ async def handle_inbound_message(
     registry: HabitRegistry | None = None,
     scheduler: AsyncIOScheduler | None = None,
     reminder_state: ReminderState | None = None,
+    provider: RegistryProvider | None = None,
 ) -> None:
     """Command dispatch -> (act + confirm) OR Parse -> validate -> (write
     row + confirm) OR (clarifying question). Confirmation formats are
@@ -589,7 +603,14 @@ async def handle_inbound_message(
     ROADMAP.md v0.7.0 "Multi-Habit Extensibility": `registry` defaults to
     `HabitRegistry.from_config(config)` when not given, so every pre-v0.7
     caller (this file's own `async_main`, and every test that doesn't care
-    about a custom habit set) keeps working unchanged. A result's
+    about a custom habit set) keeps working unchanged. SPEC-v1.7.md R-G3:
+    the real production caller (`on_message`, below) now resolves and
+    passes the ACTING user's own per-user registry here
+    (`provider.for_user(chat_id)`) instead of the single global one --
+    this function itself needs no other change for that, since every
+    consumer below (`_execute_undo`/`_execute_edit`, `records.render`,
+    `preparse.deterministic_parse`, `parse_message`, etc.) already just
+    reads this same local `registry`, never rebuilding its own. A result's
     `habit = registry.get(result.category)` decides confirmation shape:
     built-in ids (`water`/`stretch`/`diary`) keep their exact v0.6 catalog
     entries below (byte-identical, AC7.1); any other habit renders through
@@ -685,7 +706,21 @@ async def handle_inbound_message(
     pref`) into this reply's own language, alongside the inbound text's
     detected language and the global config force -- so a user who ran
     `/lang th` gets Thai for every subsequent reply, not just the `/lang`
-    confirmation itself (R-P1)."""
+    confirmation itself (R-P1).
+
+    Integration step (SPEC-v1.7.md §11, landed after both `habitdef` and
+    `sweep` reported done): `command.kind in ("addhabit", "delhabit")` is
+    now handled here too, routed to `core/habitdef.execute_addhabit`/
+    `execute_delhabit`. `provider` (new, optional, default `None`) is the
+    process-global `RegistryProvider` those two functions need to
+    invalidate the acting user's cached registry on create/archive/delete
+    (R-G2/AC-3) -- `on_message` always passes its own single provider
+    instance, so a `/addhabit` followed immediately by another message
+    from the same user rebuilds from the SAME cache the next lookup reads,
+    which is what makes "no restart" true in production; a caller that
+    omits it (every pre-v1.7 test, `--dry-run`) gets a fresh one-off
+    `RegistryProvider` built on the spot -- correct for a single call,
+    just without the cross-call persistence."""
     registry = registry or HabitRegistry.from_config(config)
     # SPEC-v1.2.md R-P1 call site #1 of 5 (integration step): the acting
     # user's own stored /lang preference now participates in "auto"
@@ -742,6 +777,43 @@ async def handle_inbound_message(
             return
         if command.kind == "checkin":
             reply = await checkins.execute_checkin(command, db=db, config=config, lang=lang, user_id=user_id)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
+        if command.kind in ("addhabit", "delhabit"):
+            # SPEC-v1.7.md §11 integration step (module `habitdef`): both
+            # kinds are deterministic, LLM-free DB-write commands -- same
+            # "before the deferral check" placement as `target`/`checkin`
+            # above. `provider` falls back to a fresh one-off
+            # `RegistryProvider` when this function is called without one
+            # (e.g. `--dry-run`, a bare `handle_inbound_message` test call)
+            # -- cheap (an empty cache) and correct for a single call, same
+            # posture as `registry`'s own `or HabitRegistry.from_config
+            # (config)` fallback above; the real production caller
+            # (`on_message`) always passes the process-global one, so
+            # AC-3's "no restart" cache actually persists across messages.
+            # `base_registry` (R-G4's "no base shadowing" check) is always
+            # freshly built from `config` -- cheap, and independent of
+            # whichever per-user registry this call happens to have.
+            active_provider = provider if provider is not None else RegistryProvider(config, db)
+            base_registry = HabitRegistry.from_config(config)
+            if command.kind == "addhabit":
+                reply = await habitdef.execute_addhabit(
+                    command,
+                    db=db,
+                    provider=active_provider,
+                    config=config,
+                    base_registry=base_registry,
+                    lang=lang,
+                    user_id=user_id,
+                )
+            else:
+                reply = await habitdef.execute_delhabit(
+                    command, db=db, provider=active_provider, lang=lang, user_id=user_id
+                )
             if dry_run:
                 print(reply)
                 return
@@ -1056,7 +1128,12 @@ async def handle_inbound_message(
 
 
 async def reparse_pending_unparsed(
-    db: Database, llm: OllamaClient, channel: Channel, config: Config, registry: HabitRegistry | None = None
+    db: Database,
+    llm: OllamaClient,
+    channel: Channel,
+    config: Config,
+    registry: HabitRegistry | None = None,
+    provider: RegistryProvider | None = None,
 ) -> None:
     """ROADMAP.md v0.4.0 AC3.3 recovery path: re-parse every row deferred
     while Ollama was DOWN (category='unparsed'), convert it to its real
@@ -1087,7 +1164,17 @@ async def reparse_pending_unparsed(
     own `user_id` (stamped at deferral time in `handle_inbound_message`)
     -- the recovery confirmation is addressed to THAT row's own chat, not
     a pinned global one, so a backlog spanning multiple users resolves
-    correctly to each of them."""
+    correctly to each of them.
+
+    SPEC-v1.7.md R-G3: `provider`, when given, resolves EACH row's own
+    per-user registry (`provider.for_user(row["user_id"])`) INSIDE the
+    loop below -- a backlog spanning multiple users re-parses each row
+    against its OWN user's custom habits, not a single shared registry
+    (AC-4). Additive and optional, same convention as `registry_for` in
+    `core/reminders.py`/`core/checkins.py`/`core/nudge.py`: omitted
+    (`None`, the default), every existing caller/test that passes only
+    `registry` (or nothing at all) keeps the exact pre-v1.7 behavior --
+    one registry, built once, reused for every row (AC-5)."""
     registry = registry or HabitRegistry.from_config(config)
     pending = db.pending_unparsed()
     if not pending:
@@ -1097,14 +1184,15 @@ async def reparse_pending_unparsed(
     for row in pending:
         text = row["raw_message"]
         user_id = row["user_id"]
+        row_registry = provider.for_user(user_id) if provider is not None else registry
         # SPEC-v1.2.md R-P1 call site #2 of 5 (integration step): same
         # stored-preference threading as the live handle_inbound_message
         # path -- a recovered confirmation respects the row's own user's
         # /lang choice too, not just their detected input language.
         lang = i18n.resolve_reply_language(text, config, user_pref=_stored_language_pref(db, user_id))
-        result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
+        result = await parse_message(text, llm, row_registry, config.ollama.confidence_threshold)
 
-        habit = registry.get(result.category)
+        habit = row_registry.get(result.category)
         if habit is None:
             logger.warning(
                 "Deferred message id=%s still unparseable after Ollama recovery; left as 'unparsed': %r",
@@ -1144,7 +1232,7 @@ async def reparse_pending_unparsed(
         # clock of its own (it reads each row's own stored `ts`), so this
         # correctly falls back to the real wall clock, same as
         # `checkin_tick`/`nudge_tick`'s own omitted-clock call sites.
-        await dashboard.refresh(db, channel, config, registry, user_id)
+        await dashboard.refresh(db, channel, config, row_registry, user_id)
 
 
 def seed_fake_data(db: Database, config: Config, user_id: str) -> None:
@@ -1281,6 +1369,14 @@ async def async_main(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     db = Database(config.app.db_path)
+    # SPEC-v1.7.md R-G2: the ONE process-global per-user registry cache,
+    # built right after `db` (its own two constructor args) and threaded
+    # through every consumer below in place of the single global
+    # `registry` built above -- `registry` itself is kept as-is (still
+    # used for the startup schema-conformance probe and as every fan-out
+    # function's own required-but-now-fallback-only positional, R-G3's own
+    # additive/backward-compatible convention).
+    provider = RegistryProvider(config, db)
     # SPEC-v1.2.md R-M2: startup attribution, called ONCE right after
     # `load_secrets` -- the owner id only lives in `.env`, unreachable
     # from the migration runner (§2.2). Idempotent: upserts the owner's
@@ -1392,21 +1488,22 @@ async def async_main(args: argparse.Namespace) -> None:
     await announce.announce_release(db, channel, config, __version__)
 
     # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11,
-    # SPEC-v1.4.md R-A2, SPEC-v1.5.md §6/§11, and SPEC-v1.6.md §6/§11
-    # integration steps: register the bot command menu once at startup --
-    # `/start` + `/undo` (undo_ui's own contribution) + `/target` (this
-    # integration step's, see TARGET_COMMAND_DESCRIPTIONS above) + `/help`
-    # + `/habits` (discoverability) + `/remind` + `/lang` + `/quiet` +
-    # `/history` + `/checkin` + `/dashboard` + `/heatmap` + `/records` +
-    # `/trends` (see START_/REMIND_/LANG_/QUIET_/HISTORY_/CHECKIN_/
-    # DASHBOARD_/HEATMAP_/RECORDS_/TRENDS_COMMAND_DESCRIPTIONS above for
-    # why the four true admin commands -- and owner-only `/audit` -- are
-    # deliberately excluded; `/dnd` is deliberately excluded too, sharing
-    # `/quiet`'s entry, per CHECKIN_COMMAND_DESCRIPTIONS's own comment
-    # above; the nudge has no command of its own, OQ2), English default +
-    # a Thai set. 14 public commands total. A transport error here is
-    # logged and never crashes startup (AC2) -- same belt-and-suspenders
-    # posture as the schema-conformance probe just above.
+    # SPEC-v1.4.md R-A2, SPEC-v1.5.md §6/§11, SPEC-v1.6.md §6/§11, and
+    # SPEC-v1.7.md R-A2/§11 integration steps: register the bot command menu
+    # once at startup -- `/start` + `/undo` (undo_ui's own contribution) +
+    # `/target` (this integration step's, see TARGET_COMMAND_DESCRIPTIONS
+    # above) + `/help` + `/habits` (discoverability) + `/remind` + `/lang` +
+    # `/quiet` + `/history` + `/checkin` + `/dashboard` + `/heatmap` +
+    # `/records` + `/trends` + `/addhabit` + `/delhabit` (see START_/REMIND_/
+    # LANG_/QUIET_/HISTORY_/CHECKIN_/DASHBOARD_/HEATMAP_/RECORDS_/TRENDS_/
+    # ADDHABIT_/DELHABIT_COMMAND_DESCRIPTIONS above for why the four true
+    # admin commands -- and owner-only `/audit` -- are deliberately
+    # excluded; `/dnd` is deliberately excluded too, sharing `/quiet`'s
+    # entry, per CHECKIN_COMMAND_DESCRIPTIONS's own comment above; the
+    # nudge has no command of its own, OQ2), English default + a Thai set.
+    # 16 public commands total. A transport error here is logged and never
+    # crashes startup (AC2) -- same belt-and-suspenders posture as the
+    # schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
         lang: (
@@ -1423,6 +1520,8 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("heatmap", HEATMAP_COMMAND_DESCRIPTIONS[lang])]
             + [("records", RECORDS_COMMAND_DESCRIPTIONS[lang])]
             + [("trends", TRENDS_COMMAND_DESCRIPTIONS[lang])]
+            + [("addhabit", ADDHABIT_COMMAND_DESCRIPTIONS[lang])]
+            + [("delhabit", DELHABIT_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -1437,12 +1536,12 @@ async def async_main(args: argparse.Namespace) -> None:
     # change, no confirmation) and they stay 'unparsed' for the health
     # monitor's own DOWN->UP callback to pick up later -- never raises.
     try:
-        await reparse_pending_unparsed(db, llm, channel, config, registry)
+        await reparse_pending_unparsed(db, llm, channel, config, registry, provider=provider)
     except Exception:
         logger.exception("Startup re-parse of deferred messages failed unexpectedly; continuing")
 
     async def on_ollama_recovered() -> None:
-        await reparse_pending_unparsed(db, llm, channel, config, registry)
+        await reparse_pending_unparsed(db, llm, channel, config, registry, provider=provider)
 
     health_monitor = HealthMonitor(
         config.ollama.base_url,
@@ -1469,6 +1568,13 @@ async def async_main(args: argparse.Namespace) -> None:
         run_due_reminders,
         trigger=CronTrigger(second=0, timezone=config.app.timezone),
         args=[channel, config, registry, db, reminder_state],
+        # SPEC-v1.7.md R-G3: `registry_for=provider.for_user` is what
+        # makes this tick resolve each active user's OWN registry (base +
+        # their active custom habits) instead of the single global
+        # `registry` positional above, which now serves only as the
+        # fallback `registry_for` itself never needs (R-G2's own
+        # fail-open already covers a per-user build error).
+        kwargs={"registry_for": provider.for_user},
         id="reminder_tick",
         replace_existing=True,
         coalesce=True,
@@ -1485,6 +1591,7 @@ async def async_main(args: argparse.Namespace) -> None:
         checkins.run_due_checkins,
         trigger=CronTrigger(second=0, timezone=config.app.timezone),
         args=[channel, config, registry, db],
+        kwargs={"registry_for": provider.for_user},  # SPEC-v1.7.md R-G3
         id="checkin_tick",
         replace_existing=True,
         coalesce=True,
@@ -1501,6 +1608,7 @@ async def async_main(args: argparse.Namespace) -> None:
         nudge.run_due_nudges,
         trigger=CronTrigger(second=0, timezone=config.app.timezone),
         args=[channel, config, registry, db],
+        kwargs={"registry_for": provider.for_user},  # SPEC-v1.7.md R-G3
         id="nudge_tick",
         replace_existing=True,
         coalesce=True,
@@ -1523,7 +1631,10 @@ async def async_main(args: argparse.Namespace) -> None:
     # disabled user, so this can iterate every active user unconditionally.
     async def dashboard_day_rollover_job() -> None:
         for user_id in db.active_user_ids():
-            await dashboard.refresh(db, channel, config, registry, user_id)
+            # SPEC-v1.7.md R-G3: per-user registry, resolved fresh inside
+            # the fan-out -- a custom habit's own board tile rolls over
+            # exactly like a base habit's.
+            await dashboard.refresh(db, channel, config, provider.for_user(user_id), user_id)
 
     scheduler.add_job(
         dashboard_day_rollover_job,
@@ -1560,7 +1671,10 @@ async def async_main(args: argparse.Namespace) -> None:
             # resolved per user now, not once globally -- each active
             # user's review/charts go out in THEIR own stored language.
             lang = i18n.resolve_unprompted_language(config, user_pref=_stored_language_pref(db, user_id))
-            text = await run_weekly_review(db, config, registry, llm, lang, user_id, today=today)
+            # SPEC-v1.7.md R-G3: per-user registry -- a custom habit gets
+            # its own review section/streak exactly like a base habit.
+            user_registry = provider.for_user(user_id)
+            text = await run_weekly_review(db, config, user_registry, llm, lang, user_id, today=today)
             await channel.send(user_id, text)
 
             # ROADMAP.md v1.0.0 AC1.0.1: attach chart images when
@@ -1571,7 +1685,7 @@ async def async_main(args: argparse.Namespace) -> None:
             # same 7-day window even if this job happens to straddle
             # midnight.
             try:
-                image_captions = render_weekly_review_charts(db, config, registry, lang, user_id, today=today)
+                image_captions = render_weekly_review_charts(db, config, user_registry, lang, user_id, today=today)
             except Exception:
                 logger.exception("Failed to render weekly review charts for %s; continuing with text-only review", user_id)
                 image_captions = []
@@ -1613,7 +1727,10 @@ async def async_main(args: argparse.Namespace) -> None:
         today = date.today()
         today_str = today.isoformat()
         for user_id in db.active_user_ids():
-            has_logs_today = any(db.count(user_id, habit.id, today_str) > 0 for habit in registry)
+            # SPEC-v1.7.md R-G3: per-user registry -- a custom habit's own
+            # log today counts toward "has logs today", same as a base one.
+            user_registry = provider.for_user(user_id)
+            has_logs_today = any(db.count(user_id, habit.id, today_str) > 0 for habit in user_registry)
             if not has_logs_today:
                 continue
             # SPEC-v1.5.md R-D2: per-user DND, evaluated INSIDE the
@@ -1627,7 +1744,7 @@ async def async_main(args: argparse.Namespace) -> None:
             # SPEC-v1.2.md R-P1 call site #4 of 5 (integration step):
             # resolved per user now, not once globally.
             lang = i18n.resolve_unprompted_language(config, user_pref=_stored_language_pref(db, user_id))
-            text = streaks.run_daily_summary(db, config, registry, lang, user_id, today=today)
+            text = streaks.run_daily_summary(db, config, user_registry, lang, user_id, today=today)
             await channel.send(user_id, text)
 
     scheduler.add_job(
@@ -1672,7 +1789,14 @@ async def async_main(args: argparse.Namespace) -> None:
         if not proceed:
             return
 
-        command = commands.dispatch(text, registry)
+        # SPEC-v1.7.md R-G3: the acting user's OWN registry (base + their
+        # active custom habits), resolved once here (after the access gate
+        # -- no point building a registry for a chat that was just refused)
+        # and reused for both this closure's own pre-check `dispatch()`
+        # call AND `handle_inbound_message` below, so command classification
+        # can never disagree between the two (AC-4).
+        user_registry = provider.for_user(chat_id)
+        command = commands.dispatch(text, user_registry)
         if command is not None and command.kind in ("start", "approve", "block", "users", "invite"):
             await access.execute_admin(
                 command,
@@ -1712,9 +1836,10 @@ async def async_main(args: argparse.Namespace) -> None:
             config=config,
             user_id=chat_id,
             health_monitor=health_monitor,
-            registry=registry,
+            registry=user_registry,
             scheduler=scheduler,
             reminder_state=reminder_state,
+            provider=provider,
         )
 
     async def on_callback(chat_id: str, data: str, source_text: str, callback_id: str) -> None:
@@ -1738,8 +1863,12 @@ async def async_main(args: argparse.Namespace) -> None:
         # from a non-active chat.
         if access.classify(db, chat_id) not in ("owner", "active"):
             return
+        # SPEC-v1.7.md R-G3: the tapping user's own registry -- an undo on
+        # a custom-habit log resolves/re-renders exactly like a base one
+        # (AC-S1 surface #3).
+        user_registry = provider.for_user(chat_id)
         await undo_ui.handle_undo_callback(
-            chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, clock=datetime.now, registry=registry
+            chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, clock=datetime.now, registry=user_registry
         )
         # SPEC-v1.6.md R-D5 (module `dashboard`): the button-tap undo path
         # -- kept here in `main.py` (not inside `core/undo_ui.py` itself)
@@ -1747,7 +1876,7 @@ async def async_main(args: argparse.Namespace) -> None:
         # import; mirrors the text `/undo` path's own refresh call in
         # `_execute_undo`. Fail-open, unchanged-render-skip means a stale/
         # no-op tap (wrong user, already-undone row) costs nothing extra.
-        await dashboard.refresh(db, channel, config, registry, chat_id)
+        await dashboard.refresh(db, channel, config, user_registry, chat_id)
 
     # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own
     # asyncio task alongside the scheduler and the inbound loop.

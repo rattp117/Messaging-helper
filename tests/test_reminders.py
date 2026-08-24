@@ -362,6 +362,56 @@ async def test_run_due_reminders_off_sentinel_suppresses_that_habit_only(db):
     assert i18n.t("reminder_stretch", i18n.resolve_unprompted_language(config)) in sent_texts
 
 
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md R-G3: `registry_for` -- additive, optional per-user registry
+# resolution. Omitted (every test above), byte-identical to pre-v1.7 (AC-5).
+# ---------------------------------------------------------------------------
+
+
+async def _reading_habit() -> Habit:
+    return Habit(
+        id="reading", type="duration", label_en="reading", label_th="อ่านหนังสือ",
+        unit_en="min", unit_th="นาที", goal=None, reminder_times=["09:00"],
+        reminder_text_en=None, reminder_text_th=None, unit_aliases={},
+    )
+
+
+async def test_run_due_reminders_registry_for_resolves_per_user(db):
+    """A's own custom habit fires for A at A's reminder time; B (no
+    registry_for entry of their own, base-only) never gets it."""
+    config = Config()
+    base_registry = HabitRegistry.from_config(config)
+    reading = await _reading_habit()
+    a_registry = HabitRegistry([*base_registry, reading])
+    db.upsert_user("user-b", role="member", status="active")
+    channel = FakeChannel()
+
+    def registry_for(user_id: str) -> HabitRegistry:
+        return a_registry if user_id == OWNER else base_registry
+
+    await run_due_reminders(
+        channel, config, base_registry, db, clock=_fixed_clock("09:00"), registry_for=registry_for
+    )
+
+    sent = {(chat_id, text) for chat_id, text in channel.sent}
+    lang = i18n.resolve_unprompted_language(config)
+    reading_text = i18n.t("reminder_generic", lang, label=reading.label(lang))
+    assert (OWNER, reading_text) in sent
+    assert not any(chat_id == "user-b" and text == reading_text for chat_id, text in sent)
+
+
+async def test_run_due_reminders_registry_for_none_falls_back_to_registry(db):
+    """registry_for omitted (None, the default) -- byte-identical to
+    passing no registry_for at all (the pre-v1.7 call shape)."""
+    config = Config()
+    registry = HabitRegistry.from_config(config)
+    channel = FakeChannel()
+
+    await run_due_reminders(channel, config, registry, db, clock=_fixed_clock("08:00"), registry_for=None)
+
+    assert any(chat_id == OWNER for chat_id, _ in channel.sent)
+
+
 async def test_run_due_reminders_state_tracks_last_habit_per_user(db):
     """R-S2/AC-U-SNOOZE: `ReminderState.last_habit_id` is a per-chat_id map,
     updated only for the user whose reminder actually fired."""

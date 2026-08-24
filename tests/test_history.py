@@ -80,9 +80,9 @@ def test_no_migration_was_added_for_history(tmp_path):
     migration-count guard in this suite.
     UPDATED (v1.6.0): now also includes SPEC-v1.6.md's own migration 009
     (`dashboard_msg_id`/`habit_records`) -- same reasoning."""
-    assert len(MIGRATIONS) == 9
+    assert len(MIGRATIONS) == 10
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 9
+    assert db.schema_version == 10
     db.close()
 
 

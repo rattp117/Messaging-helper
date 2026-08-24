@@ -556,3 +556,52 @@ async def test_run_due_checkins_respects_each_users_own_language_preference(db, 
     sent = channel.sent_to(OWNER)
     assert len(sent) == 1
     assert i18n.detect_language(sent[0]) == "th"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md R-G3: `registry_for` -- additive, optional per-user registry
+# resolution. Omitted (every test above), byte-identical to pre-v1.7 (AC-5).
+# ---------------------------------------------------------------------------
+
+
+async def test_run_due_checkins_registry_for_resolves_per_user(db, config, monkeypatch):
+    """The registry `build_checkin_message` actually receives is the one
+    `registry_for(user_id)` returns for THAT user, not the fallback
+    `registry` positional -- proven by capturing what each call received."""
+    await _enable(db, config, OWNER)
+    await _enable(db, config, MEMBER)
+    db.insert_log(LogEntry(None, OWNER, "2026-08-23T07:00:00", "water", 1000.0, None, "1000ml", "reply"))
+    db.insert_log(LogEntry(None, MEMBER, "2026-08-23T07:00:00", "water", 1000.0, None, "1000ml", "reply"))
+
+    owner_registry = DEFAULT_REGISTRY
+    member_registry = HabitRegistry.from_config(Config())  # a distinct object, same content
+    received: dict[str, "HabitRegistry"] = {}
+    real_build = checkins.build_checkin_message
+
+    def spy(db_, config_, registry_, lang_, user_id_, clock_=datetime.now):
+        received[user_id_] = registry_
+        return real_build(db_, config_, registry_, lang_, user_id_, clock_)
+
+    monkeypatch.setattr(checkins, "build_checkin_message", spy)
+
+    def registry_for(user_id: str) -> "HabitRegistry":
+        return owner_registry if user_id == OWNER else member_registry
+
+    channel = FakeChannel()
+    await checkins.run_due_checkins(
+        channel, config, DEFAULT_REGISTRY, db, clock=_fixed_clock(hh=9, mm=0), registry_for=registry_for
+    )
+
+    assert received[OWNER] is owner_registry
+    assert received[MEMBER] is member_registry
+
+
+async def test_run_due_checkins_registry_for_none_falls_back_to_registry(db, config):
+    await _enable(db, config, OWNER)
+    db.insert_log(LogEntry(None, OWNER, "2026-08-23T07:00:00", "water", 1000.0, None, "1000ml", "reply"))
+
+    channel = FakeChannel()
+    await checkins.run_due_checkins(
+        channel, config, DEFAULT_REGISTRY, db, clock=_fixed_clock(hh=9, mm=0), registry_for=None
+    )
+    assert channel.sent_to(OWNER) != []

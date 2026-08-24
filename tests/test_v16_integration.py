@@ -1087,7 +1087,12 @@ async def test_nudge_and_20_00_checkin_both_fire_independently_without_interfere
 # ---------------------------------------------------------------------------
 
 
-async def test_menu_has_exactly_14_public_commands_both_languages(tmp_path, monkeypatch):
+async def test_menu_has_exactly_16_public_commands_both_languages(tmp_path, monkeypatch):
+    # RENAMED (Archi-approved housekeeping, TEST-v1.7-integration.md release
+    # gate pass) at SPEC-v1.7.md's own integration step (IMPL-v1.7-
+    # integration.md): `addhabit`/`delhabit` joined the public menu too
+    # (16 total) -- the test name now matches its own updated body/count
+    # instead of documenting the stale "as of v1.6" figure.
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     channel = await _run(monkeypatch, config, script=[])
 
@@ -1095,8 +1100,8 @@ async def test_menu_has_exactly_14_public_commands_both_languages(tmp_path, monk
     assert set(registered.keys()) == {"en", "th"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 14, f"{lang} menu has {len(names)} commands: {names}"
-        assert len(set(names)) == 14  # no duplicates
+        assert len(names) == 16, f"{lang} menu has {len(names)} commands: {names}"
+        assert len(set(names)) == 16  # no duplicates
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})  # admin-hidden, unchanged
 
 
@@ -1228,7 +1233,7 @@ async def test_migration_009_rehearsal_on_a_v1_5_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 9
+        assert db.schema_version == 10
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert "dashboard_msg_id" in cols
         tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

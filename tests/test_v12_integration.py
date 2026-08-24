@@ -608,9 +608,11 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
         # SPEC-v1.6.md's own integration step added "dashboard"/"heatmap"/
         # "records"/"trends" too; "nudge" is deliberately absent (OQ2: no
         # command of its own, rides /checkin enablement).
+        # SPEC-v1.7.md's own integration step added "addhabit"/"delhabit"
+        # too (module `habitdef`, R-A2).
         assert names == {
             "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
-            "dashboard", "heatmap", "records", "trends",
+            "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit",
         }
         assert not names & {"approve", "block", "users", "invite"}
 
@@ -1202,7 +1204,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 9  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
+        assert db.schema_version == 10  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

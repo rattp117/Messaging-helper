@@ -272,6 +272,47 @@ def _migration_009_dashboard_and_records(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_010_user_habits(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.7.md §5/§6 (shared surface): one new table, no existing
+    table/column/row touched at all -- purely additive, unlike migration
+    006 (the one sanctioned break). `user_habits` is the per-user
+    definition store `core/habits.py:HabitRegistry.for_user` reads
+    (R-G1): one row per user-defined habit, `PRIMARY KEY (user_id, id)`
+    so a habit id is only reserved WITHIN that user's own namespace (two
+    different users may each independently define an id, e.g. "reading" --
+    R-V1's own "not already used by THIS user" scope, not global).
+    `archived_at IS NULL` means active (in the registry); a non-NULL
+    timestamp means archived (R-C2's soft-delete branch -- excluded from
+    `for_user`'s active registry, but the row itself, and every historical
+    `logs` row under that id, survives). `unit_aliases` is a JSON-encoded
+    `dict[str, float]` (mirrors `config.toml`'s own `[habits.unit_aliases]`
+    shape, just serialized -- sqlite has no native map type). A fresh/
+    pre-v1.7 install starts with zero rows, so `for_user` for every
+    existing user resolves to exactly `from_config(config)` -- byte-
+    identical, by construction, until a user actually creates one (AC-2/
+    AC-5, the release's own hard regression gate).
+    Idempotent the same way every migration here is: the runner only ever
+    applies this once, guarded by `PRAGMA user_version` (AC-1)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_habits (
+          user_id       TEXT NOT NULL,
+          id            TEXT NOT NULL,
+          type          TEXT NOT NULL,
+          label_en      TEXT NOT NULL,
+          label_th      TEXT NOT NULL,
+          unit_en       TEXT,
+          unit_th       TEXT,
+          goal          REAL,
+          unit_aliases  TEXT,
+          archived_at   TEXT,
+          created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          PRIMARY KEY (user_id, id)
+        )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -285,6 +326,7 @@ MIGRATIONS: list[Migration] = [
     _migration_007_audit_log,
     _migration_008_checkin_and_announce,
     _migration_009_dashboard_and_records,
+    _migration_010_user_habits,
 ]
 
 

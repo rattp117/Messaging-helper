@@ -493,6 +493,111 @@ class Database:
         )
         self._conn.commit()
 
+    # -----------------------------------------------------------------
+    # user_habits (SPEC-v1.7.md R-G1/R-C1/R-C2, migration 010): a per-user
+    # habit definition store, `PRIMARY KEY (user_id, id)` -- an id is only
+    # reserved within ONE user's own namespace. Storage-only throughout:
+    # `unit_aliases` is a pre-JSON-encoded string the caller
+    # (`core/habitdef.py`) already built (mirrors `set_user_quiet_hours`'s
+    # own "stores what it's given" convention); validation (R-V1-R-V5) and
+    # the archive-vs-hard-delete decision (R-C2) are `core/habitdef.py`'s
+    # own concern, not this layer's.
+    # -----------------------------------------------------------------
+
+    def add_user_habit(self, user_id: str, row: dict) -> None:
+        """Insert one new active `user_habits` row (`archived_at` stays
+        NULL by construction -- a freshly created habit is always active).
+        `row` carries every non-key column this table defines
+        (`id`/`type`/`label_en`/`label_th`/`unit_en`/`unit_th`/`goal`/
+        `unit_aliases`, each already validated/normalized by the caller,
+        R-C1) -- a missing key defaults to `None` (e.g. `unit_en`/`goal`
+        for a text/boolean habit, which R-V2 forbids a unit/goal for)."""
+        self._conn.execute(
+            "INSERT INTO user_habits (user_id, id, type, label_en, label_th, unit_en, unit_th, goal, unit_aliases) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                row["id"],
+                row["type"],
+                row["label_en"],
+                row["label_th"],
+                row.get("unit_en"),
+                row.get("unit_th"),
+                row.get("goal"),
+                row.get("unit_aliases"),
+            ),
+        )
+        self._conn.commit()
+
+    def list_user_habits(self, user_id: str, include_archived: bool = False) -> list[sqlite3.Row]:
+        """`user_id`'s own habit rows, insertion order (SQLite's own
+        rowid order -- this table has no explicit ordering column).
+        Default excludes archived rows (`archived_at IS NULL`) -- this is
+        `HabitRegistry.for_user`'s own read path (R-G1: only ACTIVE rows
+        join the per-user registry); `include_archived=True` is for
+        `/habits`-style "show everything, including what you archived"
+        views and R-V1's own "an archived id stays reserved" check."""
+        if include_archived:
+            return self._conn.execute(
+                "SELECT * FROM user_habits WHERE user_id = ? ORDER BY created_at", (user_id,)
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM user_habits WHERE user_id = ? AND archived_at IS NULL ORDER BY created_at", (user_id,)
+        ).fetchall()
+
+    def get_user_habit(self, user_id: str, habit_id: str) -> sqlite3.Row | None:
+        """One habit row for `user_id`, active OR archived -- R-V1's own
+        "not already used by this user (active or archived)" id-collision
+        check reads through here, as does `/delhabit`'s own lookup before
+        deciding archive vs. hard-delete."""
+        return self._conn.execute(
+            "SELECT * FROM user_habits WHERE user_id = ? AND id = ?", (user_id, habit_id)
+        ).fetchone()
+
+    def archive_user_habit(self, user_id: str, habit_id: str) -> None:
+        """R-C2's soft-delete branch (the habit has history): stamp
+        `archived_at`, leaving the row (and its id, and every historical
+        `logs` row under that id) intact -- it simply drops out of
+        `list_user_habits`' own default (active-only) result, and
+        therefore out of `HabitRegistry.for_user`'s registry, on the
+        caller's next `provider.invalidate(user_id)` rebuild."""
+        self._conn.execute(
+            "UPDATE user_habits SET archived_at = datetime('now','localtime') WHERE user_id = ? AND id = ?",
+            (user_id, habit_id),
+        )
+        self._conn.commit()
+
+    def delete_user_habit(self, user_id: str, habit_id: str) -> None:
+        """R-C2's hard-delete branch (the habit has no logs at all): remove
+        the row outright -- the id is freed, so a re-`/addhabit` with the
+        same id is immediately possible (an accidental create is fully
+        reversible, per R-C2's own explicit rationale)."""
+        self._conn.execute("DELETE FROM user_habits WHERE user_id = ? AND id = ?", (user_id, habit_id))
+        self._conn.commit()
+
+    def count_active_user_habits(self, user_id: str) -> int:
+        """R-V5's own per-user cap check (`config.habits.max_per_user`,
+        default 20) -- active (non-archived) rows only; an archived habit
+        no longer counts against the cap."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM user_habits WHERE user_id = ? AND archived_at IS NULL", (user_id,)
+        ).fetchone()
+        return int(row["n"])
+
+    def count_logs_for(self, user_id: str, habit_id: str) -> int:
+        """R-C2's own archive-vs-hard-delete decision input: every `logs`
+        row ever written under this `(user_id, habit_id)`, INCLUDING
+        already-undone (soft-deleted, `deleted_at IS NOT NULL`) ones --
+        deliberately broader than `count()`'s own "today's still-live
+        rows" scope above, since even an undone entry is still genuine
+        history worth an archive (not a hard-delete) rather than silently
+        discarding it. Zero means "never logged at all" -- safe to
+        hard-delete and free the id."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM logs WHERE user_id = ? AND category = ?", (user_id, habit_id)
+        ).fetchone()
+        return int(row["n"])
+
     def list_users(self) -> list[sqlite3.Row]:
         """SPEC-v1.2.md R-A4 (`/users`, module `access`): every user, in
         the order they first contacted the bot."""

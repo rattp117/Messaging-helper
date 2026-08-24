@@ -857,21 +857,21 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_9(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.6.md
-    "Live dashboard + Heatmap + Records + Trends + Nudge" (migration 009:
-    `users.dashboard_msg_id` + `habit_records`, purely additive) there are
-    exactly 9 migrations, and a fresh DB must land on version 9. Bump this
-    literal deliberately the next time a migration is added -- unlike a
-    bare `== len(MIGRATIONS)` comparison, this fails if a migration is
-    silently added/removed without the test being updated.
-    CHANGED (v1.6.0): was `== 8` / `test_..._schema_version_8` before
-    migration 009 was added -- see IMPL-v1.6-shared.md."""
-    assert len(MIGRATIONS) == 9
+def test_fresh_db_migrates_to_schema_version_10(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.7.md
+    "Per-user custom habits" (migration 010: `user_habits`, purely
+    additive) there are exactly 10 migrations, and a fresh DB must land on
+    version 10. Bump this literal deliberately the next time a migration
+    is added -- unlike a bare `== len(MIGRATIONS)` comparison, this fails
+    if a migration is silently added/removed without the test being
+    updated.
+    CHANGED (v1.7.0): was `== 9` / `test_..._schema_version_9` before
+    migration 010 was added -- see IMPL-v1.7-shared.md."""
+    assert len(MIGRATIONS) == 10
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 9
+    assert database.schema_version == 10
     database.close()
 
 
@@ -897,6 +897,138 @@ def test_v16_kinds_are_valid_command_dataclass_values():
     for kind in ("dashboard", "heatmap", "records", "trends"):
         cmd = commands.Command(kind=kind)
         assert cmd.kind == kind
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md §5/§6/§11 skeleton (shared surface): `CommandKind` gained
+# "addhabit"/"delhabit" so the `habitdef` module never collides on this
+# file's own `CommandKind = Literal[...]` declaration. `habitdef`'s own
+# `_match_*` function + `dispatch()` branch + any new `Command` field it
+# needs for the pipe `key=value` grammar land in its own parallel-track
+# pass -- same "durable guarantee only" precedent as v1.6's dashboard/
+# heatmap/records/trends skeleton test above.
+# ---------------------------------------------------------------------------
+
+
+def test_v17_kinds_are_valid_command_dataclass_values():
+    for kind in ("addhabit", "delhabit"):
+        cmd = commands.Command(kind=kind)
+        assert cmd.kind == kind
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md §4 R-V3 (shared surface): `reserved_trigger_words()` is the
+# single authoritative source `habitdef`'s own id/label validation (R-V1/
+# R-V3, AC-H3) will check against. This is the anti-drift guarantee in
+# PRACTICE: every word claimed as "reserved" below is checked, by actually
+# calling `dispatch()` with the BARE word (exactly how a habitdef id/label
+# equality check sees it -- a habit id can never itself contain the
+# leading "/" a slash-command needs, per R-V1's `^[a-z0-9_]+$`), against
+# the empirically-observed ground truth of what `dispatch()` does today.
+# Most English command words are slash-gated (bare "help"/"audit"/
+# "target"/etc. dispatch to `None` -- only "/help" etc. do) -- those are
+# still reserved defensively (R-V3's own explicit intent: a habit named
+# "help" must never exist, even though the literal live-dispatch collision
+# is with "/help", not bare "help") -- this table records `None` for them
+# rather than mis-asserting a kind they don't bare-dispatch to. The
+# bare-word-dispatchable ones (Thai aliases, plus "undo"/"delete"/
+# "snooze") get an exact expected kind -- a regression there would mean
+# the real trigger word changed out from under the reserved set. A future
+# edit to any matcher regex that changes this ground truth breaks this
+# test, not just a comment.
+# ---------------------------------------------------------------------------
+
+_RESERVED_WORD_EXPECTED_KIND = {
+    "undo": "undo",
+    "delete": "undo",
+    "ยกเลิก": "undo",
+    "ลบ": "undo",
+    "edit": None,
+    "make": None,
+    "change": None,
+    "แก้": None,
+    "แก้ไข": None,
+    "snooze": "snooze",
+    "เลื่อน": "snooze",
+    "target": None,
+    "goal": None,
+    "ตั้งเป้า": None,
+    "เป้า": None,
+    "remind": None,
+    "เตือน": None,
+    "help": None,
+    "habits": None,
+    "ช่วยเหลือ": "help",
+    "วิธีใช้": "help",
+    "นิสัย": "habits",
+    "start": None,
+    "users": None,
+    "approve": None,
+    "block": None,
+    "invite": None,
+    "audit": None,
+    "ประวัติ": "audit",
+    "history": None,
+    "ย้อนหลัง": "history",
+    "heatmap": None,
+    "ปฏิทิน": "heatmap",
+    "lang": None,
+    "ภาษา": None,
+    "quiet": None,
+    "เงียบ": None,
+    "checkin": None,
+    "เช็คอิน": "checkin",
+    "dnd": None,
+    "งดรบกวน": None,
+    "dashboard": None,
+    "แดชบอร์ด": "dashboard",
+    "records": None,
+    "สถิติ": "records",
+    "trends": None,
+    "แนวโน้ม": "trends",
+    "addhabit": None,
+    "delhabit": None,
+    "เพิ่มนิสัย": None,
+    "ลบนิสัย": None,
+}
+
+
+def test_reserved_trigger_words_covers_every_real_command_stem():
+    base_registry = HabitRegistry.from_config(Config())
+    words = commands.reserved_trigger_words()
+    assert _RESERVED_WORD_EXPECTED_KIND.keys() == words
+
+    for word, expected_kind in _RESERVED_WORD_EXPECTED_KIND.items():
+        result = commands.dispatch(word, base_registry)
+        if expected_kind is None:
+            # Slash-gated or tail-mandatory trigger -- the bare word alone
+            # doesn't dispatch today, but is still reserved defensively
+            # (R-V3). Must not silently match some OTHER, unexpected kind.
+            assert result is None, f"{word!r} unexpectedly dispatched as {result!r}"
+        else:
+            assert result is not None, f"{word!r} did not dispatch at all"
+            assert result.kind == expected_kind, f"{word!r} dispatched as {result.kind!r}, expected {expected_kind!r}"
+
+
+def test_reserved_trigger_words_addhabit_delhabit_not_yet_live_but_reserved():
+    # habitdef's own matcher doesn't exist in this file yet -- these words
+    # must not accidentally collide with any EXISTING command, and must be
+    # present in the reserved set for habitdef's validation to consume.
+    base_registry = HabitRegistry.from_config(Config())
+    words = commands.reserved_trigger_words()
+    for word in ("addhabit", "delhabit", "เพิ่มนิสัย", "ลบนิสัย"):
+        assert word in words
+        assert commands.dispatch(word, base_registry) is None
+
+
+def test_reserved_trigger_words_excludes_query_patterns_and_tail_values():
+    # Documented exclusions (see the module comment above
+    # `reserved_trigger_words()` in core/commands.py): interrogative
+    # particles are not single fixed trigger stems, and target/quiet/
+    # checkin/dashboard tail VALUES are arguments, not triggers.
+    words = commands.reserved_trigger_words()
+    for excluded in ("กี่", "เท่าไหร่", "ไหม", "หรือยัง", "default", "reset", "clear", "ค่าเริ่มต้น", "on", "off"):
+        assert excluded not in words
 
 
 def test_migration_003_applies_forward_from_a_v2_db_with_rows_intact():

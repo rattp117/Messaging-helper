@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -324,6 +325,7 @@ async def run_due_reminders(
     db: Database,
     state: ReminderState | None = None,
     clock=datetime.now,
+    registry_for: Callable[[str], HabitRegistry] | None = None,
 ) -> None:
     """SPEC-v1.2.md R-S1: the minutely tick, replacing the per-config-time
     cron fan-out of the removed `schedule_reminders`. Computes the current
@@ -336,7 +338,18 @@ async def run_due_reminders(
     config-time one (AC-S6). `main.py` schedules this on a single
     `CronTrigger(second=0, ...)` job with `coalesce=True, max_instances=1`
     -- a paused/restarted process never replays a missed minute or
-    double-sends (R-S1's own stated mitigation)."""
+    double-sends (R-S1's own stated mitigation).
+
+    SPEC-v1.7.md R-G3: `registry_for`, when given, resolves the PER-USER
+    registry inside the fan-out loop below (`registry_for(user_id)`,
+    typically `RegistryProvider.for_user` bound by `main.py`) -- each
+    active user's own custom habits are then reminded exactly like a base
+    habit (AC-4/AC-S1 surface #6). Additive and optional, mirroring
+    `send_reminder`'s own `db`/`config` convention just above: omitted
+    (`None`, the default), every existing caller/test that passes only
+    `registry` keeps using that SAME registry for every user, byte-
+    identical to pre-v1.7 behavior (AC-5) -- `registry` itself is
+    unchanged/still required, now serving as the base/fallback registry."""
     current_hhmm = _now_hhmm(clock, config.app.timezone)
     for user_id in db.active_user_ids():
         # Integration step (SPEC-v1.2.md R-P1 call site #5 of 5): resolved
@@ -344,7 +357,8 @@ async def run_due_reminders(
         # gets their reminders in Thai regardless of what any other
         # active user (or the global config default) resolves to.
         language = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
-        for habit in registry:
+        user_registry = registry_for(user_id) if registry_for is not None else registry
+        for habit in user_registry:
             times = effective_reminder_times(db, config, habit, user_id)
             if current_hhmm in times:
                 await send_reminder(channel, user_id, habit, language, db, config, state)

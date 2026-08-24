@@ -55,6 +55,13 @@ Action = Literal[
     "user_approve",
     "user_block",
     "user_pending",
+    # SPEC-v1.7.md R-A1 (module `habitdef`): /addhabit / /delhabit, one
+    # fail-open audit row each -- `habit_archive` for the soft-delete
+    # branch (has history), `habit_delete` for the hard-delete branch (no
+    # logs yet), per R-C2's own smart-delete split.
+    "habit_create",
+    "habit_archive",
+    "habit_delete",
 ]
 ACTIONS: tuple[Action, ...] = (
     "undo",
@@ -75,6 +82,9 @@ ACTIONS: tuple[Action, ...] = (
     "user_approve",
     "user_block",
     "user_pending",
+    "habit_create",
+    "habit_archive",
+    "habit_delete",
 )
 
 Source = Literal["command", "nl", "button", "admin"]

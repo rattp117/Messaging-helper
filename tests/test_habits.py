@@ -8,6 +8,7 @@ from __future__ import annotations
 from habit_assistant.config import Config, HabitConfig, HabitLabel
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry, log_entry_from_result
 from habit_assistant.llm.ollama_client import ExtractionResult
+from habit_assistant.storage.db import Database
 
 # ---------------------------------------------------------------------------
 # AC2: HabitRegistry.from_config -- default (water/stretch/diary) registry
@@ -186,3 +187,113 @@ def test_log_entry_from_result_boolean_false_sets_value_num_zero():
     entry = log_entry_from_result(habit, result, "2026-08-19T10:00:00", "no meds yet", "reply", "owner")
 
     assert entry.value_num == 0.0
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md R-G1 (AC-2/AC-5): HabitRegistry.for_user -- base config
+# habits + the user's own active `user_habits` rows.
+# ---------------------------------------------------------------------------
+
+
+def test_for_user_with_no_rows_is_byte_identical_to_from_config(tmp_path):
+    """AC-2/AC-5's own hard regression gate: a user with zero `user_habits`
+    rows must get a registry indistinguishable from the base-only one --
+    same ids, same order, same every field on every habit."""
+    db = Database(tmp_path / "byte_identical.db")
+    config = Config()
+
+    base = HabitRegistry.from_config(config)
+    per_user = HabitRegistry.for_user(config, db, "owner-chat-id")
+
+    assert per_user.ids() == base.ids()
+    assert len(per_user) == len(base)
+    for base_habit, per_user_habit in zip(base, per_user):
+        assert base_habit == per_user_habit
+    db.close()
+
+
+def test_for_user_appends_active_custom_habits_after_the_base_catalog(tmp_path):
+    db = Database(tmp_path / "append.db")
+    config = Config()
+    db.add_user_habit(
+        "u1",
+        {
+            "id": "reading",
+            "type": "duration",
+            "label_en": "reading",
+            "label_th": "อ่านหนังสือ",
+            "unit_en": "min",
+            "unit_th": "นาที",
+            "goal": 30.0,
+            "unit_aliases": '{"minutes": 1.0}',
+        },
+    )
+
+    registry = HabitRegistry.for_user(config, db, "u1")
+
+    assert registry.ids() == ["water", "stretch", "diary", "reading"]
+    reading = registry.get("reading")
+    assert reading is not None
+    assert reading.type == "duration"
+    assert reading.label_en == "reading"
+    assert reading.label_th == "อ่านหนังสือ"
+    assert reading.unit_en == "min"
+    assert reading.unit_th == "นาที"
+    assert reading.goal == 30.0
+    assert reading.unit_aliases == {"minutes": 1.0}
+    # A fresh custom habit has no reminders of its own yet (SPEC-v1.7.md
+    # §9: reuses the existing per-user /remind machinery, no new storage).
+    assert reading.reminder_times == ()
+    assert reading.reminder_text_en is None
+    assert reading.reminder_text_th is None
+    db.close()
+
+
+def test_for_user_excludes_archived_habits_from_the_registry(tmp_path):
+    db = Database(tmp_path / "archived.db")
+    config = Config()
+    db.add_user_habit("u1", {
+        "id": "reading", "type": "duration", "label_en": "reading", "label_th": "อ่านหนังสือ",
+        "unit_en": "min", "unit_th": "นาที", "goal": 30.0, "unit_aliases": None,
+    })
+    db.archive_user_habit("u1", "reading")
+
+    registry = HabitRegistry.for_user(config, db, "u1")
+
+    assert registry.ids() == ["water", "stretch", "diary"]
+    assert registry.get("reading") is None
+    db.close()
+
+
+def test_for_user_is_isolated_per_user(tmp_path):
+    db = Database(tmp_path / "isolated.db")
+    config = Config()
+    db.add_user_habit("u1", {
+        "id": "reading", "type": "duration", "label_en": "reading", "label_th": "อ่านหนังสือ",
+        "unit_en": "min", "unit_th": "นาที", "goal": 30.0, "unit_aliases": None,
+    })
+
+    u1_registry = HabitRegistry.for_user(config, db, "u1")
+    u2_registry = HabitRegistry.for_user(config, db, "u2")
+
+    assert "reading" in u1_registry.ids()
+    assert "reading" not in u2_registry.ids()
+    assert u2_registry.ids() == ["water", "stretch", "diary"]
+    db.close()
+
+
+def test_for_user_unit_aliases_missing_defaults_to_empty_dict(tmp_path):
+    db = Database(tmp_path / "no_aliases.db")
+    config = Config()
+    db.add_user_habit("u1", {
+        "id": "pushups", "type": "numeric", "label_en": "pushups", "label_th": "วิดพื้น",
+        "unit_en": "reps", "unit_th": "ครั้ง", "goal": None, "unit_aliases": None,
+    })
+
+    registry = HabitRegistry.for_user(config, db, "u1")
+
+    pushups = registry.get("pushups")
+    assert pushups is not None
+    assert pushups.unit_aliases == {}
+    assert pushups.goal is None
+    db.close()

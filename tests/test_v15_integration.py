@@ -858,8 +858,8 @@ async def test_announce_user_several_versions_behind_gets_only_the_current_note_
 
 async def test_current_pinned_version_announces_to_active_users_today(tmp_path, monkeypatch):
     """UPDATED post-release (Archi's Phase 6.5 version bump landed,
-    v1.5.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
-    now genuinely "1.5.0", matching a real `RELEASE_NOTES` entry -- so a
+    v1.6.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
+    now genuinely "1.6.0", matching a real `RELEASE_NOTES` entry -- so a
     real startup TODAY, using the app's actual current constant (not a
     synthetic one, and not this file's own default `_run` neutralization
     -- passed explicitly as `version=current_version` below to exercise
@@ -867,7 +867,10 @@ async def test_current_pinned_version_announces_to_active_users_today(tmp_path, 
     marks them caught up. This was originally written as the mirror-image
     "announces nothing" sanity check before the release shipped; its own
     docstring at the time predicted exactly this update would be needed
-    the moment `__version__` was bumped -- that's expected, not a bug."""
+    the moment `__version__` was bumped -- that's expected, not a bug.
+    UPDATED AGAIN at v1.6.0 (same reason) -- each Phase 6.5 bump moves
+    this pin forward by construction; a future bump (e.g. v1.7.0) will
+    need the same one-line update, not a design change."""
     from habit_assistant import __version__ as current_version
 
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
@@ -885,7 +888,7 @@ async def test_current_pinned_version_announces_to_active_users_today(tmp_path, 
         assert db.get_last_announced_version(MEMBER) == current_version
     finally:
         db.close()
-    assert current_version == "1.5.0"  # documents the exact post-release state this test relies on
+    assert current_version == "1.6.0"  # documents the exact post-release state this test relies on
 
 
 # ---------------------------------------------------------------------------
@@ -1183,7 +1186,7 @@ async def test_migration_008_rehearsal_on_a_v1_4_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 9
+        assert db.schema_version == 10
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert {"checkin_window", "last_announced_version"} <= cols
         assert db.get_last_announced_version(OWNER) is None  # no backfill (migration's own contract)

@@ -50,6 +50,7 @@ as `reminder_tick`/`checkin_tick`, registered alongside them."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -161,7 +162,12 @@ def _user_language_pref(db: "Database", chat_id: str) -> str:
 
 
 async def run_due_nudges(
-    channel: "Channel", config: "Config", registry: "HabitRegistry", db: "Database", clock=datetime.now
+    channel: "Channel",
+    config: "Config",
+    registry: "HabitRegistry",
+    db: "Database",
+    clock=datetime.now,
+    registry_for: "Callable[[str], HabitRegistry] | None" = None,
 ) -> None:
     """R-N1: called from the SAME minutely job that runs `run_due_reminders`/
     `run_due_checkins` (integration step, main.py). Returns immediately
@@ -182,7 +188,15 @@ async def run_due_nudges(
     send, a separate try around the `channel.send` call itself) -- never
     lets a single bad row, or a single transport failure, abort the
     fan-out for every other active user, and never lets either propagate
-    out of `run_due_nudges` itself."""
+    out of `run_due_nudges` itself.
+
+    SPEC-v1.7.md R-G3: `registry_for`, when given, resolves the PER-USER
+    registry inside the fan-out loop below (inside the SAME per-user
+    try/except, so a bad per-user registry build is fail-open exactly like
+    every other per-user failure in this loop) -- same additive, optional,
+    backward-compatible convention as `run_due_reminders`'s own
+    `registry_for`: omitted, every existing caller/test keeps using
+    `registry` for every user, byte-identical to pre-v1.7 (AC-5)."""
     hhmm = _now_hhmm(clock, config.app.timezone)
     if hhmm != config.nudge.time:
         return
@@ -197,7 +211,8 @@ async def run_due_nudges(
                 continue
 
             lang = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
-            message = build_nudge_message(db, config, registry, lang, user_id, clock)
+            user_registry = registry_for(user_id) if registry_for is not None else registry
+            message = build_nudge_message(db, config, user_registry, lang, user_id, clock)
         except Exception:
             logger.exception("Building the end-of-day nudge failed for %s; skipping (fail-open)", user_id)
             continue

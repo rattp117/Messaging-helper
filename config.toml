@@ -194,3 +194,17 @@ id = "diary"
 type = "text"
 reminder_times = ["21:30"]
 label = { en = "diary", th = "ไดอารี่" }
+
+# SPEC-v1.7.md "Per-user custom habits": /addhabit lets a user define their
+# own tracker from chat (base [[habits]] above is unaffected -- these are
+# stored per-user in the DB, not here). max_per_user bounds how many
+# ACTIVE custom habits one user may have at once (keeps the LLM prompt and
+# the dashboard/heatmap/render budgets bounded). This section is commented
+# out because 20 is already config.py's own default (HabitsConfig.
+# max_per_user) -- present here only as living documentation of the knob,
+# same convention as [audit] above. Uncomment + edit to change it. NOTE:
+# this is deliberately its OWN [custom_habits] section, not nested under
+# [habits]/[[habits]] -- TOML doesn't allow an array-of-tables and a
+# sibling table to share one key.
+# [custom_habits]
+# max_per_user = 20

@@ -1020,6 +1020,18 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "pending",
         "th": "รอดำเนินการ",
     },
+    "audit_action_habit_create": {
+        "en": "habit created",
+        "th": "สร้างนิสัย",
+    },
+    "audit_action_habit_archive": {
+        "en": "habit archived",
+        "th": "เก็บนิสัยเข้าคลัง",
+    },
+    "audit_action_habit_delete": {
+        "en": "habit deleted",
+        "th": "ลบนิสัย",
+    },
 
     # -----------------------------------------------------------------
     # Module `history` (/history, ย้อนหลัง -- SPEC-v1.4.md R-R1-R-R5,
@@ -1412,5 +1424,133 @@ CATALOG: dict[str, dict[Language, str]] = {
     "help_trends_cmd": {
         "en": '📊 See week-over-week trends: /trends or /trends water (Thai: "แนวโน้ม ...").',
         "th": '📊 ดูแนวโน้มรายสัปดาห์: /trends หรือ /trends water (หรือ "แนวโน้ม ...")',
+    },
+
+    # ===================================================================
+    # SPEC-v1.7.md "Per-user custom habits" -- shared-surface key-block
+    # skeleton (§11: "the i18n key-block skeletons are created in the
+    # shared surface first; each module then fills only its own disjoint
+    # keys", same convention as v1.2's own skeleton markers above). This
+    # section is reserved for module `habitdef`'s own `/addhabit`/
+    # `/delhabit` copy (confirmations, validation errors, usage replies) --
+    # no key is added here yet, only the section marker. `habitdef`'s own
+    # keys must use an `addhabit_*`/`delhabit_*` prefix (disjoint from
+    # every existing key-name prefix in this file) so its later edit here
+    # never collides with this shared-surface pass's own additions above.
+    # ===================================================================
+    "help_addhabit_cmd": {
+        "en": '➕ Add your own habit: /addhabit id=reading|type=duration|en=reading|th=อ่านหนังสือ|unit=min/นาที|goal=30 (Thai alias: "เพิ่มนิสัย ...").',
+        "th": '➕ เพิ่มนิสัยของคุณเอง: /addhabit id=reading|type=duration|en=reading|th=อ่านหนังสือ|unit=min/นาที|goal=30 (หรือ "เพิ่มนิสัย ...")',
+    },
+    "help_delhabit_cmd": {
+        "en": '➖ Remove a habit you created: /delhabit reading (Thai alias: "ลบนิสัย reading").',
+        "th": '➖ ลบนิสัยที่คุณสร้างไว้: /delhabit reading (หรือ "ลบนิสัย reading")',
+    },
+
+    # --- /addhabit / /delhabit (module `habitdef`, SPEC-v1.7.md R-C1/R-C2/
+    # R-V1-R-V5) -- `core/habitdef.py` composes `detail`/`example`/`label`/
+    # `other_label` before calling `i18n.t` with the templates below; see
+    # its own module docstring for the composition logic. ------------------
+    "addhabit_usage": {
+        "en": (
+            "🤔 Usage: /addhabit id=reading|type=duration|en=reading|th=อ่านหนังสือ|unit=min/นาที|goal=30 "
+            '(id, type, en required; th/unit/goal/alias optional; Thai alias: "เพิ่มนิสัย ...").'
+        ),
+        "th": (
+            "🤔 รูปแบบ: /addhabit id=reading|type=duration|en=reading|th=อ่านหนังสือ|unit=min/นาที|goal=30 "
+            '(ต้องมี id, type, en — th/unit/goal/alias จะใส่หรือไม่ใส่ก็ได้ หรือใช้ "เพิ่มนิสัย ...")'
+        ),
+    },
+    "addhabit_reserved_word": {
+        "en": '🤔 Couldn\'t add that: "{word}" can\'t be a habit name (it\'s a command). Try another name.',
+        "th": '🤔 เพิ่มไม่ได้นะ: "{word}" ใช้เป็นชื่อนิสัยไม่ได้ (เป็นคำสั่งอยู่แล้ว) ลองชื่ออื่นดู',
+    },
+    "addhabit_invalid_id": {
+        "en": '🤔 "{id}" isn\'t a valid id — use only lowercase letters, numbers, and underscores (max 32 characters).',
+        "th": '🤔 "{id}" ใช้เป็น id ไม่ได้ — ใช้ได้แค่ตัวอักษรพิมพ์เล็ก ตัวเลข และ _ (ไม่เกิน 32 ตัวอักษร)',
+    },
+    "addhabit_shadow_base": {
+        "en": '🤔 Couldn\'t add that: "{id}" is already one of my built-in habits. Try another id.',
+        "th": '🤔 เพิ่มไม่ได้นะ: "{id}" เป็นนิสัยพื้นฐานของฉันอยู่แล้ว ลอง id อื่นดู',
+    },
+    "addhabit_duplicate_id": {
+        "en": '🤔 You already have a habit called "{id}". Use /delhabit {id} first, or pick another id.',
+        "th": '🤔 คุณมีนิสัยชื่อ "{id}" อยู่แล้ว ลบด้วย /delhabit {id} ก่อน หรือเลือก id อื่น',
+    },
+    "addhabit_archived_id": {
+        "en": '🤔 "{id}" was used before and its history is kept, so the id stays reserved. Pick another id.',
+        "th": '🤔 "{id}" เคยใช้มาก่อนและยังเก็บประวัติไว้ id นี้จึงถูกจองไว้ ลอง id อื่นดู',
+    },
+    "addhabit_invalid_type": {
+        "en": '🤔 "{type}" isn\'t a valid type — use numeric, duration, text, or boolean.',
+        "th": '🤔 "{type}" ไม่ใช่ประเภทที่ใช้ได้ — ใช้ numeric, duration, text หรือ boolean',
+    },
+    "addhabit_missing_unit": {
+        "en": "🤔 A numeric/duration habit needs a unit — e.g. unit=min/นาที.",
+        "th": "🤔 นิสัยแบบ numeric/duration ต้องมีหน่วย — เช่น unit=min/นาที",
+    },
+    "addhabit_unexpected_unit": {
+        "en": "🤔 A text/boolean habit can't have a unit — remove the unit=... part.",
+        "th": "🤔 นิสัยแบบ text/boolean มีหน่วยไม่ได้ — เอา unit=... ออก",
+    },
+    "addhabit_invalid_goal": {
+        "en": "🤔 goal must be a positive number, and only applies to numeric/duration habits.",
+        "th": "🤔 goal ต้องเป็นตัวเลขบวก และใช้ได้เฉพาะนิสัยแบบ numeric/duration",
+    },
+    "addhabit_invalid_alias": {
+        "en": "🤔 alias must look like alias=token:multiplier,... — e.g. alias=page:1.",
+        "th": "🤔 alias ต้องอยู่ในรูป alias=token:multiplier,... — เช่น alias=page:1",
+    },
+    "addhabit_duplicate_label": {
+        "en": '🤔 You already have a habit labeled "{label}" — pick a different label.',
+        "th": '🤔 คุณมีนิสัยชื่อ "{label}" อยู่แล้ว — ลองใช้ชื่ออื่น',
+    },
+    "addhabit_cap_reached": {
+        "en": "🤔 You've reached the {cap}-habit limit for custom habits. Archive or remove one first with /delhabit.",
+        "th": "🤔 คุณสร้างนิสัยครบ {cap} รายการแล้ว ลบหรือเก็บเข้าคลังก่อนด้วย /delhabit",
+    },
+    "addhabit_save_failed": {
+        "en": "😥 Couldn't save that habit right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกนิสัยไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "addhabit_detail_goal": {
+        "en": "{kind} in {unit}, goal {goal:g}/day",
+        "th": "{kind} หน่วย {unit} เป้าหมาย {goal:g}/วัน",
+    },
+    "addhabit_detail_no_goal": {
+        "en": "{kind} in {unit}",
+        "th": "{kind} หน่วย {unit}",
+    },
+    "addhabit_detail_bare": {
+        "en": "{kind}",
+        "th": "{kind}",
+    },
+    "addhabit_success": {
+        "en": '✅ Added "{label}" ({other_label}) — {detail}. Log it like "{example}" or use /remind {id}.',
+        "th": '✅ เพิ่ม "{label}" ({other_label}) แล้ว — {detail} บันทึกได้แบบ "{example}" หรือใช้ /remind {id}',
+    },
+    "addhabit_success_bare": {
+        "en": '✅ Added "{label}" ({other_label}) — {detail}. Log it anytime, or use /remind {id}.',
+        "th": '✅ เพิ่ม "{label}" ({other_label}) แล้ว — {detail} บันทึกได้ทุกเมื่อ หรือใช้ /remind {id}',
+    },
+    "delhabit_usage": {
+        "en": '🤔 Usage: /delhabit <id> — e.g. /delhabit reading (Thai alias: "ลบนิสัย reading").',
+        "th": '🤔 รูปแบบ: /delhabit <id> — เช่น /delhabit reading (หรือ "ลบนิสัย reading")',
+    },
+    "delhabit_not_found": {
+        "en": '🤔 You don\'t have a custom habit called "{id}".',
+        "th": '🤔 คุณไม่มีนิสัยที่สร้างเองชื่อ "{id}"',
+    },
+    "delhabit_save_failed": {
+        "en": "😥 Couldn't remove that habit right now — please try again in a moment.",
+        "th": "😥 ตอนนี้ลบนิสัยไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "delhabit_archived": {
+        "en": '🗄️ Archived "{id}" — it\'s hidden now, but your past entries stay in /history.',
+        "th": '🗄️ เก็บ "{id}" เข้าคลังแล้ว — ซ่อนไว้แล้วนะ แต่รายการเก่ายังอยู่ใน /history',
+    },
+    "delhabit_deleted": {
+        "en": '🗑️ Removed "{id}".',
+        "th": '🗑️ ลบ "{id}" แล้ว',
     },
 }

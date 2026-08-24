@@ -11,6 +11,7 @@ from habit_assistant.config import (
     ConfigError,
     HabitConfig,
     HabitLabel,
+    HabitsConfig,
     NudgeConfig,
     QuietHoursConfig,
     SnoozeConfig,
@@ -404,3 +405,43 @@ def test_nudge_threshold_pct_out_of_range_raises():
 def test_nudge_time_bad_hhmm_raises():
     with pytest.raises(ValueError):
         NudgeConfig(time="8pm")
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md §5 R-V5: HabitsConfig -- /addhabit's per-user cap. Mounted
+# on `Config.custom_habits` (own `[custom_habits]` TOML section) -- NOT
+# `Config.habits`, which is already the `[[habits]]` base-catalog list.
+# ---------------------------------------------------------------------------
+
+
+def test_custom_habits_max_per_user_defaults_to_20():
+    assert Config().custom_habits.max_per_user == 20
+
+
+def test_custom_habits_overridable_via_config():
+    config = Config(custom_habits=HabitsConfig(max_per_user=5))
+    assert config.custom_habits.max_per_user == 5
+
+
+def test_load_config_toml_with_custom_habits_section(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[custom_habits]\nmax_per_user = 5\n", encoding="utf-8")
+    config = load_config(path)
+    assert config.custom_habits.max_per_user == 5
+
+
+def test_custom_habits_section_never_collides_with_the_base_habits_array(tmp_path):
+    """A config.toml with BOTH the base [[habits]] array AND the new
+    [custom_habits] settings table must load cleanly -- they are disjoint
+    TOML keys ("habits" vs "custom_habits"), never nested under each other."""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[custom_habits]\nmax_per_user = 7\n\n'
+        '[[habits]]\nid = "sleep"\ntype = "numeric"\ngoal = 8\n'
+        'label = { en = "sleep", th = "นอน" }\n'
+        'unit = { en = "h", th = "ชม." }\n',
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.custom_habits.max_per_user == 7
+    assert [h.id for h in config.habits] == ["sleep"]

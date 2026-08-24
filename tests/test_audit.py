@@ -55,13 +55,20 @@ def test_actions_matches_the_spec_vocabulary_exactly():
     SPEC-v1.6.md §4 R-X3: `dashboard_set`/`dashboard_off` extend the
     vocabulary further -- the only new user-settable state v1.6.0 adds
     (records/trends/heatmap/nudge add none; nudge rides check-in
-    enablement, OQ2)."""
+    enablement, OQ2).
+
+    SPEC-v1.7.md §4 R-A1: `habit_create`/`habit_archive`/`habit_delete`
+    extend the vocabulary once more -- `/addhabit` records `habit_create`;
+    `/delhabit` records `habit_archive` (soft-delete, has history) or
+    `habit_delete` (hard-delete, no logs yet), per R-C2's smart-delete
+    split."""
     assert set(audit.ACTIONS) == {
         "undo", "edit", "target_set", "target_clear", "remind_set", "remind_off",
         "remind_default", "lang_set", "quiet_set", "quiet_off",
         "checkin_set", "checkin_off", "checkin_default",
         "dashboard_set", "dashboard_off",
         "user_approve", "user_block", "user_pending",
+        "habit_create", "habit_archive", "habit_delete",
     }
 
 

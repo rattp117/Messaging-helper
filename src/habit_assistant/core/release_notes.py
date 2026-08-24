@@ -20,7 +20,8 @@ otherwise skip a user whose resolved language has no variant here.
 
 v1.5.0 ships as the very first row -- this release announces itself
 (§3.4's own illustrative copy, R-N1). v1.6.0 (SPEC-v1.6.md §4 R-X4) adds
-its own entry below, same convention."""
+its own entry below, same convention. v1.7.0 (SPEC-v1.7.md §4 R-A2) adds
+its own entry too."""
 
 from __future__ import annotations
 
@@ -60,6 +61,26 @@ RELEASE_NOTES: dict[str, dict[i18n.Language, str]] = {
             "• สถิติส่วนตัว — พิมพ์ /records เพื่อดูวันที่ดีที่สุด สัปดาห์ที่ดีที่สุด และสตรีคยาวที่สุด\n"
             "• แนวโน้ม — พิมพ์ /trends เพื่อดูเปรียบเทียบสัปดาห์นี้กับสัปดาห์ที่แล้วแบบรวดเร็ว\n"
             "• การเตือนใจเบาๆ ช่วงท้ายวันเมื่อใกล้ถึงเป้าหมาย (ผูกกับการเปิดใช้เช็คอิน)"
+        ),
+    },
+    "1.7.0": {
+        "en": (
+            "🎉 What's new in v1.7.0\n"
+            "• Custom habits — /addhabit lets you define your own tracker from chat\n"
+            "• Once created, it works everywhere: logging, undo, /target, /remind, streaks, "
+            "the daily summary, weekly review, /habits, /history, /heatmap, /records, /trends, "
+            "check-ins, and the dashboard\n"
+            "• /delhabit removes one — archived if it has history, deleted if it doesn't\n"
+            "• Custom habits are entirely private to you"
+        ),
+        "th": (
+            "🎉 มีอะไรใหม่ใน v1.7.0\n"
+            "• นิสัยที่กำหนดเอง — พิมพ์ /addhabit เพื่อสร้างตัวติดตามของคุณเองจากแชท\n"
+            "• เมื่อสร้างแล้วใช้ได้ทุกที่: การบันทึก การยกเลิก /target /remind สตรีค "
+            "สรุปประจำวัน รีวิวรายสัปดาห์ /habits /history /heatmap /records /trends "
+            "เช็คอิน และแดชบอร์ด\n"
+            "• /delhabit เพื่อลบนิสัย — เก็บเข้าคลังถ้ามีประวัติ หรือลบทิ้งถ้ายังไม่มี\n"
+            "• นิสัยที่กำหนดเองเป็นส่วนตัวของคุณเท่านั้น"
         ),
     },
 }

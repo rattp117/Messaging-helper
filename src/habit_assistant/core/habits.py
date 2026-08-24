@@ -10,6 +10,7 @@ about config in, `Habit`/`HabitRegistry` out.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -20,6 +21,7 @@ from habit_assistant.storage.models import LogEntry
 if TYPE_CHECKING:
     from habit_assistant.config import Config
     from habit_assistant.llm.ollama_client import ExtractionResult
+    from habit_assistant.storage.db import Database
 
 # The three habits shipped through v0.6.0, generalized (SPEC-v0.7.md §3.1):
 # these ids reuse their existing v0.6 i18n catalog entries verbatim for
@@ -89,6 +91,52 @@ class HabitRegistry:
             )
             for h in config.habits
         ]
+        return cls(habits)
+
+    @classmethod
+    def for_user(cls, config: "Config", db: "Database", user_id: str) -> "HabitRegistry":
+        """SPEC-v1.7.md R-G1: the base `config.habits` Habits (first, order
+        preserved -- reuses `from_config` verbatim, so base-habit
+        construction can never drift between the two entry points) PLUS a
+        `Habit` built from each of `user_id`'s own ACTIVE (non-archived)
+        `user_habits` rows, appended in the order `db.list_user_habits`
+        returns them (insertion order -- SQLite's own rowid order, since
+        `user_habits` carries no explicit ORDER BY guarantee beyond that).
+
+        A user with no `user_habits` rows yields a registry byte-identical
+        to `from_config(config)` (AC-2/AC-5 -- the release's own hard
+        regression gate) since the loop below simply appends nothing.
+
+        A custom habit starts with NO reminder times/text of its own
+        (`reminder_times=()`, `reminder_text_en/th=None`) -- SPEC-v1.7.md
+        §9's own recorded decision: "custom-habit reminders use the
+        existing per-user `/remind` machinery... no new reminder storage"
+        (a fresh habit has none until the user sets some via `/remind`,
+        exactly like a base habit with no configured `reminder_times`
+        would). `unit_aliases` is stored pre-JSON-encoded by the caller
+        (mirrors `set_user_quiet_hours`'s own "storage stores what it's
+        given, no interpretation" convention) -- decoded back into a dict
+        here, the one place a `user_habits` row becomes a `Habit`. `goal`
+        is `None` for a habit created without one (has no goal until the
+        user sets one, same as a base habit with `goal = None`)."""
+        habits: list[Habit] = list(cls.from_config(config))
+        for row in db.list_user_habits(user_id, include_archived=False):
+            raw_aliases = row["unit_aliases"]
+            habits.append(
+                Habit(
+                    id=row["id"],
+                    type=row["type"],
+                    label_en=row["label_en"],
+                    label_th=row["label_th"],
+                    unit_en=row["unit_en"],
+                    unit_th=row["unit_th"],
+                    goal=row["goal"],
+                    reminder_times=(),
+                    reminder_text_en=None,
+                    reminder_text_th=None,
+                    unit_aliases=json.loads(raw_aliases) if raw_aliases else {},
+                )
+            )
         return cls(habits)
 
     def get(self, habit_id: str) -> Habit | None:

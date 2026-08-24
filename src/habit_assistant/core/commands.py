@@ -276,6 +276,18 @@ CommandKind = Literal[
     "heatmap",
     "records",
     "trends",
+    # SPEC-v1.7.md §5/§6/§11 (module `habitdef`): /addhabit and /delhabit's
+    # own kinds, plus their Thai aliases เพิ่มนิสัย/ลบนิสัย. The bare Literal
+    # entries landed here first (shared-surface seam); the pipe `key=value`
+    # matcher/parsing and `Command.fields` (SPEC-v1.7.md §6: "commands.py --
+    # addhabit/delhabit parsing (shared file; disjoint keys)") are
+    # `habitdef`'s own later, disjoint edit to this same file -- see
+    # `_match_addhabit`/`_match_delhabit` below. `reserved_trigger_words()`
+    # below reserves "addhabit"/"delhabit"/เพิ่มนิสัย/ลบนิสัย against these
+    # exact literals so the matcher below has no freedom to drift from
+    # what's reserved.
+    "addhabit",
+    "delhabit",
 ]
 
 
@@ -326,6 +338,21 @@ class Command:
     # "trends" (always `None` for those two -- habit filter only, see
     # `category` below). Not yet populated by dispatch().
     limit: int | None = None
+    # SPEC-v1.7.md §5/§6 (module `habitdef`): the raw, UNVALIDATED
+    # pipe `key=value` field set for "addhabit" -- `_parse_addhabit_fields`
+    # below builds it (lowercased keys, stripped-but-otherwise-verbatim
+    # string values; a Thai `th=`/English `en=` value keeps its own
+    # case/script). `None` means the tail didn't have the key=value pipe
+    # SHAPE at all (a bare "/addhabit" with no tail, or a Thai-alias tail
+    # that isn't key=value-shaped) -- `core/habitdef.py:execute_addhabit`
+    # treats that as a usage reply, no write, same "recognized shape here,
+    # semantic validation there" split as every command above. `category`
+    # (existing field, reused rather than adding a redundant one) carries
+    # "delhabit"'s own raw (lowercased) habit-id token -- resolved-or-not
+    # exactly like `_resolve_target_category`'s established convention,
+    # since a habit slated for deletion may not even be in the live
+    # registry (archived id).
+    fields: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1310,6 +1337,142 @@ def _match_trends(stripped: str, registry: "HabitRegistry") -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# addhabit / delhabit -- SPEC-v1.7.md §4 (module `habitdef`). `/addhabit
+# <pipe key=value grammar>` (Thai alias `เพิ่มนิสัย`) and `/delhabit <id>`
+# (Thai alias `ลบนิสัย`).
+#
+# `/addhabit`'s slash form stays fully permissive, mirroring every other
+# settings-style slash command above -- an explicit "/" prefix is a
+# near-zero false-positive surface, so even a malformed/empty tail still
+# produces a `Command(kind="addhabit", fields=...)`, letting `core/
+# habitdef.py:execute_addhabit` reply with the usage/example message
+# rather than this shape-only layer silently swallowing it.
+#
+# The Thai alias `เพิ่มนิสัย` (literally "add habit") IS an ordinary
+# compound that could plausibly open real prose ("อยากเพิ่มนิสัยที่ดี" --
+# "[I] want to add good habits"), the same false-positive risk class
+# `เตือน`/`ภาษา`/`เงียบ`/`เช็คอิน`/`แดชบอร์ด` were each hardened against.
+# Registry-anchoring (the usual mitigation for THOSE triggers) doesn't
+# apply here -- there's no existing habit to anchor a CREATE command's
+# argument against. Instead this uses the equivalent strategy `เงียบ`'s
+# own `_QUIET_TH_VALUE_RE` established: a strict GRAMMAR-SHAPE whitelist
+# (every `|`-separated segment must contain a bare `key=`) rather than a
+# curated word blacklist -- ordinary Thai prose about habits has no `=`
+# signs in it at all, so it can never satisfy this shape, while the
+# spec's own pipe grammar always does. `_parse_addhabit_fields` is both
+# the shape gate AND the actual field extraction (one pass, not two) --
+# a `None` result means "not key=value-shaped", used here to reject the
+# Thai-alias match entirely (falls through to `None`, ordinary prose);
+# the SAME `None` result for the SLASH form instead becomes a usage-reply
+# `Command` (permissive posture, see above) rather than a non-match.
+#
+# `/delhabit`'s slash form is likewise permissive (any first token becomes
+# the raw, unresolved `category` -- mirrors `/target`'s/`/history`'s own
+# "recognized shape -> always a Command" rule; an unresolved id is
+# `execute_delhabit`'s own `delhabit_not_found` reply, not a dispatch
+# failure). The Thai alias `ลบนิสัย` ("delete habit") IS registry-anchored
+# (mirrors `_build_remind_th_pattern`/`_build_history_th_pattern` exactly)
+# -- a habit slated for deletion, unlike one being created, DOES already
+# exist in the registry the caller passes in (base id, or the user's own
+# already-created custom habit), so only a message naming a habit this
+# bot actually tracks for this user can ever match at all.
+# ---------------------------------------------------------------------------
+
+_ADDHABIT_SLASH_RE = re.compile(r"^/addhabit(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_ADDHABIT_TH_RE = re.compile(r"^เพิ่มนิสัย(?:\s+(?P<rest>\S.*))?$")
+
+_DELHABIT_SLASH_RE = re.compile(r"^/delhabit(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+
+
+def _parse_addhabit_fields(rest: str) -> dict[str, str] | None:
+    """SPEC-v1.7.md §2.1's pipe `key=value` grammar -- SHAPE-only parsing
+    (mirrors `_parse_edit_value`'s/`_parse_target_value`'s own recognize-
+    shape/validate-elsewhere split): every `|`-separated segment must
+    contain a `=`, the substring before it (stripped, lowercased) is the
+    key, everything after (stripped, kept verbatim otherwise -- a label/
+    unit value can be Thai text or mixed case, never lowercased here) is
+    the raw value. An empty segment (e.g. a stray leading/trailing `|`) is
+    skipped. Returns `None` if ANY non-empty segment lacks a `=`, or the
+    tail has no segments at all -- `core/habitdef.py:validate_and_
+    normalize`'s own caller replies with the usage message for a `None`
+    result (SLASH form), or the Thai-alias trigger doesn't match at all
+    (see the module comment above)."""
+    fields: dict[str, str] = {}
+    for segment in rest.split("|"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        key, sep, value = segment.partition("=")
+        if not sep:
+            return None
+        key = key.strip().lower()
+        if not key:
+            return None
+        fields[key] = value.strip()
+    return fields if fields else None
+
+
+def _match_addhabit(stripped: str) -> "Command | None":
+    slash_match = _ADDHABIT_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        rest = slash_match.group("rest")
+        return Command(kind="addhabit", fields=_parse_addhabit_fields(rest) if rest else None)
+
+    th_match = _ADDHABIT_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    rest = th_match.group("rest")
+    if rest is None:
+        return None  # bare "เพิ่มนิสัย" -- no argument shape to whitelist against, ordinary prose.
+    fields = _parse_addhabit_fields(rest)
+    if fields is None:
+        return None  # tail isn't key=value-pipe-shaped -- ordinary prose (see module comment above).
+    return Command(kind="addhabit", fields=fields)
+
+
+def _build_delhabit_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "ลบนิสัย<habit>" -- habit token built from the LIVE registry's
+    ids/Thai labels, same false-positive mitigation as `_build_remind_th_
+    pattern`/`_build_history_th_pattern` (only a message naming a habit
+    this bot actually tracks for this user -- a base id, or one of their
+    own already-created custom habits, both present in `registry` by the
+    time this dispatches -- can ever match at all). Returns `None` if the
+    registry has no matchable Thai/id tokens (defensive; every shipped
+    config has at least water's "น้ำ")."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    if not escaped:
+        return None
+    habit_alt = "|".join(escaped)
+    return re.compile(rf"^ลบนิสัย\s+(?P<habit>{habit_alt})$")
+
+
+def _match_delhabit(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    slash_match = _DELHABIT_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        habit_token = _first_token(slash_match.group("rest"))
+        category = habit_token.strip().lower() if habit_token else None
+        return Command(kind="delhabit", category=category)
+
+    th_pattern = _build_delhabit_th_pattern(registry)
+    if th_pattern is not None:
+        th_match = th_pattern.match(stripped)
+        if th_match is not None:
+            # The habit token came straight out of the registry-built
+            # alternation above, so it is always resolvable -- the `or`
+            # fallback is defensive only, never actually hit (mirrors
+            # `_match_history`'s/`_match_remind`'s own identical comment).
+            category = _resolve_habit_token(th_match.group("habit"), registry) or th_match.group("habit").lower()
+            return Command(kind="delhabit", category=category)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
 # interrogative markers only: none of these substrings/endings can occur in
 # a normal habit log (verified against the full adversarial corpus in
@@ -1523,6 +1686,19 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     if trends_command is not None:
         return trends_command
 
+    # SPEC-v1.7.md §4 (module `habitdef`): `/addhabit`/`เพิ่มนิสัย` and
+    # `/delhabit`/`ลบนิสัย` -- disjoint trigger text from every pattern
+    # above/below, grouped here with `/history`'s/`/heatmap`'s/`/records`'s/
+    # `/trends`'s own view/definition-style commands for readability (exact
+    # placement doesn't change behavior).
+    addhabit_command = _match_addhabit(stripped)
+    if addhabit_command is not None:
+        return addhabit_command
+
+    delhabit_command = _match_delhabit(stripped, registry)
+    if delhabit_command is not None:
+        return delhabit_command
+
     if _match_help(stripped):
         return Command(kind="help")
 
@@ -1533,3 +1709,131 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
         return Command(kind="query")
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md §4 R-V3 (shared surface, consumed by module `habitdef`):
+# the single authoritative source of "every deterministic command trigger
+# word, both languages" -- a custom habit's id/label (en or th) equal
+# (case-insensitively, stripped -- `habitdef`'s own comparison, this
+# function just returns the raw lowercase/Thai literals) to any word in
+# this set is rejected (AC-H3), so a habit named "help"/"เตือน" can never
+# exist and shadow real dispatch.
+#
+# Every entry below is copied verbatim from the literal already embedded
+# in that trigger's own compiled pattern above in this file (cited per
+# group) -- not re-derived from i18n copy or guessed -- satisfying R-V3's
+# "same literals the command matchers use" requirement. `tests/test_
+# commands.py`'s own cross-check (added alongside this function) verifies
+# every word below actually round-trips through `dispatch()` to its
+# expected kind, so a future edit to any trigger regex that silently
+# drops/renames a word breaks that test rather than silently opening a
+# collision hole.
+#
+# Deliberately EXCLUDED:
+#   - `_QUERY_PATTERNS` (query intent, line ~1321): these are substring-
+#     matched interrogative PARTICLES ("กี่"/"เท่าไหร่"/"ไหม"/"หรือยัง", "how
+#     much/many", "did/have/has i") plus a trailing "?"/"？" -- not a
+#     single fixed trigger STEM a habit id could equal one-for-one the way
+#     "help" collides with `/help`. R-V3's own enumeration (SPEC-v1.7.md
+#     §4) does not list "query" among the stems either.
+#   - Argument/tail VALUES, not trigger words: `_TARGET_CLEAR_WORDS`
+#     ("default"/"reset"/"clear"/"ค่าเริ่มต้น") and the on/off/HH:MM-shaped
+#     tails `_match_quiet`/`_match_checkin`/`_match_dashboard`/`_match_lang`
+#     accept -- these are values typed AFTER a trigger, not the trigger
+#     itself.
+#   - `/start`/`/users`/`/approve`/`/block`/`/invite`'s own bare English
+#     words ARE included below even though R-V3's illustrative parenthetical
+#     doesn't name them -- they are still real, slash-anchored command
+#     trigger stems (module `access`, lines ~740-744), and the surrounding
+#     "…" in R-V3's own wording reads as "and so on", not an exhaustive
+#     exclusion list. Excluding real command words here would leave a
+#     collision hole the function's own purpose exists to close.
+# ---------------------------------------------------------------------------
+
+
+def reserved_trigger_words() -> frozenset[str]:
+    """SPEC-v1.7.md R-V3: every deterministic command trigger stem, both
+    languages -- see the module comment directly above for the full
+    inclusion/exclusion rationale and the literal-source discipline."""
+    return frozenset(
+        {
+            # undo/delete (_UNDO_PATTERNS, line ~336-340)
+            "undo",
+            "delete",
+            "ยกเลิก",
+            "ลบ",
+            # edit-heads (_EDIT_TRIGGER, line ~349-354)
+            "edit",
+            "make",
+            "change",
+            "แก้",
+            "แก้ไข",
+            # snooze (_SNOOZE_EN_RE/_SNOOZE_TH_RE, line ~377-380)
+            "snooze",
+            "เลื่อน",
+            # target (_TARGET_SLASH_RE/_TARGET_EN_SET_PATTERNS/
+            # _build_target_th_set_pattern, line ~406-474)
+            "target",
+            "goal",
+            "ตั้งเป้า",
+            "เป้า",
+            # remind (_REMIND_SLASH_RE/_build_remind_th_pattern, line ~623-674)
+            "remind",
+            "เตือน",
+            # help / habits (_HELP_RE/_HABITS_RE, line ~712-713)
+            "help",
+            "habits",
+            "ช่วยเหลือ",
+            "วิธีใช้",
+            "นิสัย",
+            # access -- start/users/approve/block/invite (line ~740-744),
+            # English slash-only, no Thai alias in this app
+            "start",
+            "users",
+            "approve",
+            "block",
+            "invite",
+            # audit (_AUDIT_SLASH_RE/_AUDIT_TH_RE, line ~778-783)
+            "audit",
+            "ประวัติ",
+            # history (_HISTORY_SLASH_RE, line ~843; Thai trigger ย้อนหลัง)
+            "history",
+            "ย้อนหลัง",
+            # heatmap (_HEATMAP_SLASH_RE, line ~935; Thai trigger ปฏิทิน)
+            "heatmap",
+            "ปฏิทิน",
+            # lang (_LANG_SLASH_RE/_LANG_TH_RE, line ~1038-1039)
+            "lang",
+            "ภาษา",
+            # quiet (_QUIET_SLASH_RE/_QUIET_TH_RE, line ~1040-1041)
+            "quiet",
+            "เงียบ",
+            # checkin (_CHECKIN_SLASH_RE/_CHECKIN_TH_RE, line ~1129-1130)
+            "checkin",
+            "เช็คอิน",
+            # dnd (_DND_SLASH_RE/_DND_TH_RE, line ~1134-1135)
+            "dnd",
+            "งดรบกวน",
+            # dashboard (_DASHBOARD_SLASH_RE/_DASHBOARD_TH_RE, line ~1210-1211)
+            "dashboard",
+            "แดชบอร์ด",
+            # records (_RECORDS_SLASH_RE + _match_records's own th_trigger,
+            # line ~1263/1304-1305)
+            "records",
+            "สถิติ",
+            # trends (_TRENDS_SLASH_RE + _match_trends's own th_trigger,
+            # line ~1264/1308-1309)
+            "trends",
+            "แนวโน้ม",
+            # addhabit/delhabit (module `habitdef`, matched by
+            # `_match_addhabit`/`_match_delhabit` above -- SPEC-v1.7.md
+            # §2.1's own literal example text; reserved here too so
+            # `core/habitdef.py:validate_and_normalize`'s own id/label
+            # check can't pick a word already claimed as a habit name)
+            "addhabit",
+            "delhabit",
+            "เพิ่มนิสัย",
+            "ลบนิสัย",
+        }
+    )

@@ -389,6 +389,23 @@ def _default_habits() -> list[HabitConfig]:
     ]
 
 
+class HabitsConfig(BaseModel):
+    """SPEC-v1.7.md §5 R-V5: `/addhabit` per-user cap. NAMING NOTE: spec's
+    own §6 file-list entry reads "config.py + config.toml -- `[habits]
+    max_per_user`", but `Config.habits` (below, `list[HabitConfig]`, the
+    `[[habits]]` array-of-tables base catalog) already owns that field
+    name -- and TOML itself doesn't allow a `[[habits]]` array-of-tables
+    and a sibling `[habits]` table under the *same* key in one document
+    (a redefinition). This model therefore mounts on `Config.custom_habits`
+    / TOML section `[custom_habits]` instead -- a deliberately DIFFERENT,
+    disjoint field/section name (never `Config.habits`), documented here
+    so `habitdef`/`main.py` reference `config.custom_habits.max_per_user`,
+    not a `config.habits.max_per_user` that would collide with the
+    existing list field."""
+
+    max_per_user: int = 20
+
+
 class Config(BaseModel):
     app: AppConfig = AppConfig()
     telegram: TelegramConfig = TelegramConfig()
@@ -407,6 +424,7 @@ class Config(BaseModel):
     charts: ChartsConfig = ChartsConfig()
     garmin: GarminConfig = GarminConfig()
     audit: AuditConfig = AuditConfig()
+    custom_habits: HabitsConfig = HabitsConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

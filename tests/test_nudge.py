@@ -437,6 +437,55 @@ async def test_run_due_nudges_never_calls_ollama_end_to_end(db, config):
     assert channel.sent_to(OWNER) != []
 
 
+# ---------------------------------------------------------------------------
+# SPEC-v1.7.md R-G3: `registry_for` -- additive, optional per-user registry
+# resolution. Omitted (every test above), byte-identical to pre-v1.7 (AC-5).
+# ---------------------------------------------------------------------------
+
+
+async def test_run_due_nudges_registry_for_resolves_per_user(db, config, monkeypatch):
+    """The registry `build_nudge_message` actually receives is the one
+    `registry_for(user_id)` returns for THAT user, not the fallback
+    `registry` positional -- proven by capturing what each call received."""
+    await _enable_checkin(db, config, OWNER)
+    await _enable_checkin(db, config, MEMBER)
+    _log(db, OWNER, "water", 2000.0)
+    _log(db, MEMBER, "water", 2000.0)
+
+    owner_registry = DEFAULT_REGISTRY
+    member_registry = HabitRegistry.from_config(Config())  # a distinct object, same content
+    received: dict[str, "HabitRegistry"] = {}
+    real_build = nudge.build_nudge_message
+
+    def spy(db_, config_, registry_, lang_, user_id_, clock_=datetime.now):
+        received[user_id_] = registry_
+        return real_build(db_, config_, registry_, lang_, user_id_, clock_)
+
+    monkeypatch.setattr(nudge, "build_nudge_message", spy)
+
+    def registry_for(user_id: str) -> "HabitRegistry":
+        return owner_registry if user_id == OWNER else member_registry
+
+    channel = FakeChannel()
+    await nudge.run_due_nudges(
+        channel, config, DEFAULT_REGISTRY, db, clock=_fixed_clock(hh=20, mm=0), registry_for=registry_for
+    )
+
+    assert received[OWNER] is owner_registry
+    assert received[MEMBER] is member_registry
+
+
+async def test_run_due_nudges_registry_for_none_falls_back_to_registry(db, config):
+    await _enable_checkin(db, config, OWNER)
+    _log(db, OWNER, "water", 2000.0)
+
+    channel = FakeChannel()
+    await nudge.run_due_nudges(
+        channel, config, DEFAULT_REGISTRY, db, clock=_fixed_clock(hh=20, mm=0), registry_for=None
+    )
+    assert channel.sent_to(OWNER) != []
+
+
 # ===========================================================================
 # Interplay: the nudge minute coincides with a check-in hour. Neither tick
 # suppresses the other -- SPEC-v1.6.md R-N1 says the nudge "runs on the SAME
