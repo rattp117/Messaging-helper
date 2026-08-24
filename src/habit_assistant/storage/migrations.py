@@ -238,6 +238,40 @@ def _migration_008_checkin_and_announce(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE users ADD COLUMN last_announced_version TEXT NULL")
 
 
+def _migration_009_dashboard_and_records(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.6.md §5/§6 (shared surface): two additive pieces, mirroring
+    migration 008's own "NULL/empty is correct by construction, no
+    backfill" posture:
+    - `users.dashboard_msg_id` (nullable TEXT): `NULL` means "no live
+      dashboard" -- OQ1 resolved (opt-in via `/dashboard on`), so every
+      existing row is correctly disabled by construction (AC-D1); a
+      non-NULL value is the pinned message's id once a user enables it.
+    - `habit_records` (NEW table, no existing data to touch): one row per
+      `(user_id, habit_id, record_type)` -- `record_type IN ('best_day',
+      'best_week', 'longest_streak')`, `value` the record's numeric value,
+      `achieved_on` the date it was set. Stored, not re-derived (R-R1), so
+      "beaten?" is a cheap compare. A fresh/pre-v1.6 install starts with
+      zero rows -- the first log that would otherwise set a record is
+      itself the first "beaten" crossing, mirroring the milestone
+      once-per-crossing design's own "nothing to compare against yet"
+      starting state.
+    Idempotent the same way every migration here is: the runner only
+    ever applies this once, guarded by `PRAGMA user_version` (AC-1)."""
+    conn.execute("ALTER TABLE users ADD COLUMN dashboard_msg_id TEXT NULL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS habit_records (
+          user_id      TEXT NOT NULL,
+          habit_id     TEXT NOT NULL,
+          record_type  TEXT NOT NULL,
+          value        REAL NOT NULL,
+          achieved_on  TEXT NOT NULL,
+          PRIMARY KEY (user_id, habit_id, record_type)
+        )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -250,6 +284,7 @@ MIGRATIONS: list[Migration] = [
     _migration_006_multiuser,
     _migration_007_audit_log,
     _migration_008_checkin_and_announce,
+    _migration_009_dashboard_and_records,
 ]
 
 

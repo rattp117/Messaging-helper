@@ -298,17 +298,18 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     # Open through the real Database class -- this also runs migrations 005
     # (SPEC-v1.1.md, additive `habit_targets`), 006 (SPEC-v1.2.md,
     # `users`/`logs.user_id`/habit_targets rebuild/`user_reminder_times`),
-    # 007 (SPEC-v1.3.md, additive `audit_log`), and 008 (SPEC-v1.5.md,
-    # additive `users.checkin_window`/`users.last_announced_version`)
-    # since all four are now unconditionally part of MIGRATIONS; a
-    # v3-shaped DB opened today lands on version 8, not 4, but everything
+    # 007 (SPEC-v1.3.md, additive `audit_log`), 008 (SPEC-v1.5.md,
+    # additive `users.checkin_window`/`users.last_announced_version`), and
+    # 009 (SPEC-v1.6.md, additive `users.dashboard_msg_id`/`habit_records`)
+    # since all five are now unconditionally part of MIGRATIONS; a
+    # v3-shaped DB opened today lands on version 9, not 4, but everything
     # asserted below about migration 004's own effect (habit_type
-    # backfill, untouched logs rows) still holds -- none of 006/007/008's
-    # additions touch the columns selected below.
+    # backfill, untouched logs rows) still holds -- none of 006/007/008/
+    # 009's additions touch the columns selected below.
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 8
+    assert db.schema_version == 9
 
     after_rows = [
         tuple(r)
@@ -330,8 +331,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 8
-    assert reopened.schema_version == 8
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
     reopened.close()
 
 
@@ -352,14 +353,15 @@ def test_fresh_db_has_habit_type_column(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_fresh_db_reports_schema_version_8_with_habit_targets_table(tmp_path):
+def test_fresh_db_reports_schema_version_9_with_habit_targets_table(tmp_path):
     # SPEC-v1.2.md added migration 006 (this test's own focus, habit_
     # targets rebuilt with a surrogate `id` PK + `user_id`, R-M1);
     # SPEC-v1.3.md added migration 007 (audit_log); SPEC-v1.5.md added
-    # migration 008 (checkin_window/last_announced_version) -- a fresh DB
-    # now lands on version 8, not 6.
+    # migration 008 (checkin_window/last_announced_version); SPEC-v1.6.md
+    # added migration 009 (dashboard_msg_id/habit_records) -- a fresh DB
+    # now lands on version 9, not 6.
     db = Database(tmp_path / "fresh_v6.db")
-    assert db.schema_version == 8
+    assert db.schema_version == 9
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
@@ -410,12 +412,13 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     db = Database(db_path)
 
-    # SPEC-v1.2.md/SPEC-v1.3.md/SPEC-v1.5.md: opening a v4-shaped DB today
-    # also applies migration 006 (users/logs.user_id/habit_targets
-    # rebuild/user_reminder_times), 007 (audit_log), and 008 (checkin_
-    # window/last_announced_version), so it lands on version 8, not 5.
+    # SPEC-v1.2.md/SPEC-v1.3.md/SPEC-v1.5.md/SPEC-v1.6.md: opening a
+    # v4-shaped DB today also applies migration 006 (users/logs.user_id/
+    # habit_targets rebuild/user_reminder_times), 007 (audit_log), 008
+    # (checkin_window/last_announced_version), and 009 (dashboard_msg_id/
+    # habit_records), so it lands on version 9, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 8
+    assert db.schema_version == 9
 
     after_rows = [
         tuple(r)
@@ -431,8 +434,8 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 8
-    assert reopened.schema_version == 8
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
     reopened.close()
 
 
@@ -578,14 +581,15 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     db = Database(db_path)
 
-    # SPEC-v1.3.md added migration 007 (audit_log, additive) and
-    # SPEC-v1.5.md added migration 008 (checkin_window/last_announced_
-    # version, additive) after this one; a v5-shaped DB opened today
-    # lands on version 8, not 6, but everything asserted below about
+    # SPEC-v1.3.md added migration 007 (audit_log, additive), SPEC-v1.5.md
+    # added migration 008 (checkin_window/last_announced_version,
+    # additive), and SPEC-v1.6.md added migration 009 (dashboard_msg_id/
+    # habit_records, additive) after this one; a v5-shaped DB opened today
+    # lands on version 9, not 6, but everything asserted below about
     # migration 006's own effect (users/logs.user_id/habit_targets
     # rebuild/user_reminder_times) still holds.
     assert db.schema_version_before == 5
-    assert db.schema_version == 8
+    assert db.schema_version == 9
 
     # logs values preserved, byte-for-byte; new user_id column present and NULL.
     after_logs = [
@@ -619,8 +623,8 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     # Re-running (reopen) applies nothing further (idempotent, AC-M1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 8
-    assert reopened.schema_version == 8
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
     reopened.close()
 
 
@@ -629,11 +633,12 @@ def test_fresh_db_has_users_and_user_reminder_times_tables(tmp_path):
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"users", "user_reminder_times"} <= tables
     user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
-    # SPEC-v1.5.md's migration 008 added checkin_window/last_announced_version.
+    # SPEC-v1.5.md's migration 008 added checkin_window/last_announced_version;
+    # SPEC-v1.6.md's migration 009 added dashboard_msg_id.
     assert user_cols == {
         "chat_id", "role", "status", "display_name", "language_pref",
         "quiet_hours_json", "snooze_default_minutes", "created_at",
-        "checkin_window", "last_announced_version",
+        "checkin_window", "last_announced_version", "dashboard_msg_id",
     }
     reminder_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(user_reminder_times)").fetchall()}
     assert reminder_cols == {"user_id", "habit_id", "time"}
@@ -727,7 +732,7 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
     db = Database(db_path)
 
     assert db.schema_version_before == 6
-    assert db.schema_version == 8
+    assert db.schema_version == 9
 
     # Every pre-existing table/row is untouched, byte-for-byte -- the
     # additive-only guarantee AC-A1 requires (unlike 006's own sanctioned
@@ -756,14 +761,14 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
 
     # Re-running (reopen) applies nothing further (idempotent, AC-A1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 8
-    assert reopened.schema_version == 8
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
     reopened.close()
 
 
 def test_fresh_db_has_audit_log_table_with_expected_shape(tmp_path):
     db = Database(tmp_path / "fresh_v7.db")
-    assert db.schema_version == 8
+    assert db.schema_version == 9
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "audit_log" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
@@ -905,7 +910,7 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
     db = Database(db_path)
 
     assert db.schema_version_before == 7
-    assert db.schema_version == 8
+    assert db.schema_version == 9
 
     # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
     after_users = [
@@ -926,14 +931,14 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 8
-    assert reopened.schema_version == 8
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
     reopened.close()
 
 
 def test_fresh_db_has_checkin_and_announce_columns_all_null(tmp_path):
     db = Database(tmp_path / "fresh_v8.db")
-    assert db.schema_version == 8
+    assert db.schema_version == 9
     db.upsert_user("u1", role="member", status="active")
     assert db.get_checkin_window("u1") is None
     assert db.get_last_announced_version("u1") is None
@@ -988,6 +993,222 @@ def test_get_checkin_window_and_last_announced_version_for_nonexistent_user_is_n
     db = Database(tmp_path / "ghost.db")
     assert db.get_checkin_window("ghost") is None
     assert db.get_last_announced_version("ghost") is None
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.6.md "Live dashboard + Heatmap + Records + Trends + Nudge" (AC-1):
+# migration 009 -- `users.dashboard_msg_id` (additive/nullable, NO backfill,
+# mirrors migration 008's own posture) + the NEW `habit_records` table
+# (additive, no existing data to touch). Built on a v8-shaped DB, never the
+# live `data/habits.db`.
+# ---------------------------------------------------------------------------
+
+
+def test_v8_shaped_db_migrates_to_v9_dashboard_and_records_touching_nothing_existing(tmp_path):
+    db_path = tmp_path / "v8_copy.db"
+
+    # Hand-build a v8-shaped DB (migrations 001-008 already applied): the
+    # full pre-dashboard/records schema, user_version=8, with a real user
+    # row (including a NON-NULL checkin_window, so "touches no existing
+    # column value" is genuinely exercised).
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts          TEXT NOT NULL,
+          category    TEXT NOT NULL,
+          value_num   REAL,
+          value_text  TEXT,
+          raw_message TEXT NOT NULL,
+          source      TEXT NOT NULL DEFAULT 'reply',
+          created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          deleted_at  TEXT NULL,
+          habit_type  TEXT NULL,
+          user_id     TEXT NULL
+        );
+        CREATE TABLE habit_targets (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    TEXT,
+          habit_id   TEXT NOT NULL,
+          goal       REAL NOT NULL,
+          updated_at TEXT,
+          UNIQUE(user_id, habit_id)
+        );
+        CREATE TABLE users (
+          chat_id                TEXT PRIMARY KEY,
+          role                   TEXT NOT NULL DEFAULT 'member',
+          status                 TEXT NOT NULL DEFAULT 'pending',
+          display_name           TEXT,
+          language_pref          TEXT NOT NULL DEFAULT 'auto',
+          quiet_hours_json       TEXT,
+          snooze_default_minutes INTEGER,
+          created_at             TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          checkin_window         TEXT,
+          last_announced_version TEXT
+        );
+        CREATE TABLE user_reminder_times (
+          user_id  TEXT NOT NULL,
+          habit_id TEXT NOT NULL,
+          time     TEXT NOT NULL,
+          PRIMARY KEY (user_id, habit_id, time)
+        );
+        CREATE TABLE audit_log (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts             TEXT NOT NULL,
+          user_id        TEXT NOT NULL,
+          action         TEXT NOT NULL,
+          entity         TEXT,
+          old_value      TEXT,
+          new_value      TEXT,
+          source         TEXT NOT NULL,
+          target_user_id TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        PRAGMA user_version = 8;
+        """
+    )
+    conn.execute(
+        "INSERT INTO users (chat_id, role, status, checkin_window) "
+        "VALUES ('owner-chat-id', 'owner', 'active', '08:00-20:00')"
+    )
+    conn.commit()
+    before_users = [
+        tuple(r) for r in conn.execute("SELECT chat_id, role, status, checkin_window FROM users")
+    ]
+    assert current_version(conn) == 8
+    conn.close()
+
+    # Open through the real Database class -- migration 009 runs here.
+    db = Database(db_path)
+
+    assert db.schema_version_before == 8
+    assert db.schema_version == 9
+
+    # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
+    after_users = [
+        tuple(r) for r in db._conn.execute("SELECT chat_id, role, status, checkin_window FROM users")
+    ]
+    assert after_users == before_users
+
+    # The new column exists and is NULL for the pre-existing row -- NO
+    # backfill (AC-1's own explicit requirement, same posture as 008).
+    cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert "dashboard_msg_id" in cols
+    row = db._conn.execute(
+        "SELECT dashboard_msg_id FROM users WHERE chat_id = 'owner-chat-id'"
+    ).fetchone()
+    assert row["dashboard_msg_id"] is None
+
+    # The new habit_records table exists, empty, with the composite PK
+    # columns R-R1/§5 specifies.
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "habit_records" in tables
+    record_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_records)").fetchall()}
+    assert record_cols == {"user_id", "habit_id", "record_type", "value", "achieved_on"}
+    assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_records").fetchone()["n"] == 0
+    db.close()
+
+    # Re-running (reopen) applies nothing further (idempotent, AC-1).
+    reopened = Database(db_path)
+    assert reopened.schema_version_before == 9
+    assert reopened.schema_version == 9
+    reopened.close()
+
+
+def test_fresh_db_has_dashboard_and_records_shape(tmp_path):
+    db = Database(tmp_path / "fresh_v9.db")
+    assert db.schema_version == 9
+    tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "habit_records" in tables
+    user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert "dashboard_msg_id" in user_cols
+    db.upsert_user("u1", role="member", status="active")
+    assert db.get_dashboard_msg_id("u1") is None
+    assert db.get_records("u1") == []
+    db.close()
+
+
+def test_get_set_dashboard_msg_id_round_trip(tmp_path):
+    db = Database(tmp_path / "dashboard.db")
+    db.upsert_user("u1", role="member", status="active")
+
+    assert db.get_dashboard_msg_id("u1") is None  # disabled by default
+    db.set_dashboard_msg_id("u1", "12345")
+    assert db.get_dashboard_msg_id("u1") == "12345"
+    db.set_dashboard_msg_id("u1", "67890")  # re-pinned after self-heal
+    assert db.get_dashboard_msg_id("u1") == "67890"
+    db.set_dashboard_msg_id("u1", None)  # /dashboard off
+    assert db.get_dashboard_msg_id("u1") is None
+
+    # A second user's dashboard state is completely independent.
+    db.upsert_user("u2", role="member", status="active")
+    db.set_dashboard_msg_id("u2", "11111")
+    assert db.get_dashboard_msg_id("u1") is None
+    assert db.get_dashboard_msg_id("u2") == "11111"
+    db.close()
+
+
+def test_set_dashboard_msg_id_upserts_a_row_if_none_exists_yet(tmp_path):
+    db = Database(tmp_path / "dashboard2.db")
+    assert db.get_user("ghost") is None
+    db.set_dashboard_msg_id("ghost", "12345")
+    assert db.get_dashboard_msg_id("ghost") == "12345"
+    assert db.get_user("ghost") is not None
+    db.close()
+
+
+def test_get_dashboard_msg_id_for_nonexistent_user_is_none(tmp_path):
+    db = Database(tmp_path / "ghost2.db")
+    assert db.get_dashboard_msg_id("ghost") is None
+    db.close()
+
+
+def test_upsert_record_and_get_record_round_trip(tmp_path):
+    db = Database(tmp_path / "records.db")
+
+    assert db.get_record("u1", "water", "best_day") is None  # never set
+    db.upsert_record("u1", "water", "best_day", 3200.0, "2026-08-12")
+    assert db.get_record("u1", "water", "best_day") == 3200.0
+    db.close()
+
+
+def test_upsert_record_updates_in_place_not_stacking(tmp_path):
+    db = Database(tmp_path / "records2.db")
+    db.upsert_record("u1", "water", "best_day", 3200.0, "2026-08-12")
+    db.upsert_record("u1", "water", "best_day", 3500.0, "2026-08-20")  # a new, higher record
+    assert db.get_record("u1", "water", "best_day") == 3500.0
+    rows = db.get_records("u1", "water")
+    assert len(rows) == 1  # updated in place, not a second row
+    assert rows[0]["value"] == 3500.0
+    assert rows[0]["achieved_on"] == "2026-08-20"
+    db.close()
+
+
+def test_get_records_filtered_by_habit_and_unfiltered(tmp_path):
+    db = Database(tmp_path / "records3.db")
+    db.upsert_record("u1", "water", "best_day", 3200.0, "2026-08-12")
+    db.upsert_record("u1", "water", "longest_streak", 14.0, "2026-08-20")
+    db.upsert_record("u1", "stretch", "best_day", 30.0, "2026-08-15")
+
+    water_only = db.get_records("u1", "water")
+    assert {row["record_type"] for row in water_only} == {"best_day", "longest_streak"}
+
+    everything = db.get_records("u1")
+    assert len(everything) == 3
+
+    # A second user's records never leak into u1's own reads (per-user isolation, R-R4).
+    db.upsert_record("u2", "water", "best_day", 9999.0, "2026-08-01")
+    assert len(db.get_records("u1")) == 3
+    assert len(db.get_records("u2")) == 1
+    db.close()
+
+
+def test_get_record_for_nonexistent_returns_none(tmp_path):
+    db = Database(tmp_path / "records4.db")
+    assert db.get_record("ghost", "water", "best_day") is None
+    assert db.get_records("ghost") == []
     db.close()
 
 

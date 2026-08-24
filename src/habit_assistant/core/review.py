@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from habit_assistant.config import Config
-from habit_assistant.core import charts, garmin, i18n, streaks, targets
+from habit_assistant.core import charts, garmin, i18n, streaks, targets, trends
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
@@ -256,6 +256,21 @@ async def run_weekly_review(
     )
     if garmin_section:
         text += f"\n\n{garmin_section}"
+
+    # SPEC-v1.6.md R-T2 (module `insights`): a deterministic week-over-week
+    # trend block, appended last (after the LLM narrative and the Garmin
+    # cross-check) -- `review_block` needs "today" to resolve to THIS
+    # review's own `end_date` (which may not be the real "today" if a
+    # caller ever passes an explicit `today=`, e.g. a test), so it's given
+    # a clock pinned to `end_date` rather than the real wall clock.
+    # `review_block` is sync and already fail-open internally (mirrors
+    # `garmin.format_garmin_section`'s identical "return '' on any
+    # problem, never raise" contract) -- no try/except needed here.
+    trends_section = trends.review_block(
+        db, config, registry, lang, user_id, clock=lambda: datetime.combine(end_date, datetime.min.time())
+    )
+    if trends_section:
+        text += f"\n\n{trends_section}"
     return text
 
 

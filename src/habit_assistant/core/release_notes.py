@@ -19,7 +19,8 @@ for this catalog by `tests/test_announce.py`'s own structural check) --
 otherwise skip a user whose resolved language has no variant here.
 
 v1.5.0 ships as the very first row -- this release announces itself
-(§3.4's own illustrative copy, R-N1)."""
+(§3.4's own illustrative copy, R-N1). v1.6.0 (SPEC-v1.6.md §4 R-X4) adds
+its own entry below, same convention."""
 
 from __future__ import annotations
 
@@ -41,6 +42,24 @@ RELEASE_NOTES: dict[str, dict[i18n.Language, str]] = {
             "• /dnd — ตั้งช่วงเวลางดรบกวนของคุณเอง (เหมือนกับ /quiet)\n"
             '• บันทึกง่ายๆ อย่าง "500ml" ตอบเร็วขึ้น และยังใช้ได้แม้ระบบผู้ช่วยจะขัดข้องชั่วคราว\n'
             "• จะมีข้อความสั้นๆ แบบนี้แจ้งให้ทราบทุกครั้งที่มีเวอร์ชันใหม่"
+        ),
+    },
+    "1.6.0": {
+        "en": (
+            "🎉 What's new in v1.6.0\n"
+            "• Live dashboard — /dashboard on pins a Today board that updates itself as you log\n"
+            "• Consistency heatmap — /heatmap for a calendar picture of your habits\n"
+            "• Personal records — /records shows your best day, best week, and longest streak\n"
+            "• Trends — /trends shows this week vs last, at a glance\n"
+            "• A gentle end-of-day nudge when you're close to a goal (rides check-in enablement)"
+        ),
+        "th": (
+            "🎉 มีอะไรใหม่ใน v1.6.0\n"
+            "• แดชบอร์ดสด — พิมพ์ /dashboard on เพื่อปักหมุดบอร์ดวันนี้ที่อัปเดตเองเมื่อคุณบันทึก\n"
+            "• ปฏิทินความสม่ำเสมอ — พิมพ์ /heatmap เพื่อดูภาพปฏิทินกิจกรรมของคุณ\n"
+            "• สถิติส่วนตัว — พิมพ์ /records เพื่อดูวันที่ดีที่สุด สัปดาห์ที่ดีที่สุด และสตรีคยาวที่สุด\n"
+            "• แนวโน้ม — พิมพ์ /trends เพื่อดูเปรียบเทียบสัปดาห์นี้กับสัปดาห์ที่แล้วแบบรวดเร็ว\n"
+            "• การเตือนใจเบาๆ ช่วงท้ายวันเมื่อใกล้ถึงเป้าหมาย (ผูกกับการเปิดใช้เช็คอิน)"
         ),
     },
 }

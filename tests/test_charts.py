@@ -608,6 +608,13 @@ def _run_async_main_and_capture_scheduler(monkeypatch, config, invoke_weekly_rev
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _FakeTelegramChannel)
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so the real startup call now actually sends
+    # a release note before this test's own weekly-review job ever runs
+    # -- neutralized here so channel output reflects only the job's own
+    # output, unaffected by that unrelated wiring.
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _FakeScheduler.last_instance = None
     _FakeTelegramChannel.last_instance = None
     _FakeTelegramChannel.invoke_weekly_review_job_on_run = invoke_weekly_review_job

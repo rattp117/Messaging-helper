@@ -77,10 +77,12 @@ def test_no_migration_was_added_for_history(tmp_path):
     migration 008 (`checkin_window`/`last_announced_version`) -- v1.4
     itself still added none, which is all this test ever claimed; the
     literal just has to track the CURRENT total like every other pinned
-    migration-count guard in this suite."""
-    assert len(MIGRATIONS) == 8
+    migration-count guard in this suite.
+    UPDATED (v1.6.0): now also includes SPEC-v1.6.md's own migration 009
+    (`dashboard_msg_id`/`habit_records`) -- same reasoning."""
+    assert len(MIGRATIONS) == 9
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 8
+    assert db.schema_version == 9
     db.close()
 
 
@@ -456,6 +458,15 @@ async def _run(monkeypatch, config, script, owner_chat_id=OWNER):
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _ScriptedChannel)
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so `announce.announce_release`'s real
+    # startup call now actually sends a release note to every active
+    # user on the very first `async_main` call -- an extra leading
+    # `channel.sent_to(...)` entry this file's own scripts (written
+    # before that wiring went live) don't account for. Neutralized here,
+    # once, for every test in this file by default.
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _ScriptedChannel.last_instance = None
     _ScriptedChannel.script = script
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)

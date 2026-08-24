@@ -11,6 +11,7 @@ from habit_assistant.config import (
     ConfigError,
     HabitConfig,
     HabitLabel,
+    NudgeConfig,
     QuietHoursConfig,
     SnoozeConfig,
     load_config,
@@ -361,3 +362,45 @@ def test_load_config_toml_can_pin_a_shorter_health_interval(tmp_path):
     path.write_text("[health]\ninterval_seconds = 60\n", encoding="utf-8")
     config = load_config(path)
     assert config.health.interval_seconds == 60.0
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.6.md §6 shared surface: `[nudge]` (OQ2 -- rides check-in
+# enablement, no separate toggle here; just the two tuning knobs).
+# ---------------------------------------------------------------------------
+
+
+def test_nudge_threshold_pct_defaults_to_80():
+    assert Config().nudge.threshold_pct == 80
+
+
+def test_nudge_time_defaults_to_20_00():
+    assert Config().nudge.time == "20:00"
+
+
+def test_nudge_overridable_via_config():
+    config = Config(nudge=NudgeConfig(threshold_pct=90, time="21:30"))
+    assert config.nudge.threshold_pct == 90
+    assert config.nudge.time == "21:30"
+
+
+def test_load_config_toml_with_nudge_section(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[nudge]\nthreshold_pct = 90\ntime = "21:30"\n', encoding="utf-8")
+    config = load_config(path)
+    assert config.nudge.threshold_pct == 90
+    assert config.nudge.time == "21:30"
+
+
+def test_nudge_threshold_pct_out_of_range_raises():
+    with pytest.raises(ValueError):
+        NudgeConfig(threshold_pct=0)
+    with pytest.raises(ValueError):
+        NudgeConfig(threshold_pct=101)
+    with pytest.raises(ValueError):
+        NudgeConfig(threshold_pct=-5)
+
+
+def test_nudge_time_bad_hhmm_raises():
+    with pytest.raises(ValueError):
+        NudgeConfig(time="8pm")

@@ -252,13 +252,37 @@ CommandKind = Literal[
     # "quiet" -- it produces `Command(kind="quiet", ...)`, the exact same
     # shape `_match_quiet` already does, so no new kind is needed for it.
     "checkin",
+    # SPEC-v1.6.md §5/§6 skeleton (shared surface): four new kinds for
+    # the four parallel modules that build on this pass, pre-added here
+    # so those modules' own `commands.py` edits never touch this Literal
+    # declaration -- each module adds only its own `_match_*` matcher
+    # function + one `dispatch()` branch, disjoint from the other three.
+    # "dashboard" (module `dashboard`, R-D1): /dashboard's own kind, plus
+    # its Thai alias แดชบอร์ด. Mirrors "checkin"'s own field reuse --
+    # on/off tail (or a bare "/dashboard"/"แดชบอร์ด" for "show", same
+    # non-error "empty = show" grammar as R-K8) populates `pref_value`,
+    # not a new field.
+    "dashboard",
+    # "heatmap"/"records"/"trends" (modules `heatmap`/`insights`, R-H1/
+    # R-R3/R-T2): all three share /history's own tail grammar (SPEC-
+    # v1.6.md §2.1: "an optional registry habit id then an optional
+    # integer, whole-message-anchored, registry/numeric-gated") --
+    # `category` is the optional habit filter (or an unresolved token
+    # flagged invalid, same "history_invalid_habit"-style convention) and
+    # `limit` is the optional trailing integer. Only "heatmap" actually
+    # uses `limit` (the weeks count, "/heatmap water 8"); "records" and
+    # "trends" take a habit filter only and leave `limit` unused (always
+    # `None`) -- no new fields needed for any of the three.
+    "heatmap",
+    "records",
+    "trends",
 ]
 
 
 @dataclass(slots=True)
 class Command:
     kind: CommandKind
-    category: str | None = None  # a configured habit id -- "edit", "target" (set/show/clear), and "history" (filter)
+    category: str | None = None  # a configured habit id -- "edit", "target" (set/show/clear), "history" (filter), and (skeleton) "heatmap"/"records"/"trends" (filter)
     value_num: float | None = None  # new value -- "edit", and "target" (the new goal, in base unit) for "set"
     minutes: int | None = None  # explicit snooze minutes -- only set for "snooze"; None = use the configured default
     # SPEC-v1.1.md §5: which target operation -- only set for kind="target".
@@ -280,6 +304,10 @@ class Command:
     # alias of "quiet" -- it populates THIS SAME field with the same
     # "22:00-07:00[,...]"/"off" shape `_match_quiet` already produces, no
     # dedicated field of its own.
+    # SPEC-v1.6.md §5 skeleton (module `dashboard`): also reused for
+    # "dashboard"'s own tail ("on"/"off", or `None` for a bare
+    # "/dashboard"/"แดชบอร์ด" -- R-D1's own "empty = show" grammar, same
+    # non-error convention as "checkin"). Not yet populated by dispatch().
     pref_value: str | None = None
     # SPEC-v1.2.md §5 skeleton (module `schedules`): "remind"'s parsed
     # times -- [] = show, ["off"] = off, ["default"] = reset, else an
@@ -292,6 +320,11 @@ class Command:
     # limit" (R-V2). SPEC-v1.4.md §5 (module `history`, R-D2): reused
     # verbatim for "history"'s own parsed N -- same "None = default limit"
     # contract, this time honored by `core/history_view.render_history`.
+    # SPEC-v1.6.md §5 skeleton (module `heatmap`): reused again for
+    # "heatmap"'s own parsed weeks count ("/heatmap water 8" -> 8); `None`
+    # = the module's own default (12 weeks, R-H1). Not used by "records"/
+    # "trends" (always `None` for those two -- habit filter only, see
+    # `category` below). Not yet populated by dispatch().
     limit: int | None = None
 
 
@@ -877,6 +910,72 @@ def _match_history(stripped: str, registry: "HabitRegistry") -> "Command | None"
 
 
 # ---------------------------------------------------------------------------
+# heatmap -- SPEC-v1.6.md §4 R-H1 (module `heatmap`). `/heatmap [<habit>]
+# [<weeks>]`, plus the Thai alias `ปฏิทิน` ("calendar"). Tail grammar
+# MIRRORS `/history`'s exactly (SPEC-v1.6.md §2.1: "an optional registry
+# habit id then an optional integer, whole-message-anchored, registry/
+# numeric-gated") -- reuses `_parse_history_tail`'s identical (category, N)
+# parsing rather than a second copy of the same logic; only the *meaning*
+# of the trailing integer differs (a weeks count, not a row limit), which
+# is `core/heatmap.py`'s own concern (default 12 / cap 52), not this
+# shape-only layer's -- `Command.limit` carries the raw parsed int either
+# way, same field-reuse skeleton comment already documents (§5).
+#
+# The Thai alias `ปฏิทิน` ("calendar") is an ordinary Thai word that can
+# open real prose (e.g. "ปฏิทินจีนปีนี้..." -- "this year's Chinese
+# calendar..."), same false-positive risk class as `เตือน`/`ภาษา`/`เงียบ`/
+# `ย้อนหลัง`/`เช็คอิน` -- hardened from the start rather than shipped loose:
+# anchored to the WHOLE stripped message, the optional tail built entirely
+# from a REGISTRY-anchored habit token and/or a purely-numeric token,
+# mirroring `_build_history_th_pattern`'s own precedent exactly (only a
+# message naming a habit this bot actually tracks, and/or a bare number,
+# can ever match at all).
+# ---------------------------------------------------------------------------
+
+_HEATMAP_SLASH_RE = re.compile(r"^/heatmap(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+
+
+def _build_heatmap_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "ปฏิทิน[<habit>][<weeks>]" -- habit token built from the LIVE
+    registry's ids/Thai labels, same false-positive mitigation as
+    `_build_history_th_pattern`/`_build_remind_th_pattern`. Returns `None`
+    if the registry has no matchable Thai/id tokens (defensive; every
+    shipped config has at least water's "น้ำ") -- in that case only the
+    bare form or a purely-numeric tail can match."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
+    return re.compile(rf"^ปฏิทิน{habit_group}(?:\s+(?P<n>\d+))?$")
+
+
+def _match_heatmap(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    slash_match = _HEATMAP_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        category, weeks = _parse_history_tail(slash_match.group("rest"), registry)
+        return Command(kind="heatmap", category=category, limit=weeks)
+
+    th_pattern = _build_heatmap_th_pattern(registry)
+    if th_pattern is not None:
+        th_match = th_pattern.match(stripped)
+        if th_match is not None:
+            group_dict = th_match.groupdict()
+            habit_raw = group_dict.get("habit")
+            n_raw = group_dict.get("n")
+            # The habit token came straight out of the registry-built
+            # alternation above, so it is always resolvable -- the `or`
+            # fallback is defensive only, never actually hit (mirrors
+            # `_match_history`'s own identical comment for its Thai path).
+            category = (_resolve_habit_token(habit_raw, registry) or habit_raw.lower()) if habit_raw else None
+            return Command(kind="heatmap", category=category, limit=int(n_raw) if n_raw else None)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # lang / quiet -- SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`). Slash
 # forms `/lang [en|th|auto]` and `/quiet [HH:MM-HH:MM[,...]|off]` (bare, no
 # value, is a valid shape too -- `core/preferences.py`'s `execute_lang`/
@@ -1086,6 +1185,131 @@ def _match_dnd(stripped: str) -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# dashboard -- SPEC-v1.6.md §4 Feature 1 R-D1 (module `dashboard`). `/dashboard
+# on|off`, bare `/dashboard` = show (R-D1's own "empty = show" grammar, NOT a
+# usage error -- same convention as `/checkin`'s bare form), plus the Thai
+# alias `แดชบอร์ด`. `Command.pref_value` carries the lowercased tail
+# ("on"/"off", or `None` for bare) exactly like `/checkin` does -- no new
+# `Command` field needed (see the CommandKind skeleton comment above).
+#
+# The Thai alias `แดชบอร์ด` is a transliterated loanword ("dashboard", as in a
+# car dashboard or a data dashboard) that can open ordinary prose, the same
+# false-positive risk class already hardened for `เช็คอิน`/`เตือน`/`ภาษา`/
+# `เงียบ`/`ย้อนหลัง` above -- so it gets the identical treatment `เช็คอิน`
+# already established: anchored to the WHOLE stripped message (a glued
+# continuation never matches at all), and when a tail IS present after a
+# space, it must be exactly `on`/`off` (dashboard's own grammar is strictly
+# binary -- no `default`/window shape to accept, unlike `/checkin`) or the
+# match is rejected and falls through to `None`. A bare "แดชบอร์ด" (the whole
+# message, nothing else) DOES match, same "show" meaning as the slash form --
+# mirrors `เช็คอิน`'s own precedent of a bare match on a common word being
+# acceptable when the grammar itself defines a meaning for the empty-tail
+# case.
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_SLASH_RE = re.compile(r"^/dashboard(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_DASHBOARD_TH_RE = re.compile(r"^แดชบอร์ด(?:\s+(?P<rest>\S.*))?$")
+_DASHBOARD_TAIL_WORDS = {"on", "off"}
+
+
+def _match_dashboard(stripped: str) -> "Command | None":
+    slash_match = _DASHBOARD_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        rest = slash_match.group("rest")
+        return Command(kind="dashboard", pref_value=rest.strip().lower() if rest else None)
+
+    th_match = _DASHBOARD_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    rest = th_match.group("rest")
+    if rest is None:
+        return Command(kind="dashboard", pref_value=None)  # bare -> show (R-D1)
+    tail = rest.strip().lower()
+    if tail not in _DASHBOARD_TAIL_WORDS:
+        return None
+    return Command(kind="dashboard", pref_value=tail)
+
+
+# ---------------------------------------------------------------------------
+# records / trends -- SPEC-v1.6.md §4 Feature 3/4 (module `insights`),
+# R-R3/R-T2. `/records [<habit>]`/`สถิติ [<habit>]` and `/trends
+# [<habit>]`/`แนวโน้ม [<habit>]` share the exact tail grammar `/history`
+# already established (SPEC-v1.6.md §2.1: "an optional registry habit id
+# then an optional integer, whole-message-anchored, registry/numeric-
+# gated") -- reuses `_parse_history_tail` as-is for the slash form (habit-
+# filter + trailing-int parsing is identical), but the parsed int is
+# always discarded: SPEC-v1.6.md §5's own skeleton comment on `Command.
+# limit` states only "heatmap" uses it -- a trailing digit ("/records
+# water 8") is silently ignored rather than rejected, mirroring
+# `/history`'s own "any token beyond the first two is ignored" leniency
+# for the slash form.
+#
+# The Thai aliases สถิติ ("statistics"/records) and แนวโน้ม ("trend(s)") are,
+# like ประวัติ/ย้อนหลัง/เช็คอิน/แดชบอร์ด before them, ordinary Thai words (or
+# loanwords) that can open real prose -- hardened the SAME way
+# `_build_history_th_pattern` was (see its own comment for the full
+# false-positive rationale): the habit token, when present, must resolve
+# to a REAL configured habit via a registry-built alternation, and any
+# trailing tail is digits-only, with the whole match anchored end-to-end
+# -- neither trigger word can ever partially match an unrelated sentence.
+# `_build_insights_th_pattern` below is a small, parameterized
+# generalization of `_build_history_th_pattern`'s own construction
+# (shared here because `records`/`trends` are literally the SAME
+# `insights` module, unlike `history`, which is a separate,
+# independently-landed module -- not worth a third near-identical
+# copy-paste for two kinds owned by the same file section).
+# ---------------------------------------------------------------------------
+
+_RECORDS_SLASH_RE = re.compile(r"^/records(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_TRENDS_SLASH_RE = re.compile(r"^/trends(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+
+
+def _build_insights_th_pattern(trigger: str, registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Registry-anchored Thai-alias builder shared by `_match_records`/
+    `_match_trends` -- see the comment block above for the false-positive
+    rationale (mirrors `_build_history_th_pattern`'s own construction)."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
+    return re.compile(rf"^{trigger}{habit_group}(?:\s+(?P<n>\d+))?$")
+
+
+def _match_insights_kind(
+    stripped: str, registry: "HabitRegistry", *, kind: "CommandKind", slash_re: re.Pattern[str], th_trigger: str
+) -> "Command | None":
+    slash_match = slash_re.match(stripped)
+    if slash_match is not None:
+        category, _limit = _parse_history_tail(slash_match.group("rest"), registry)
+        return Command(kind=kind, category=category)
+
+    th_pattern = _build_insights_th_pattern(th_trigger, registry)
+    if th_pattern is not None:
+        th_match = th_pattern.match(stripped)
+        if th_match is not None:
+            habit_raw = th_match.groupdict().get("habit")
+            # The habit token came straight out of the registry-built
+            # alternation above, so it is always resolvable -- the `or`
+            # fallback is defensive only, never actually hit (mirrors
+            # `_match_history`'s own identical comment for its Thai path).
+            category = (_resolve_habit_token(habit_raw, registry) or habit_raw.lower()) if habit_raw else None
+            return Command(kind=kind, category=category)
+
+    return None
+
+
+def _match_records(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_insights_kind(stripped, registry, kind="records", slash_re=_RECORDS_SLASH_RE, th_trigger="สถิติ")
+
+
+def _match_trends(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_insights_kind(stripped, registry, kind="trends", slash_re=_TRENDS_SLASH_RE, th_trigger="แนวโน้ม")
+
+
+# ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
 # interrogative markers only: none of these substrings/endings can occur in
 # a normal habit log (verified against the full adversarial corpus in
@@ -1261,6 +1485,15 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     if dnd_command is not None:
         return dnd_command
 
+    # SPEC-v1.6.md §4 Feature 1 R-D1 (module `dashboard`): `/dashboard`/
+    # `แดชบอร์ด` -- disjoint trigger text from every pattern above/below,
+    # grouped here with the other settings-style slash commands for
+    # readability (same rationale as `remind`/`access`/`lang`/`quiet`/
+    # `checkin` above).
+    dashboard_command = _match_dashboard(stripped)
+    if dashboard_command is not None:
+        return dashboard_command
+
     # SPEC-v1.4.md §4 R-D2 (module `history`): `/history`/`ย้อนหลัง` --
     # disjoint trigger text from every pattern above/below (and explicitly
     # does NOT collide with `/audit`'s own `ประวัติ`, AC-5), grouped here
@@ -1268,6 +1501,27 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     history_command = _match_history(stripped, registry)
     if history_command is not None:
         return history_command
+
+    # SPEC-v1.6.md §4 R-H1 (module `heatmap`): `/heatmap`/`ปฏิทิน` --
+    # disjoint trigger text from every pattern above/below, grouped here
+    # with `history`'s own tail-grammar precedent for readability (exact
+    # placement doesn't change behavior).
+    heatmap_command = _match_heatmap(stripped, registry)
+    if heatmap_command is not None:
+        return heatmap_command
+
+    # SPEC-v1.6.md §4 Feature 3/4 (module `insights`): `/records`/`สถิติ`
+    # and `/trends`/`แนวโน้ม` -- disjoint trigger text from every pattern
+    # above/below, grouped here with `/history`'s/`/heatmap`'s own
+    # view-style commands for readability (exact placement doesn't change
+    # behavior).
+    records_command = _match_records(stripped, registry)
+    if records_command is not None:
+        return records_command
+
+    trends_command = _match_trends(stripped, registry)
+    if trends_command is not None:
+        return trends_command
 
     if _match_help(stripped):
         return Command(kind="help")

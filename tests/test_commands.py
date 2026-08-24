@@ -857,23 +857,46 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 # ===========================================================================
 
 
-def test_fresh_db_migrates_to_schema_version_8(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.5.md
-    "Hourly check-ins + DND + LLM-call minimization + release
-    announcements" (migration 008: `users.checkin_window` +
-    `users.last_announced_version`, purely additive) there are exactly 8
-    migrations, and a fresh DB must land on version 8. Bump this literal
-    deliberately the next time a migration is added -- unlike a bare
-    `== len(MIGRATIONS)` comparison, this fails if a migration is
+def test_fresh_db_migrates_to_schema_version_9(tmp_path):
+    """Pinned regression guard (not tautological): as of SPEC-v1.6.md
+    "Live dashboard + Heatmap + Records + Trends + Nudge" (migration 009:
+    `users.dashboard_msg_id` + `habit_records`, purely additive) there are
+    exactly 9 migrations, and a fresh DB must land on version 9. Bump this
+    literal deliberately the next time a migration is added -- unlike a
+    bare `== len(MIGRATIONS)` comparison, this fails if a migration is
     silently added/removed without the test being updated.
-    CHANGED (v1.5.0): was `== 7` / `test_..._schema_version_7` before
-    migration 008 was added -- see IMPL-v1.5-shared.md."""
-    assert len(MIGRATIONS) == 8
+    CHANGED (v1.6.0): was `== 8` / `test_..._schema_version_8` before
+    migration 009 was added -- see IMPL-v1.6-shared.md."""
+    assert len(MIGRATIONS) == 9
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 8
+    assert database.schema_version == 9
     database.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.6.md §5/§6/§11 skeleton (shared surface): `CommandKind` gained
+# "dashboard"/"heatmap"/"records"/"trends" so the four parallel modules
+# never collide on this file's own `CommandKind = Literal[...]`
+# declaration. Each module lands its own disjoint `_match_*` function +
+# `dispatch()` branch independently (parallel tracks); this test locks in
+# only the durable, non-racy guarantee -- the four kinds are real,
+# spelled correctly, and constructible -- rather than a "not matched yet"
+# snapshot, which would need editing (and collide across parallel Luna
+# sessions touching this same file) every time another module landed.
+# Each module's OWN dispatch/adversarial-corpus coverage lives in its own
+# test file (e.g. tests/test_dashboard.py).
+# ---------------------------------------------------------------------------
+
+
+def test_v16_kinds_are_valid_command_dataclass_values():
+    # Constructible (the dataclass itself has no runtime Literal
+    # enforcement) -- proves the four new kinds are real, spelled
+    # correctly, and don't collide with an existing one.
+    for kind in ("dashboard", "heatmap", "records", "trends"):
+        cmd = commands.Command(kind=kind)
+        assert cmd.kind == kind
 
 
 def test_migration_003_applies_forward_from_a_v2_db_with_rows_intact():

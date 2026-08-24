@@ -229,6 +229,13 @@ async def _run_job(monkeypatch, config, job_id, owner_chat_id=OWNER):
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _JobRunningChannel)
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so the real startup call now actually sends
+    # a release note to OWNER before this test's own job ever runs --
+    # neutralized here so channel.sent_to(OWNER) reflects only the
+    # job's own output, unaffected by that unrelated wiring.
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _FakeScheduler.last_instance = None
     _JobRunningChannel.last_instance = None
     _JobRunningChannel.run_jobs = [job_id]

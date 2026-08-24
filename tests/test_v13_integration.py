@@ -163,6 +163,15 @@ def _run_async_main(monkeypatch, config, script, owner_chat_id=OWNER, responses=
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _ScriptedChannel)
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so `announce.announce_release`'s real
+    # startup call now actually sends a release note to every active
+    # user on the very first `async_main` call -- an extra leading
+    # `channel.sent_to(...)` entry this file's own scripts (written
+    # before that wiring went live) don't account for. Neutralized here,
+    # once, for every test in this file by default.
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _FakeScheduler.last_instance = None
     _ScriptedChannel.last_instance = None
     _ScriptedChannel.script = script
@@ -928,7 +937,7 @@ async def test_migration_007_rehearsal_on_a_v1_2_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 8  # SPEC-v1.5.md's additive migration 008 also lands now
+        assert db.schema_version == 9  # SPEC-v1.5.md's additive migration 008 + SPEC-v1.6.md's additive migration 009 also land now
         assert db.get_target(OWNER, "water") == 2500.0
         rows = db.recent_audit(10)
         assert len(rows) == 1

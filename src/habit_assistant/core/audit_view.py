@@ -53,7 +53,7 @@ MAX_LIMIT = 50
 _MAX_VALUE_CHARS = MAX_VALUE_CHARS
 _TELEGRAM_MESSAGE_BUDGET = TELEGRAM_MESSAGE_BUDGET
 
-# `core/audit.py:ACTIONS`'s 16 values -> the i18n catalog id for their
+# `core/audit.py:ACTIONS`'s 18 values -> the i18n catalog id for their
 # localized label (R-V2: "Action/labels localize via core/i18n.py").
 # Spelling can't drift from the recorder's own vocabulary because this is
 # a lookup keyed by the literal action string, not a hand-typed parallel
@@ -74,6 +74,8 @@ _ACTION_LABEL_MSG_IDS: dict[str, str] = {
     "checkin_set": "audit_action_checkin_set",
     "checkin_off": "audit_action_checkin_off",
     "checkin_default": "audit_action_checkin_default",
+    "dashboard_set": "audit_action_dashboard_set",
+    "dashboard_off": "audit_action_dashboard_off",
     "user_approve": "audit_action_user_approve",
     "user_block": "audit_action_user_block",
     "user_pending": "audit_action_user_pending",

@@ -94,6 +94,17 @@ async def test_water_confirmation_running_total_accumulates(db, fixed_clock, mon
     channel = FakeChannel()
     config = Config()
 
+    # SPEC-v1.6.md R-R2 (module `insights`, integration-wired): a fresh
+    # user+habit's first-ever log seeds a `best_day`/`best_week` baseline
+    # silently, so this test's own SECOND same-day log (a higher running
+    # total) would otherwise genuinely break it and append a celebration
+    # line -- real, correct v1.6.0 behavior, but not what THIS test means
+    # to exercise (the running-total/percentage text format). Pre-seeding
+    # both record types comfortably above anything these two logs reach
+    # keeps the assertion below testing exactly what it always tested.
+    db.upsert_record("owner", "water", "best_day", 999999.0, "2000-01-01")
+    db.upsert_record("owner", "water", "best_week", 999999.0, "2000-01-01")
+
     patch_parse_message(monkeypatch, ExtractionResult("water", 500, 0.9))
     await handle_inbound_message("500ml", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
     patch_parse_message(monkeypatch, ExtractionResult("water", 1000, 0.9))
@@ -144,6 +155,15 @@ async def test_stretch_confirmation_ordinal_first_today(db, fixed_clock, monkeyp
 async def test_stretch_confirmation_ordinal_second_today(db, fixed_clock, monkeypatch):
     channel = FakeChannel()
     config = Config()
+
+    # SPEC-v1.6.md R-R2 (module `insights`, integration-wired): see the
+    # identical pre-seed note in test_water_confirmation_running_total_
+    # accumulates above -- a fresh user+habit's second same-day log would
+    # otherwise genuinely break a just-seeded best_day/best_week record
+    # and append a celebration line; this test is about the ordinal
+    # count, not records.
+    db.upsert_record("owner", "stretch", "best_day", 999999.0, "2000-01-01")
+    db.upsert_record("owner", "stretch", "best_week", 999999.0, "2000-01-01")
 
     patch_parse_message(monkeypatch, ExtractionResult("stretch", 10, 0.9))
     await handle_inbound_message("10 min", db=db, llm=FakeLLM(), channel=channel, config=config, clock=fixed_clock, user_id="owner")
@@ -375,6 +395,12 @@ async def test_generic_duration_confirmation_ordinal(db, fixed_clock, monkeypatc
     yoga = _synthetic_habit("yoga", "duration", unit_en="min", unit_th="นาที", label_en="yoga", label_th="โยคะ")
     registry = HabitRegistry([yoga])
     channel = FakeChannel()
+
+    # SPEC-v1.6.md R-R2 (module `insights`, integration-wired): see the
+    # identical pre-seed note in test_water_confirmation_running_total_
+    # accumulates above -- this test is about the ordinal count, not records.
+    db.upsert_record("owner", "yoga", "best_day", 999999.0, "2000-01-01")
+    db.upsert_record("owner", "yoga", "best_week", 999999.0, "2000-01-01")
 
     patch_parse_message(monkeypatch, ExtractionResult("yoga", 20, 0.9))
     await handle_inbound_message(

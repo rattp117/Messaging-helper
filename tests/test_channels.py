@@ -571,3 +571,250 @@ async def test_run_offset_advances_past_a_mix_of_messages_and_callbacks():
     assert messages == ["500ml", "10 min stretch"]
     assert channel._offset == 43  # last update_id (42) + 1 -- no update skipped or reprocessed
     await channel.aclose()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.6.md §2.2/§5 AC-2: `send_and_pin`/`edit_message`/`unpin` --
+# concrete-default degradation (mirrors `send_actionable`/`set_my_commands`/
+# `answer_callback_query`'s own precedent above) + TelegramChannel's real
+# `pinChatMessage`/`editMessageText`/`unpinChatMessage`/`deleteMessage`
+# request construction and response handling, against a mocked transport.
+# ---------------------------------------------------------------------------
+
+
+async def test_send_and_pin_default_degrades_to_plain_send_and_returns_none():
+    channel = _BareChannel()
+    message_id = await channel.send_and_pin("chat1", "board text")
+    assert channel.sent == ["board text"]
+    assert message_id is None
+
+
+async def test_edit_message_default_always_returns_false():
+    channel = _BareChannel()
+    result = await channel.edit_message("chat1", "msg-1", "new board text")
+    assert result is False
+
+
+async def test_unpin_default_is_a_silent_noop():
+    channel = _BareChannel()
+    result = await channel.unpin("chat1", "msg-1")
+    assert result is None
+
+
+async def test_build_pin_request_shape():
+    channel = TelegramChannel("123456:ABC-fake", "999")
+    url, payload = channel.build_pin_request("999", "555")
+    assert url == "https://api.telegram.org/bot123456:ABC-fake/pinChatMessage"
+    assert payload == {"chat_id": "999", "message_id": "555"}
+    # R-D6/§9 OQ1: no disable_notification field -- the one-time pin is
+    # meant to notify (Telegram's own default).
+    assert "disable_notification" not in payload
+
+
+async def test_send_and_pin_sends_then_pins_and_returns_the_message_id():
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path.endswith("/sendMessage"):
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 555}})
+        if request.url.path.endswith("/pinChatMessage"):
+            return httpx.Response(200, json={"ok": True, "result": True})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    message_id = await channel.send_and_pin("999", "board text")
+
+    assert message_id == "555"  # stringified -- storage/db.py's dashboard_msg_id column is TEXT
+    assert len(captured) == 2
+    assert captured[0].url.path.endswith("/sendMessage")
+    assert captured[1].url.path.endswith("/pinChatMessage")
+    pin_payload = json.loads(captured[1].content)
+    assert pin_payload == {"chat_id": "999", "message_id": "555"}
+    await channel.aclose()
+
+
+async def test_send_and_pin_still_returns_the_id_when_pin_itself_fails():
+    """R-D3/R-D4's own fail-open posture, at the channel layer: a pin
+    failure (permissions, rate limit) must not lose the sent message's
+    id -- the caller (core/dashboard.py) still has something to store and
+    later edit, even if it's never actually pinned."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/sendMessage"):
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 555}})
+        if request.url.path.endswith("/pinChatMessage"):
+            return httpx.Response(400, json={"ok": False, "description": "Bad Request: not enough rights"})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    message_id = await channel.send_and_pin("999", "board text")
+
+    assert message_id == "555"
+    await channel.aclose()
+
+
+async def test_send_and_pin_raises_if_the_send_itself_fails():
+    """Unlike a pin failure, a SEND failure is not swallowed -- there is
+    no message id to return at all, and `send`'s own existing contract
+    (raise on HTTP error) is unchanged."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("bad-token", "999", client=client)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await channel.send_and_pin("999", "board text")
+    await channel.aclose()
+
+
+async def test_build_edit_message_request_shape():
+    channel = TelegramChannel("123456:ABC-fake", "999")
+    url, payload = channel.build_edit_message_request("999", "555", "new text")
+    assert url == "https://api.telegram.org/bot123456:ABC-fake/editMessageText"
+    assert payload == {"chat_id": "999", "message_id": "555", "text": "new text"}
+
+
+async def test_edit_message_returns_true_on_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    assert await channel.edit_message("999", "555", "new text") is True
+    await channel.aclose()
+
+
+async def test_edit_message_returns_true_on_not_modified():
+    """R-D3: an unchanged render is skipped by `dashboard.refresh` itself
+    BEFORE calling edit_message in the first place -- but if Telegram's
+    own "not modified" rejection is ever hit anyway (a race, or a future
+    caller that skips that check), it must still count as success, not a
+    self-heal trigger."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"ok": False, "error_code": 400, "description": "Bad Request: message is not modified"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    assert await channel.edit_message("999", "555", "same text") is True
+    await channel.aclose()
+
+
+async def test_edit_message_returns_false_on_not_found():
+    """R-D4's own self-heal signal: the pinned message was deleted."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"ok": False, "error_code": 400, "description": "Bad Request: message to edit not found"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    assert await channel.edit_message("999", "555", "new text") is False
+    await channel.aclose()
+
+
+async def test_edit_message_returns_false_on_any_other_failure_never_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"ok": False, "description": "Internal Server Error"})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    assert await channel.edit_message("999", "555", "new text") is False  # never raises
+    await channel.aclose()
+
+
+async def test_edit_message_returns_false_on_transport_error_never_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    assert await channel.edit_message("999", "555", "new text") is False
+    await channel.aclose()
+
+
+async def test_build_unpin_and_delete_message_request_shapes():
+    channel = TelegramChannel("123456:ABC-fake", "999")
+    unpin_url, unpin_payload = channel.build_unpin_request("999", "555")
+    assert unpin_url == "https://api.telegram.org/bot123456:ABC-fake/unpinChatMessage"
+    assert unpin_payload == {"chat_id": "999", "message_id": "555"}
+    del_url, del_payload = channel.build_delete_message_request("999", "555")
+    assert del_url == "https://api.telegram.org/bot123456:ABC-fake/deleteMessage"
+    assert del_payload == {"chat_id": "999", "message_id": "555"}
+
+
+async def test_unpin_calls_both_unpin_and_delete():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    result = await channel.unpin("999", "555")
+
+    assert result is None
+    assert any(p.endswith("/unpinChatMessage") for p in calls)
+    assert any(p.endswith("/deleteMessage") for p in calls)
+    await channel.aclose()
+
+
+async def test_unpin_never_raises_even_when_both_calls_fail():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"ok": False, "description": "Bad Request"})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    result = await channel.unpin("999", "555")  # must not raise
+
+    assert result is None
+    await channel.aclose()
+
+
+async def test_unpin_deletes_even_when_unpin_itself_fails():
+    """The two calls are independently best-effort -- a failed unpin must
+    not skip the delete follow-up."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/unpinChatMessage"):
+            return httpx.Response(400, json={"ok": False, "description": "Bad Request"})
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    channel = TelegramChannel("123456:ABC-fake", "999", client=client)
+
+    await channel.unpin("999", "555")
+
+    assert any(p.endswith("/deleteMessage") for p in calls)
+    await channel.aclose()

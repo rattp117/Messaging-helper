@@ -92,6 +92,17 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     # module isn't among its owned files).
     lines.append(i18n.t("help_checkin_cmd", lang))
     lines.append(i18n.t("help_dnd_cmd", lang))
+    # SPEC-v1.6.md §11 integration step (same "data only in each module's
+    # own catalog block, wiring is a later append" posture as the
+    # check-in/dnd lines just above): the four new v1.6.0 features. The
+    # `dashboard` module's own IMPL flagged that it didn't add a
+    # `help_dashboard_cmd` key (out of its file ownership) -- added here
+    # as part of this integration pass, alongside the three keys
+    # `heatmap`/`insights` already shipped ready-to-use.
+    lines.append(i18n.t("help_dashboard_cmd", lang))
+    lines.append(i18n.t("help_heatmap_cmd", lang))
+    lines.append(i18n.t("help_records_cmd", lang))
+    lines.append(i18n.t("help_trends_cmd", lang))
 
     return "\n\n".join(lines)
 

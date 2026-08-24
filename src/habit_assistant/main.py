@@ -32,17 +32,22 @@ from habit_assistant.core import (
     audit_view,
     checkins,
     commands,
+    dashboard,
     discoverability,
+    heatmap,
     history_view,
     i18n,
+    nudge,
     preferences,
     preparse,
     query,
+    records,
     schedules,
     streaks,
     target_nl,
     targets,
     targets_command,
+    trends,
     undo_ui,
 )
 from habit_assistant.core.backup import BackupError
@@ -169,6 +174,27 @@ HISTORY_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "Show your recent entries (including undone ones)",
     "th": "ดูรายการล่าสุดของคุณ (รวมรายการที่ยกเลิกแล้ว)",
 }
+# SPEC-v1.6.md §6/§11 integration step: `/dashboard`, `/heatmap`,
+# `/records`, `/trends` join the public menu -- same rationale as every
+# other genuinely user-facing command above. The nudge (module `nudge`)
+# has no command of its own (OQ2 -- rides `/checkin` enablement) and gets
+# no menu entry.
+DASHBOARD_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Pin a live \"Today\" board that updates as you log",
+    "th": "ปักหมุดบอร์ด \"วันนี้\" แบบสดที่อัปเดตเมื่อคุณบันทึก",
+}
+HEATMAP_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "See a consistency calendar picture of your habits",
+    "th": "ดูภาพปฏิทินความสม่ำเสมอของกิจกรรมคุณ",
+}
+RECORDS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "See your personal bests (day, week, streak)",
+    "th": "ดูสถิติส่วนตัวของคุณ (วัน สัปดาห์ สตรีค)",
+}
+TRENDS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "See this week vs last week, at a glance",
+    "th": "ดูเปรียบเทียบสัปดาห์นี้กับสัปดาห์ที่แล้วแบบย่อ",
+}
 
 
 def ordinal(n: int) -> str:
@@ -243,6 +269,10 @@ async def _execute_undo(
         return
 
     await undo_ui.send_undo_confirmation(db, channel, config, clock, registry, lang, row)
+    # SPEC-v1.6.md R-D5 (module `dashboard`): refresh AFTER the undo
+    # confirmation is sent, never before -- fail-open, no-ops for a user
+    # with no live dashboard.
+    await dashboard.refresh(db, channel, config, registry, user_id, clock)
 
 
 async def _execute_edit(
@@ -309,6 +339,9 @@ async def _execute_edit(
             user_id,
             i18n.t("edit_updated_water", lang, value_num=command.value_num, total=int(total), goal=goal, pct=pct),
         )
+        # SPEC-v1.6.md R-D5 (module `dashboard`): refresh AFTER the edit
+        # confirmation, never before.
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
     if command.category == "stretch":
         count = db.stretch_count(user_id, today_str)
@@ -316,6 +349,7 @@ async def _execute_edit(
             user_id,
             i18n.t("edit_updated_stretch", lang, value_num=command.value_num, ordinal=ordinal(count), count=count),
         )
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     if habit is not None and habit.type == "numeric":
@@ -335,6 +369,7 @@ async def _execute_edit(
                     pct=pct,
                 ),
             )
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
             return
     if habit is not None and habit.type == "duration":
         count = db.count(user_id, habit.id, today_str)
@@ -350,11 +385,13 @@ async def _execute_edit(
                 count=count,
             ),
         )
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
     # A numeric-without-goal/boolean/text habit, or an unrecognized
     # category: editing those is out of scope (SPEC-v0.7.md §10) -- no
     # confirmation is sent, matching v0.6.0's behavior for any category
-    # other than water/stretch (which could never occur pre-v0.7).
+    # other than water/stretch (which could never occur pre-v0.7). No
+    # dashboard refresh either -- nothing changed that the board would show.
 
 
 async def _execute_snooze(
@@ -711,6 +748,57 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "dashboard":
+            reply = await dashboard.execute_dashboard(
+                command, db=db, channel=channel, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock
+            )
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
+        if command.kind == "heatmap":
+            # SPEC-v1.6.md §5/§11 (module `heatmap`): `execute_heatmap`
+            # itself sends the PNG (via `channel.send_image`) when it
+            # succeeds, returning `""` to signal "already delivered,
+            # nothing more to send"; a non-empty return is the R-H2 text
+            # fallback for this caller to send. Unlike every other
+            # deterministic command above, this one genuinely needs a real
+            # `channel` internally (to send an image) -- `--dry-run` has
+            # no channel at all (`channel=None`), so it's declined here
+            # rather than crashing on `None.send_image(...)`.
+            if dry_run:
+                print({"kind": "heatmap", "note": "requires a real channel; not supported in --dry-run"})
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            reply = await heatmap.execute_heatmap(
+                command, db=db, channel=channel, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock
+            )
+            if reply:
+                await channel.send(user_id, reply)
+            return
+        if command.kind == "records":
+            # SPEC-v1.6.md §5/§11 (module `insights`): deterministic,
+            # LLM-free, read-only -- same "before the deferral check"
+            # placement as `history`/`help`/`habits` above, so it works
+            # with Ollama down. `records.render` is sync (not a coroutine).
+            reply = records.render(db, config, registry, lang, user_id, habit_id=command.category)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
+        if command.kind == "trends":
+            # `trends.render` is sync (not a coroutine), mirrors `records.render` above.
+            reply = trends.render(db, config, registry, lang, user_id, habit_id=command.category, clock=clock)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
         if command.kind == "query":
             # ROADMAP.md v0.8.0: read-only (AC8.5) -- never touches health_monitor
             # deferral or the extractor below; classify_query_intent fails closed
@@ -741,6 +829,11 @@ async def handle_inbound_message(
                 return
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
+            # SPEC-v1.6.md R-D5 (module `dashboard`): a target CHANGE
+            # (set/clear -- an actual state change) refreshes the board;
+            # show/show_all/usage read nothing there is to refresh.
+            if command.target_action in ("set", "clear"):
+                await dashboard.refresh(db, channel, config, registry, user_id, clock)
             return
         if command.kind == "help":
             # SPEC-v1.1.md R-D2/AC35: deterministic, LLM-free, reads only
@@ -849,6 +942,10 @@ async def handle_inbound_message(
                         return
                     assert channel is not None, "channel is required outside dry-run"
                     await channel.send(user_id, reply)
+                    # SPEC-v1.6.md R-D5: this path is always a "set"
+                    # (target_action is hardcoded above) -- a genuine
+                    # state change, so it refreshes the board too.
+                    await dashboard.refresh(db, channel, config, registry, user_id, clock)
                     return  # AC29/AC30: no `logs` row is written for a target-intent hit
 
         result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
@@ -890,6 +987,22 @@ async def handle_inbound_message(
         if crossed is not None:
             milestone_suffix = "\n\n" + i18n.t("milestone_reached", lang, streak=crossed, label=habit.label(lang))
 
+    # SPEC-v1.6.md R-R2 (module `insights`): recompute the affected
+    # records right after the milestone check, same "read once after the
+    # write" placement -- a broken record appends its own celebration
+    # line, AFTER the milestone line (spec doesn't order the two
+    # explicitly; milestone already existed pre-v1.6, so record-breaking
+    # is additive after it, never displacing it). `update_on_log` is
+    # sync and already fail-open internally (R-R2's own "a records error
+    # never blocks the confirmation" contract) -- no extra try/except
+    # needed here, mirroring `crossed_milestone`'s own call above.
+    record_suffix = ""
+    broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
+    if broken_records:
+        record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang)
+
+    confirmation_suffix = milestone_suffix + record_suffix
+
     if habit.id == "water":
         water_ml = int(result.value)  # type: ignore[arg-type]
         total = db.water_total_ml(user_id, today_str)
@@ -900,9 +1013,14 @@ async def handle_inbound_message(
         await channel.send_actionable(
             user_id,
             i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
-            + milestone_suffix,
+            + confirmation_suffix,
             undo_buttons,
         )
+        # SPEC-v1.6.md R-D5 (module `dashboard`): refresh AFTER the
+        # confirmation is sent, never before -- a dashboard hiccup must
+        # never swallow a log. `refresh` itself is fail-open (whole body
+        # is one try) and no-ops for a user with no live dashboard.
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     if habit.id == "stretch":
@@ -911,9 +1029,10 @@ async def handle_inbound_message(
         await channel.send_actionable(
             user_id,
             i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
-            + milestone_suffix,
+            + confirmation_suffix,
             undo_buttons,
         )
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     if habit.id == "diary":
@@ -925,13 +1044,15 @@ async def handle_inbound_message(
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
         await channel.send_actionable(
-            user_id, i18n.t("diary_confirmation", lang, reflection=reflection) + milestone_suffix, undo_buttons
+            user_id, i18n.t("diary_confirmation", lang, reflection=reflection) + confirmation_suffix, undo_buttons
         )
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     # Any other configured habit: type-generic confirmation (AC9).
     message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang, config, user_id)
-    await channel.send_actionable(user_id, message + milestone_suffix, undo_buttons)
+    await channel.send_actionable(user_id, message + confirmation_suffix, undo_buttons)
+    await dashboard.refresh(db, channel, config, registry, user_id, clock)
 
 
 async def reparse_pending_unparsed(
@@ -1013,6 +1134,17 @@ async def reparse_pending_unparsed(
             await channel.send_actionable(user_id, i18n.t("recovered_diary", lang), undo_buttons)
         else:
             await _send_recovered_generic(channel, user_id, habit, result.value, lang, undo_buttons)
+
+        # SPEC-v1.6.md R-D5 (module `dashboard`): the "recovery" case R-D5
+        # explicitly calls out -- a deferred row landing late is still a
+        # real log, so the pinned board should reflect it too. Placed
+        # after the confirmation send above (whichever branch fired),
+        # never before; fail-open, no-ops for a user with no live
+        # dashboard. No `clock=` override -- this loop has no injectable
+        # clock of its own (it reads each row's own stored `ts`), so this
+        # correctly falls back to the real wall clock, same as
+        # `checkin_tick`/`nudge_tick`'s own omitted-clock call sites.
+        await dashboard.refresh(db, channel, config, registry, user_id)
 
 
 def seed_fake_data(db: Database, config: Config, user_id: str) -> None:
@@ -1259,18 +1391,20 @@ async def async_main(args: argparse.Namespace) -> None:
     # announcing on a one-off manual invocation isn't a real "startup".
     await announce.announce_release(db, channel, config, __version__)
 
-    # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11 and
-    # SPEC-v1.4.md R-A2 / SPEC-v1.5.md §6/§11 integration steps: register
-    # the bot command menu once at startup -- `/start` + `/undo` (undo_ui's
-    # own contribution) + `/target` (this integration step's, see
-    # TARGET_COMMAND_DESCRIPTIONS above) + `/help` + `/habits`
-    # (discoverability) + `/remind` + `/lang` + `/quiet` + `/history` +
-    # `/checkin` (see START_/REMIND_/LANG_/QUIET_/HISTORY_/CHECKIN_
-    # COMMAND_DESCRIPTIONS above for why the four true admin commands --
-    # and owner-only `/audit` -- are deliberately excluded; `/dnd` is
-    # deliberately excluded too, sharing `/quiet`'s entry, per
-    # CHECKIN_COMMAND_DESCRIPTIONS's own comment above), English default +
-    # a Thai set. 10 public commands total. A transport error here is
+    # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11,
+    # SPEC-v1.4.md R-A2, SPEC-v1.5.md §6/§11, and SPEC-v1.6.md §6/§11
+    # integration steps: register the bot command menu once at startup --
+    # `/start` + `/undo` (undo_ui's own contribution) + `/target` (this
+    # integration step's, see TARGET_COMMAND_DESCRIPTIONS above) + `/help`
+    # + `/habits` (discoverability) + `/remind` + `/lang` + `/quiet` +
+    # `/history` + `/checkin` + `/dashboard` + `/heatmap` + `/records` +
+    # `/trends` (see START_/REMIND_/LANG_/QUIET_/HISTORY_/CHECKIN_/
+    # DASHBOARD_/HEATMAP_/RECORDS_/TRENDS_COMMAND_DESCRIPTIONS above for
+    # why the four true admin commands -- and owner-only `/audit` -- are
+    # deliberately excluded; `/dnd` is deliberately excluded too, sharing
+    # `/quiet`'s entry, per CHECKIN_COMMAND_DESCRIPTIONS's own comment
+    # above; the nudge has no command of its own, OQ2), English default +
+    # a Thai set. 14 public commands total. A transport error here is
     # logged and never crashes startup (AC2) -- same belt-and-suspenders
     # posture as the schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
@@ -1285,6 +1419,10 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("quiet", QUIET_COMMAND_DESCRIPTIONS[lang])]
             + [("history", HISTORY_COMMAND_DESCRIPTIONS[lang])]
             + [("checkin", CHECKIN_COMMAND_DESCRIPTIONS[lang])]
+            + [("dashboard", DASHBOARD_COMMAND_DESCRIPTIONS[lang])]
+            + [("heatmap", HEATMAP_COMMAND_DESCRIPTIONS[lang])]
+            + [("records", RECORDS_COMMAND_DESCRIPTIONS[lang])]
+            + [("trends", TRENDS_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -1348,6 +1486,49 @@ async def async_main(args: argparse.Namespace) -> None:
         trigger=CronTrigger(second=0, timezone=config.app.timezone),
         args=[channel, config, registry, db],
         id="checkin_tick",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
+    # SPEC-v1.6.md R-N1 (module `nudge`): a sibling of `checkin_tick`/
+    # `reminder_tick` on the SAME minutely cadence -- `run_due_nudges`'s
+    # own internal `hhmm != config.nudge.time` guard is what limits it to
+    # firing once per day, so the cron trigger itself still needs to fire
+    # every minute for that guard to be evaluated.
+    scheduler.add_job(
+        nudge.run_due_nudges,
+        trigger=CronTrigger(second=0, timezone=config.app.timezone),
+        args=[channel, config, registry, db],
+        id="nudge_tick",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
+    # SPEC-v1.6.md R-D5 (module `dashboard`): a day-rollover refresh so an
+    # enabled user's board resets to the new day without waiting for their
+    # next log. Unlike checkin_tick/nudge_tick (which need to keep
+    # evaluating a per-user WINDOW that can span many hours), day-rollover
+    # is a single fixed daily instant -- exactly like `weekly_review_job`/
+    # `daily_summary_job` below -- so this uses the same native
+    # `CronTrigger(hour=0, minute=0, ...)` "fire once daily" pattern those
+    # two already use, rather than a minutely tick with an internal guard
+    # (a deliberate simplification from `core/dashboard.py`'s own
+    # suggested "minutely + guard" wiring note -- functionally identical
+    # for a single fixed instant, one fewer per-minute wake-up). No new
+    # `core/dashboard.py` function needed: `refresh` already no-ops for a
+    # disabled user, so this can iterate every active user unconditionally.
+    async def dashboard_day_rollover_job() -> None:
+        for user_id in db.active_user_ids():
+            await dashboard.refresh(db, channel, config, registry, user_id)
+
+    scheduler.add_job(
+        dashboard_day_rollover_job,
+        trigger=CronTrigger(hour=0, minute=0, timezone=config.app.timezone),
+        id="dashboard_day_rollover",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
@@ -1560,6 +1741,13 @@ async def async_main(args: argparse.Namespace) -> None:
         await undo_ui.handle_undo_callback(
             chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, clock=datetime.now, registry=registry
         )
+        # SPEC-v1.6.md R-D5 (module `dashboard`): the button-tap undo path
+        # -- kept here in `main.py` (not inside `core/undo_ui.py` itself)
+        # so that self-contained module doesn't need a new cross-module
+        # import; mirrors the text `/undo` path's own refresh call in
+        # `_execute_undo`. Fail-open, unchanged-render-skip means a stale/
+        # no-op tap (wrong user, already-undone row) costs nothing extra.
+        await dashboard.refresh(db, channel, config, registry, chat_id)
 
     # ROADMAP.md v0.4.0 scope item 5: the health monitor runs as its own
     # asyncio task alongside the scheduler and the inbound loop.

@@ -290,6 +290,24 @@ async def test_milestone_crossing_sequence_3_then_no_repeat_then_7(db, monkeypat
     channel = FakeChannel()
     clock = _StepClock(datetime(2026, 8, 17, 9, 0, 0))  # day 1
 
+    # SPEC-v1.6.md R-R2 (module `insights`, integration-wired): the days
+    # seeded directly below (via `_seed`, bypassing `handle_inbound_
+    # message`) never touch `records.update_on_log` at all, so this
+    # user+habit's records are still unset when the FIRST real
+    # `handle_inbound_message` call below fires -- that call would
+    # otherwise seed a baseline and a later log would genuinely break it,
+    # appending an (unrelated to this test) record celebration line.
+    # `longest_streak` needs its own pre-seed too, comfortably above the
+    # 7-day streak day 7 legitimately reaches (a still-growing streak
+    # re-celebrates on every day it's the all-time best, per
+    # `core/records.py`'s own documented behavior -- IMPL-v1.6-insights.md
+    # "Known limitations"). Pre-seeding all three record types keeps
+    # every assertion below testing exactly the milestone behavior it
+    # always tested.
+    db.upsert_record(OWNER, "water", "best_day", 999999.0, "2000-01-01")
+    db.upsert_record(OWNER, "water", "best_week", 999999.0, "2000-01-01")
+    db.upsert_record(OWNER, "water", "longest_streak", 999.0, "2000-01-01")
+
     # Background days 1 & 2, goal-met, seeded directly (not through
     # handle_inbound_message -- keeps the test focused on the crossing).
     _seed(db, "2026-08-17T09:00:00", "water", 2500.0)
@@ -515,6 +533,13 @@ def _run_async_main_and_capture_scheduler(monkeypatch, config, tmp_path, invoke_
     )
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", _FakeTelegramChannel)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so the real startup call now actually sends
+    # a release note before this test's own daily-summary job ever runs
+    # -- neutralized here so channel output reflects only the job's own
+    # output, unaffected by that unrelated wiring.
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _FakeScheduler.last_instance = None
     _FakeTelegramChannel.last_instance = None
     _FakeTelegramChannel.invoke_daily_summary_job_on_run = invoke_daily_summary_job

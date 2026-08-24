@@ -106,3 +106,39 @@ class Channel(ABC):
         `answerCallbackQuery` is keyed on the callback itself. Default:
         no-op (only Telegram implements this)."""
         return None
+
+    # SPEC-v1.6.md §2.2/§5 (shared surface, module `dashboard`'s own
+    # dependency): three more concrete defaults, same degradation pattern
+    # as `send_image`/`send_actionable`/`set_my_commands` above -- a
+    # channel that can't pin/edit/unpin (channels/line.py's stub, every
+    # existing test fake) is unaffected and needs no changes to keep
+    # satisfying this ABC. `TelegramChannel` overrides all three.
+    async def send_and_pin(self, chat_id: str, text: str) -> str | None:
+        """Send + pin `text` to `chat_id`, returning the new message's id
+        (for a caller to later `edit_message`/`unpin` it). Default: just
+        `send` the text and report no id (no pin capability -- there is
+        nothing a caller could `edit_message`/`unpin` with `None`, so
+        `core/dashboard.py` (module `dashboard`) treats a `None` result
+        the same as a failed pin: the dashboard write is skipped, fail-
+        open, never blocking the confirmation that triggered it)."""
+        await self.send(chat_id, text)
+        return None
+
+    async def edit_message(self, chat_id: str, message_id: str, text: str) -> bool:
+        """Edit a previously-sent message in place. `True` on success OR
+        when the platform reports "not modified" (the content was
+        already identical -- not a failure, R-D3's own "skip a redundant
+        edit" case still counts as "the board is correct"); `False` on
+        "not found" (the message was deleted -- R-D4's self-heal signal)
+        or any other failure. Default: always `False` (no edit
+        capability -- a channel without this can never report "already
+        correct" or "found", so the honest, fail-safe answer is "not
+        done", which is exactly the signal that tells a caller like
+        `dashboard.refresh` to fall back to re-sending)."""
+        return False
+
+    async def unpin(self, chat_id: str, message_id: str) -> None:
+        """Unpin (and best-effort delete) a previously pinned message.
+        Default: no-op (no pin capability, so there is nothing to
+        undo)."""
+        return None

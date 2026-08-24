@@ -518,9 +518,12 @@ async def test_full_weekly_review_with_charts_and_garmin_contacts_only_telegram_
 # ---------------------------------------------------------------------------
 
 
-async def test_run_weekly_review_byte_identical_to_v0100_when_garmin_unconfigured(db):
+async def test_run_weekly_review_byte_identical_to_v0100_prefix_when_garmin_unconfigured(db):
+    from datetime import datetime as datetime_cls
+
     from habit_assistant.core import i18n as i18n_module
     from habit_assistant.core.review import compute_weekly_stats, format_stats_summary
+    from habit_assistant.core.trends import review_block as trends_review_block
 
     registry = HabitRegistry.from_config(Config())
     end_date = date(2026, 8, 19)
@@ -541,5 +544,15 @@ async def test_run_weekly_review_byte_identical_to_v0100_when_garmin_unconfigure
 
     actual = await run_weekly_review(db, config, registry, llm, lang, "owner", today=end_date)
 
-    assert actual == expected_v0100_shape
-    assert "Garmin" not in actual  # zero footprint when unconfigured (bonus, not just byte-pin)
+    # SPEC-v1.6.md R-T2 (module `insights`, integration-wired): the review
+    # is no longer byte-identical to the whole v0.10.0 shape -- `trends.
+    # review_block` is now UNCONDITIONALLY appended (it always returns at
+    # least a header line, never `""`, unlike Garmin's own genuinely-empty-
+    # when-unconfigured contract) -- so this test now pins the v0.10.0
+    # shape as the exact PREFIX, plus the new v1.6.0 trends section as the
+    # exact, independently-verified suffix, rather than the whole string.
+    expected_trends_section = trends_review_block(
+        db, config, registry, lang, "owner", clock=lambda: datetime_cls.combine(end_date, datetime_cls.min.time())
+    )
+    assert actual == expected_v0100_shape + f"\n\n{expected_trends_section}"
+    assert "Garmin" not in actual  # zero Garmin footprint when unconfigured (bonus, not just byte-pin)

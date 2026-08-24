@@ -146,6 +146,36 @@ class CheckinConfig(BaseModel):
     window: str = "08:00-20:00"
 
 
+class NudgeConfig(BaseModel):
+    """SPEC-v1.6.md §4 Feature 5 "Almost there" end-of-day nudge (R-N1-
+    R-N3), OQ2 RESOLVED: rides check-in enablement -- no separate toggle
+    or `users` column, so this class carries only the two tuning knobs.
+    `threshold_pct` (default 80): a goal-bearing habit counts as "close"
+    once today's total is at least this percent of goal but still short
+    of it; `time` (default "20:00"): the single fixed minute the nudge
+    tick fires at, once/day by construction (mirrors `weekly_review.time`/
+    `gamification.daily_summary_time`'s own "HH:MM" shape). Parsing/
+    validating the tail (which habits are "close") is `core/nudge.py`'s
+    own concern, not this shared config surface."""
+
+    threshold_pct: int = 80
+    time: str = "20:00"
+
+    @field_validator("threshold_pct")
+    @classmethod
+    def _threshold_in_range(cls, v: int) -> int:
+        if not (0 < v <= 100):
+            raise ValueError("nudge.threshold_pct must be between 1 and 100")
+        return v
+
+    @field_validator("time")
+    @classmethod
+    def _time_is_hhmm(cls, v: str) -> str:
+        if not _HHMM_RE.match(v):
+            raise ValueError(f"nudge.time {v!r} must match HH:MM")
+        return v
+
+
 class SnoozeConfig(BaseModel):
     """ROADMAP.md v0.9.0: default snooze duration when a "snooze"/"เลื่อน"
     command doesn't itself carry an explicit minute count (e.g. "snooze",
@@ -371,6 +401,7 @@ class Config(BaseModel):
     i18n: I18nConfig = I18nConfig()
     quiet_hours: QuietHoursConfig = QuietHoursConfig()
     checkin: CheckinConfig = CheckinConfig()
+    nudge: NudgeConfig = NudgeConfig()
     snooze: SnoozeConfig = SnoozeConfig()
     gamification: GamificationConfig = GamificationConfig()
     charts: ChartsConfig = ChartsConfig()

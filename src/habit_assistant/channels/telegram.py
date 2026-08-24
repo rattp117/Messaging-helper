@@ -136,6 +136,96 @@ class TelegramChannel(Channel):
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
+    def build_pin_request(self, chat_id: str, message_id: str) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: `pinChatMessage` -- no `disable_notification`
+        field, so Telegram's default (notify) behavior applies. SPEC-v1.6.md
+        R-D6/§9 OQ1: the one-time pin is deliberately user-initiated and
+        MEANT to notify (only the many silent `edit_message` calls after it
+        are not)."""
+        return f"{self._base_url}/pinChatMessage", {"chat_id": chat_id, "message_id": message_id}
+
+    async def send_and_pin(self, chat_id: str, text: str) -> str | None:
+        """SPEC-v1.6.md §5: `sendMessage` then `pinChatMessage`, returning
+        the sent message's id either way -- a pin failure (permissions,
+        rate limit, chat type) is logged and swallowed, not raised: the
+        message was still successfully SENT, so the caller (`core/
+        dashboard.py:execute_dashboard`) has a real id to store even if
+        the pin itself didn't take; the next `refresh` will just keep
+        editing an unpinned message rather than losing the dashboard
+        entirely."""
+        url, payload = self.build_send_request(chat_id, text)
+        resp = await self._client.post(url, json=payload)
+        resp.raise_for_status()
+        message_id = str(resp.json()["result"]["message_id"])
+        pin_url, pin_payload = self.build_pin_request(chat_id, message_id)
+        try:
+            pin_resp = await self._client.post(pin_url, json=pin_payload)
+            pin_resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("pinChatMessage failed for %s/%s; message sent but not pinned", chat_id, message_id)
+        return message_id
+
+    def build_edit_message_request(self, chat_id: str, message_id: str, text: str) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: `editMessageText`."""
+        return f"{self._base_url}/editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text}
+
+    async def edit_message(self, chat_id: str, message_id: str, text: str) -> bool:
+        """SPEC-v1.6.md §5/R-D3/R-D4: never raises -- every failure mode
+        (transport error, "not found", any other Bot API rejection) maps
+        to `False`, the exact signal `dashboard.refresh`'s self-heal path
+        (R-D4) needs to recreate the board rather than silently losing it
+        or propagating an exception into the log/undo flow that triggered
+        the refresh. "message is not modified" (a 400 whose `description`
+        says so -- Telegram's own no-op-edit rejection) maps to `True`:
+        the board's content is already correct, which is what R-D3's own
+        unchanged-render skip is checking for in the first place."""
+        url, payload = self.build_edit_message_request(chat_id, message_id, text)
+        try:
+            resp = await self._client.post(url, json=payload)
+        except httpx.HTTPError:
+            logger.exception("editMessageText transport error for %s/%s", chat_id, message_id)
+            return False
+        if resp.status_code == 200:
+            return True
+        description = ""
+        try:
+            description = (resp.json() or {}).get("description") or ""
+        except Exception:
+            pass
+        if "not modified" in description.lower():
+            return True
+        logger.info("editMessageText failed for %s/%s: %s", chat_id, message_id, description or resp.status_code)
+        return False
+
+    def build_unpin_request(self, chat_id: str, message_id: str) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: `unpinChatMessage`."""
+        return f"{self._base_url}/unpinChatMessage", {"chat_id": chat_id, "message_id": message_id}
+
+    def build_delete_message_request(self, chat_id: str, message_id: str) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: `deleteMessage`, the best-effort follow-up
+        `unpin` makes after unpinning (SPEC-v1.6.md §5's own "(+deleteMessage)"
+        note) -- a `/dashboard off` should leave no stray message behind,
+        not just an unpinned one."""
+        return f"{self._base_url}/deleteMessage", {"chat_id": chat_id, "message_id": message_id}
+
+    async def unpin(self, chat_id: str, message_id: str) -> None:
+        """Never raises -- both calls are individually best-effort/fail-
+        open, mirroring every other "never blocks the triggering action"
+        posture in this codebase (`core/audit.py:record`, `core/
+        announce.py:announce_release`'s per-user sends)."""
+        url, payload = self.build_unpin_request(chat_id, message_id)
+        try:
+            resp = await self._client.post(url, json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("unpinChatMessage failed for %s/%s; continuing", chat_id, message_id)
+        del_url, del_payload = self.build_delete_message_request(chat_id, message_id)
+        try:
+            del_resp = await self._client.post(del_url, json=del_payload)
+            del_resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("deleteMessage failed for %s/%s (best-effort); continuing", chat_id, message_id)
+
     @staticmethod
     def _chat_id_of(message: dict[str, Any]) -> str:
         """SPEC-v1.2.md §2.1: `message.chat.id` as a string -- Telegram

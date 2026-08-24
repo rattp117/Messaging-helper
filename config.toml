@@ -94,6 +94,15 @@ default_minutes = 30
 enabled = false
 window = "08:00-20:00"
 
+# SPEC-v1.6.md "Almost there" end-of-day nudge (R-N1-R-N3), OQ2 RESOLVED:
+# rides check-in enablement -- a user only gets a nudge if they've also
+# run `/checkin on` (no separate toggle). `threshold_pct` = how close
+# (percent of goal) counts as "close enough to nudge"; `time` = the one
+# fixed minute/day the nudge tick fires at.
+[nudge]
+threshold_pct = 80
+time = "20:00"
+
 # ROADMAP.md v0.10.0 "Streaks, Gentle Gamification & Daily Summary".
 # `enabled` gates only the milestone encouragement line appended to a
 # confirmation when a streak crosses one of `milestones`; streak

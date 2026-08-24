@@ -214,6 +214,17 @@ def _run_async_main(monkeypatch, config, script, owner_chat_id=OWNER, responses=
     monkeypatch.setattr(main_module, "AsyncIOScheduler", _FakeScheduler)
     monkeypatch.setattr(main_module, "TelegramChannel", channel_cls)
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
+    # SPEC-v1.5.md R-N2 (module `announce`): since v1.5.0's own release
+    # (Archi's version bump), `__version__` genuinely matches a
+    # `RELEASE_NOTES` entry, so `announce.announce_release`'s real
+    # startup call (integration-wired, IMPL-v1.5-integration.md) now
+    # actually sends a release note to every active user on the very
+    # first `async_main` call -- an extra leading `channel.sent_to(...)`
+    # entry none of this file's own scripts (written before that wiring
+    # went live) account for. Neutralized here, once, for every test in
+    # this file by default -- a version string with no catalog entry
+    # makes `announce_release` a documented no-op (AC-22).
+    monkeypatch.setattr(main_module, "__version__", "0.0.0-test")
     _FakeScheduler.last_instance = None
     _ScriptedChannel.last_instance = None
     _ScriptedChannel.script = script
@@ -594,7 +605,13 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
         # (R-A2 -- every active user's own data, unlike owner-only /audit).
         # SPEC-v1.5.md's own integration step added "checkin" too; "dnd" is
         # deliberately absent (shares /quiet's own menu entry).
-        assert names == {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin"}
+        # SPEC-v1.6.md's own integration step added "dashboard"/"heatmap"/
+        # "records"/"trends" too; "nudge" is deliberately absent (OQ2: no
+        # command of its own, rides /checkin enablement).
+        assert names == {
+            "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
+            "dashboard", "heatmap", "records", "trends",
+        }
         assert not names & {"approve", "block", "users", "invite"}
 
 
@@ -1185,7 +1202,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 8  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 also land now
+        assert db.schema_version == 9  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

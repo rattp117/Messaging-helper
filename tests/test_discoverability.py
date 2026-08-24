@@ -930,7 +930,14 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     `/dnd` deliberately did NOT get its own entry (it's a pure alias for
     `/quiet`, sharing that existing entry), which is exactly what this
     test's exact-set check would catch if `/dnd` leaked in as a stray
-    duplicate."""
+    duplicate.
+
+    UPDATED AGAIN at SPEC-v1.6.md's own integration step (IMPL-v1.6-
+    integration.md): `dashboard`/`heatmap`/`records`/`trends` joined the
+    public menu too (14 total) -- the nudge (module `nudge`) deliberately
+    got NO entry (OQ2: no command of its own, rides `/checkin`
+    enablement), which is exactly what this test's exact-set check would
+    catch if a stray `nudge` entry leaked in."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -940,7 +947,10 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
 
     channel = _AsyncMainFakeChannel.last_instance
     registered = channel.set_my_commands_calls[0]
-    expected = {"start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin"}
+    expected = {
+        "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
+        "dashboard", "heatmap", "records", "trends",
+    }
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
         assert set(names) == expected, f"{lang}: {names}"

@@ -395,27 +395,30 @@ async def _run(
     monkeypatch.setattr(main_module, "OllamaClient", _FakeOllamaClient)
     if health_monitor_cls is not None:
         monkeypatch.setattr(main_module, "HealthMonitor", health_monitor_cls)
-    if version is not None:
-        # SPEC-v1.5.md R-N2/IMPL-v1.5-announce.md's own documented note:
-        # __version__ is deliberately NOT bumped to "1.5.0" in
-        # src/habit_assistant/__init__.py until Archi's release step, so
-        # a real run today would look up "1.4.0" in RELEASE_NOTES (no
-        # entry, AC-22's own no-op) and never actually exercise the send
-        # path. Simulating the post-bump state here is how this file
-        # proves the wiring itself is correct ahead of that release step.
-        #
-        # Vera's own gotcha, worth recording: `__version__` is imported
-        # via `from habit_assistant import __version__` in BOTH main.py
-        # (the announce call) AND core/access.py (R-N5's own newly-
-        # approved catch-up write) -- each binds its OWN separate name at
-        # import time, so patching only `main_module.__version__` leaves
-        # `access.py`'s copy at the real "1.4.0", desyncing the two in a
-        # test even though a REAL release bump (editing the one source
-        # file) would keep both consistent in production. Patch both.
-        from habit_assistant.core import access as access_module
+    # SPEC-v1.5.md R-N2/IMPL-v1.5-announce.md's own documented note:
+    # `__version__` has since been bumped for the real v1.5.0 release
+    # (Archi's Phase 6.5 step, post-hand-off), so it now genuinely
+    # matches a `RELEASE_NOTES` entry -- leaving it unpatched would make
+    # `announce.announce_release`'s real startup call actually fire for
+    # every test below that doesn't care about it, an extra leading
+    # `channel.sent_to(...)` entry none of the checkin-focused tests were
+    # written to expect. Default to an inert version (no catalog entry,
+    # AC-22's own no-op) so every test gets deterministic, announce-free
+    # behavior UNLESS it explicitly opts in via `version=`.
+    #
+    # Vera's own gotcha, worth recording: `__version__` is imported via
+    # `from habit_assistant import __version__` in BOTH main.py (the
+    # announce call) AND core/access.py (R-N5's own newly-approved
+    # catch-up write) -- each binds its OWN separate name at import time,
+    # so patching only `main_module.__version__` leaves `access.py`'s
+    # copy unpatched, desyncing the two in a test even though a REAL
+    # release bump (editing the one source file) keeps both consistent
+    # in production. Patch both, always.
+    from habit_assistant.core import access as access_module
 
-        monkeypatch.setattr(main_module, "__version__", version)
-        monkeypatch.setattr(access_module, "__version__", version)
+    effective_version = version if version is not None else "0.0.0-test"
+    monkeypatch.setattr(main_module, "__version__", effective_version)
+    monkeypatch.setattr(access_module, "__version__", effective_version)
     _FakeScheduler.last_instance = None
     _ScriptedChannel.last_instance = None
     _ScriptedChannel.script = script
@@ -853,16 +856,18 @@ async def test_announce_user_several_versions_behind_gets_only_the_current_note_
         db.close()
 
 
-async def test_current_pinned_version_has_no_release_note_and_announces_nothing_today(tmp_path, monkeypatch):
-    """Point-in-time sanity check, not a permanent AC pin: as of this
-    session, `src/habit_assistant/__init__.py:__version__` is still
-    "1.4.0" (the version bump is deliberately deferred to Archi's actual
-    release step, IMPL-v1.5-announce.md's own documented note) -- so a
-    real startup TODAY, with no version override, must announce nothing
-    to anyone and must not crash (AC-22's own "no catalog entry" path,
-    exercised here with the app's actual current constant rather than a
-    synthetic one). This test will need updating the moment `__version__`
-    is bumped to "1.5.0" at release -- that's expected, not a bug."""
+async def test_current_pinned_version_announces_to_active_users_today(tmp_path, monkeypatch):
+    """UPDATED post-release (Archi's Phase 6.5 version bump landed,
+    v1.5.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
+    now genuinely "1.5.0", matching a real `RELEASE_NOTES` entry -- so a
+    real startup TODAY, using the app's actual current constant (not a
+    synthetic one, and not this file's own default `_run` neutralization
+    -- passed explicitly as `version=current_version` below to exercise
+    the literal constant), correctly announces to every active user and
+    marks them caught up. This was originally written as the mirror-image
+    "announces nothing" sanity check before the release shipped; its own
+    docstring at the time predicted exactly this update would be needed
+    the moment `__version__` was bumped -- that's expected, not a bug."""
     from habit_assistant import __version__ as current_version
 
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
@@ -870,16 +875,17 @@ async def test_current_pinned_version_has_no_release_note_and_announces_nothing_
     seed_db.upsert_user(MEMBER, role="member", status="active")
     seed_db.close()
 
-    channel = await _run(monkeypatch, config, script=[])  # no version= override -- uses the real constant
+    channel = await _run(monkeypatch, config, script=[], version=current_version)
 
-    assert channel.sent_to(OWNER) == []
-    assert channel.sent_to(MEMBER) == []
+    assert channel.sent_to(OWNER) != []
+    assert channel.sent_to(MEMBER) != []
     db = Database(tmp_path / "habits.db")
     try:
-        assert db.get_last_announced_version(OWNER) is None
+        assert db.get_last_announced_version(OWNER) == current_version
+        assert db.get_last_announced_version(MEMBER) == current_version
     finally:
         db.close()
-    assert current_version == "1.4.0"  # documents the exact pre-release state this test relies on
+    assert current_version == "1.5.0"  # documents the exact post-release state this test relies on
 
 
 # ---------------------------------------------------------------------------
@@ -1177,7 +1183,7 @@ async def test_migration_008_rehearsal_on_a_v1_4_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 8
+        assert db.schema_version == 9
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert {"checkin_window", "last_announced_version"} <= cols
         assert db.get_last_announced_version(OWNER) is None  # no backfill (migration's own contract)

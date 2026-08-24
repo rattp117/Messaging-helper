@@ -920,7 +920,7 @@ CATALOG: dict[str, dict[Language, str]] = {
     # established for this app's other owner-only technical view (role/
     # status shown verbatim, untranslated). `source` (command/nl/button/
     # admin) is likewise shown verbatim for the same reason. Every
-    # `audit_action_*` id is one of `core/audit.py:ACTIONS`'s 16 values --
+    # `audit_action_*` id is one of `core/audit.py:ACTIONS`'s 18 values --
     # spelling can't drift because `core/audit_view.py` looks each one up
     # by the same literal.
     # -----------------------------------------------------------------
@@ -999,6 +999,14 @@ CATALOG: dict[str, dict[Language, str]] = {
     "audit_action_checkin_default": {
         "en": "check-in reset",
         "th": "รีเซ็ตเช็คอิน",
+    },
+    "audit_action_dashboard_set": {
+        "en": "dashboard on",
+        "th": "เปิดแดชบอร์ด",
+    },
+    "audit_action_dashboard_off": {
+        "en": "dashboard off",
+        "th": "ปิดแดชบอร์ด",
     },
     "audit_action_user_approve": {
         "en": "approved",
@@ -1142,5 +1150,267 @@ CATALOG: dict[str, dict[Language, str]] = {
     "help_dnd_cmd": {
         "en": '🌙 /dnd is another name for /quiet — same do-not-disturb hours (Thai: "งดรบกวน ...").',
         "th": '🌙 /dnd คือชื่ออีกชื่อของ /quiet — ตั้งช่วงเวลางดรบกวนแบบเดียวกัน (หรือ "งดรบกวน ...")',
+    },
+
+    # -----------------------------------------------------------------
+    # Module `nudge` (SPEC-v1.6.md §4 Feature 5 "Almost there" end-of-day
+    # nudge, R-N1-R-N3, core/nudge.py). Disjoint block, no command of its
+    # own (OQ2: rides `/checkin` enablement) -- just the once/day message
+    # body. `nudge_header` + one `nudge_line` per close-but-unmet habit are
+    # joined into a SINGLE message (R-N2: at most one nudge/user/day, even
+    # when several habits qualify simultaneously), mirroring `checkin_
+    # header`/`checkin_line_progress`'s own header+bullet-per-habit shape.
+    # -----------------------------------------------------------------
+    "nudge_header": {
+        "en": "🎯 So close today!",
+        "th": "🎯 ใกล้ถึงเป้าหมายวันนี้แล้ว!",
+    },
+    "nudge_line": {
+        "en": "• Just {remaining:g} {unit} to hit your {label} goal today — you've got this.",
+        "th": "• อีกแค่ {remaining:g} {unit} ก็ถึงเป้าหมาย{label}วันนี้แล้ว สู้ๆ นะ",
+    },
+
+    # -----------------------------------------------------------------
+    # Module `dashboard` (/dashboard, แดชบอร์ด -- SPEC-v1.6.md §4 Feature 1
+    # R-D1-R-D6, core/dashboard.py). Disjoint from every key above -- this
+    # module owns its own catalog block, same convention as every other
+    # parallel module (mirrors `checkins`'s own block precedent exactly).
+    # -----------------------------------------------------------------
+    "dashboard_header": {
+        "en": "📌 Today — {date}",
+        "th": "📌 วันนี้ — {date}",
+    },
+    "dashboard_line_goal": {
+        "en": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · streak {streak}d",
+        "th": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · ต่อเนื่อง {streak} วัน",
+    },
+    "dashboard_line_boolean": {
+        "en": "• {label}: {status} · streak {streak}d",
+        "th": "• {label}: {status} · ต่อเนื่อง {streak} วัน",
+    },
+    "dashboard_line_count": {
+        "en": "• {label}: {count:g} · streak {streak}d",
+        "th": "• {label}: {count:g} · ต่อเนื่อง {streak} วัน",
+    },
+    "dashboard_set_on": {
+        "en": "📌 Live dashboard turned on — I'll keep it pinned and updated as you log.",
+        "th": "📌 เปิดแดชบอร์ดสดแล้ว — จะปักหมุดและอัปเดตให้อัตโนมัติเมื่อคุณบันทึก",
+    },
+    "dashboard_set_off": {
+        "en": "🔕 Live dashboard turned off.",
+        "th": "🔕 ปิดแดชบอร์ดสดแล้ว",
+    },
+    "dashboard_show_on": {
+        "en": "📌 Live dashboard: on.",
+        "th": "📌 แดชบอร์ดสด: เปิดอยู่",
+    },
+    "dashboard_show_off": {
+        "en": '📌 Live dashboard: off. Turn it on with "/dashboard on".',
+        "th": '📌 แดชบอร์ดสด: ปิดอยู่ เปิดได้ด้วย "/dashboard on"',
+    },
+    "dashboard_usage": {
+        "en": '🤔 Usage: "/dashboard on" or "/dashboard off" (Thai: "แดชบอร์ด on/off").',
+        "th": '🤔 วิธีใช้: "/dashboard on" หรือ "/dashboard off" (หรือ "แดชบอร์ด on/off")',
+    },
+    "dashboard_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "dashboard_unsupported": {
+        "en": "📌 This chat can't pin messages, so I can't keep a live dashboard here.",
+        "th": "📌 แชทนี้ปักหมุดข้อความไม่ได้ เลยเปิดแดชบอร์ดสดให้ไม่ได้",
+    },
+    # Gap-pass additions (TEST-v1.6-dashboard.md findings #1/#5, Archi-ruled
+    # 2026-08-24): "on" while already on refreshes in place instead of a
+    # second pin (finding #1); a large habit registry gets a truncated
+    # board + this footer instead of an over-length message (finding #5,
+    # `render_budget.fit_within_budget` -- same "… N more" shape as
+    # `audit_more_rows`/`history_more_rows`).
+    "dashboard_already_on": {
+        "en": "📌 Live dashboard is already on — refreshed.",
+        "th": "📌 แดชบอร์ดสดเปิดอยู่แล้ว — รีเฟรชให้แล้ว",
+    },
+    "dashboard_more_rows": {
+        "en": "… {count} more",
+        "th": "… อีก {count} รายการ",
+    },
+    # --- /help addition (integration-time append, same "data only, wiring
+    # is a later step" posture as `help_checkin_cmd`/`help_dnd_cmd`/
+    # `help_heatmap_cmd` -- `core/dashboard.py`'s own IMPL flagged this as
+    # not in its scope; landed here as part of the integration pass) -----
+    "help_dashboard_cmd": {
+        "en": '📌 Get a live pinned "Today" board: /dashboard on, /dashboard off, or just /dashboard to check (Thai: "แดชบอร์ด on/off").',
+        "th": '📌 เปิดแดชบอร์ดสด "วันนี้" แบบปักหมุด: /dashboard on, /dashboard off หรือพิมพ์ /dashboard เฉยๆ เพื่อดูสถานะ (หรือ "แดชบอร์ด on/off")',
+    },
+
+    # -----------------------------------------------------------------
+    # Module `heatmap` (/heatmap, ปฏิทิน -- SPEC-v1.6.md §4 Feature 2,
+    # R-H1-R-H4, core/heatmap.py). Disjoint block, own module. R-H3: the
+    # PNG itself carries no bilingual text at all -- the caption keys below
+    # (`heatmap_caption_*`) are what `send_image`'s `caption` argument
+    # gets, and the fallback keys (`heatmap_fallback_*`) are the R-H2
+    # "matplotlib unavailable / render failed" text reply. `{habit}` here
+    # is always a `Habit.label(lang)` (bilingual), never `Habit.id` --
+    # unlike the ASCII `id` this module's own PNG rows use internally, the
+    # chat-facing caption/fallback text is exactly where the bilingual
+    # label belongs (R-H3's own "bilingual label ... lives in the
+    # caption, not the image").
+    # -----------------------------------------------------------------
+    "heatmap_caption_single": {
+        "en": "📅 {habit} — consistency over the last {weeks} weeks.",
+        "th": "📅 {habit} — ความสม่ำเสมอช่วง {weeks} สัปดาห์ที่ผ่านมา",
+    },
+    "heatmap_caption_all": {
+        "en": "📅 Consistency heatmap — last {weeks} weeks. Top to bottom: {habit_list}.",
+        "th": "📅 ปฏิทินความสม่ำเสมอ — {weeks} สัปดาห์ที่ผ่านมา เรียงจากบนลงล่าง: {habit_list}",
+    },
+    "heatmap_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "heatmap_no_habits": {
+        "en": "📅 No habits configured yet, so there's nothing to show a heatmap for.",
+        "th": "📅 ยังไม่มีนิสัยที่ตั้งค่าไว้ เลยยังไม่มีอะไรให้แสดงในปฏิทิน",
+    },
+    "heatmap_fallback_header": {
+        "en": "📅 Charts aren't available right now — here's a quick summary (last {weeks} weeks):",
+        "th": "📅 ตอนนี้ยังแสดงกราฟไม่ได้ — สรุปแบบย่อให้แทน ({weeks} สัปดาห์ที่ผ่านมา):",
+    },
+    "heatmap_fallback_line": {
+        "en": "• {habit}: on track {qualifying}/{total} days",
+        "th": "• {habit}: ทำได้ {qualifying}/{total} วัน",
+    },
+    # --- /help addition (integration-time append, same "data only, wiring
+    # is a later step" posture as `help_checkin_cmd`/`help_dnd_cmd` above)
+    "help_heatmap_cmd": {
+        "en": '📅 See your consistency calendar: /heatmap, /heatmap water, or /heatmap water 8 (Thai: "ปฏิทิน ...").',
+        "th": '📅 ดูปฏิทินความสม่ำเสมอ: /heatmap, /heatmap water หรือ /heatmap water 8 (หรือ "ปฏิทิน ...")',
+    },
+
+    # -----------------------------------------------------------------
+    # Module `insights` (SPEC-v1.6.md §4 Features 3+4, R-R1-R-R4/R-T1-R-T3,
+    # core/records.py + core/trends.py). Disjoint block, own module (records
+    # + trends share one block since both are "history insight" and share
+    # one file section, mirroring how `checkin`/`dnd` share `checkins.py`'s
+    # own catalog block). `record_broken_*` are the R-R2 celebration-suffix
+    # lines `core/records.py:format_celebration` renders (appended to a log
+    # confirmation, once per broken record); `records_*` are the `/records`
+    # view (R-R3); `trends_*` are the `/trends` view + weekly-review block
+    # (R-T2).
+    # -----------------------------------------------------------------
+    "record_broken_best_day": {
+        "en": "🎉 New personal best — {label} best day: {value:g} {unit}!",
+        "th": "🎉 สถิติใหม่ — {label} วันที่ดีที่สุด: {value:g} {unit}!",
+    },
+    "record_broken_best_day_count": {
+        "en": "🎉 New personal best — {label} best day: {count} entries!",
+        "th": "🎉 สถิติใหม่ — {label} วันที่ดีที่สุด: {count} ครั้ง!",
+    },
+    "record_broken_best_week": {
+        "en": "🎉 New personal best — {label} best week: {value:g} {unit}!",
+        "th": "🎉 สถิติใหม่ — {label} สัปดาห์ที่ดีที่สุด: {value:g} {unit}!",
+    },
+    "record_broken_best_week_count": {
+        "en": "🎉 New personal best — {label} best week: {count} entries!",
+        "th": "🎉 สถิติใหม่ — {label} สัปดาห์ที่ดีที่สุด: {count} ครั้ง!",
+    },
+    "record_broken_longest_streak": {
+        "en": "🎉 New personal best — longest {label} streak: {days} days!",
+        "th": "🎉 สถิติใหม่ — ต่อเนื่อง{label}นานที่สุด: {days} วัน!",
+    },
+    "records_habit_header": {
+        "en": "🏆 {habit} records",
+        "th": "🏆 สถิติ{habit}",
+    },
+    "records_none_yet": {
+        "en": "No records yet — keep logging to set your first one!",
+        "th": "ยังไม่มีสถิติเลยนะ ลองบันทึกต่อไปเรื่อยๆ เดี๋ยวก็มีสถิติแรกของคุณ!",
+    },
+    "records_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "records_line_best_day": {
+        "en": "• Best day: {value:g} {unit} ({achieved_on})",
+        "th": "• วันที่ดีที่สุด: {value:g} {unit} ({achieved_on})",
+    },
+    "records_line_best_day_count": {
+        "en": "• Best day: {count} entries ({achieved_on})",
+        "th": "• วันที่ดีที่สุด: {count} ครั้ง ({achieved_on})",
+    },
+    "records_line_best_week": {
+        "en": "• Best week: {value:g} {unit} ({achieved_on})",
+        "th": "• สัปดาห์ที่ดีที่สุด: {value:g} {unit} ({achieved_on})",
+    },
+    "records_line_best_week_count": {
+        "en": "• Best week: {count} entries ({achieved_on})",
+        "th": "• สัปดาห์ที่ดีที่สุด: {count} ครั้ง ({achieved_on})",
+    },
+    "records_line_longest_streak": {
+        "en": "• Longest streak: {days} days ({achieved_on})",
+        "th": "• ต่อเนื่องนานที่สุด: {days} วัน ({achieved_on})",
+    },
+    "records_more_habits": {
+        "en": "… {count} more",
+        "th": "… อีก {count} รายการ",
+    },
+    "records_render_failed": {
+        "en": "😥 Couldn't load your records right now — please try again in a moment.",
+        "th": "😥 ตอนนี้โหลดสถิติไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "trends_line": {
+        "en": "📊 {label} — this week vs last: {previous:g} → {current:g} {unit} ({pct:+d}%)",
+        "th": "📊 {label} — สัปดาห์นี้เทียบสัปดาห์ที่แล้ว: {previous:g} → {current:g} {unit} ({pct:+d}%)",
+    },
+    "trends_line_count": {
+        "en": "📊 {label} — this week vs last: {previous:g} → {current:g} entries ({pct:+d}%)",
+        "th": "📊 {label} — สัปดาห์นี้เทียบสัปดาห์ที่แล้ว: {previous:g} → {current:g} ครั้ง ({pct:+d}%)",
+    },
+    "trends_line_no_pct": {
+        "en": "📊 {label} — this week vs last: {previous:g} → {current:g} {unit}",
+        "th": "📊 {label} — สัปดาห์นี้เทียบสัปดาห์ที่แล้ว: {previous:g} → {current:g} {unit}",
+    },
+    "trends_line_no_pct_count": {
+        "en": "📊 {label} — this week vs last: {previous:g} → {current:g} entries",
+        "th": "📊 {label} — สัปดาห์นี้เทียบสัปดาห์ที่แล้ว: {previous:g} → {current:g} ครั้ง",
+    },
+    "trends_line_no_history": {
+        "en": "📊 {label} — not enough history yet.",
+        "th": "📊 {label} — ยังมีข้อมูลไม่พอนะ",
+    },
+    "trends_rising_suffix": {
+        "en": "{weeks} weeks rising 📈",
+        "th": "ขึ้นต่อเนื่อง {weeks} สัปดาห์ 📈",
+    },
+    "trends_falling_suffix": {
+        "en": "{weeks} weeks falling 📉",
+        "th": "ลดลงต่อเนื่อง {weeks} สัปดาห์ 📉",
+    },
+    "trends_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "trends_more_habits": {
+        "en": "… {count} more",
+        "th": "… อีก {count} รายการ",
+    },
+    "trends_render_failed": {
+        "en": "😥 Couldn't load your trends right now — please try again in a moment.",
+        "th": "😥 ตอนนี้โหลดแนวโน้มไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "trends_review_header": {
+        "en": "📊 Trends",
+        "th": "📊 แนวโน้ม",
+    },
+    # --- /help additions (integration-time append, same "data only,
+    # wiring is a later step" posture as `help_checkin_cmd`/
+    # `help_heatmap_cmd` above) -------------------------------------------
+    "help_records_cmd": {
+        "en": '🏆 See your personal bests: /records or /records water (Thai: "สถิติ ...").',
+        "th": '🏆 ดูสถิติส่วนตัวของคุณ: /records หรือ /records water (หรือ "สถิติ ...")',
+    },
+    "help_trends_cmd": {
+        "en": '📊 See week-over-week trends: /trends or /trends water (Thai: "แนวโน้ม ...").',
+        "th": '📊 ดูแนวโน้มรายสัปดาห์: /trends หรือ /trends water (หรือ "แนวโน้ม ...")',
     },
 }

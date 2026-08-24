@@ -547,13 +547,13 @@ def test_migration_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp
     # migration 006 (multi-user), SPEC-v1.3.md's migration 007 (audit_log),
     # and SPEC-v1.5.md's migration 008 (checkin_window/last_announced_
     # version) all also run now that they're part of MIGRATIONS, so a
-    # v3-shaped DB opened today lands on version 8, not 4. Migration 006
+    # v3-shaped DB opened today lands on version 9, not 4. Migration 006
     # adds `logs.user_id` as NULL for these legacy rows -- mirroring
     # `async_main`'s real startup sequence, `attribute_legacy_to_owner`
     # backfills them to OWNER (AC-M2).
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 8
+    assert db.schema_version == 9
     db.attribute_legacy_to_owner(OWNER)
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated

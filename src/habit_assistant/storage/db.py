@@ -421,6 +421,78 @@ class Database:
         )
         self._conn.commit()
 
+    def get_dashboard_msg_id(self, chat_id: str) -> str | None:
+        """SPEC-v1.6.md R-D1 (module `dashboard`): `None` means "no live
+        dashboard" (default, migration 009's own no-backfill design);
+        any other string is the id of the pinned message currently
+        showing that user's board. Storage-only, no interpretation --
+        mirrors `get_checkin_window`'s own "raw value, owning module
+        resolves it" split."""
+        row = self.get_user(chat_id)
+        return row["dashboard_msg_id"] if row is not None else None
+
+    def set_dashboard_msg_id(self, chat_id: str, message_id: str | None) -> None:
+        """Upsert, mirrors `set_checkin_window`/`set_last_announced_
+        version`'s own shape exactly. `message_id = None` disables
+        (`/dashboard off`, or R-D4's self-heal path never calls this with
+        `None` -- only the setter does); any other string is the current
+        pinned message's id."""
+        self._conn.execute(
+            "INSERT INTO users (chat_id, dashboard_msg_id) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET dashboard_msg_id = excluded.dashboard_msg_id",
+            (chat_id, message_id),
+        )
+        self._conn.commit()
+
+    # -----------------------------------------------------------------
+    # habit_records (SPEC-v1.6.md R-R1, migration 009): one row per
+    # (user_id, habit_id, record_type). Stored, not re-derived -- "beaten?"
+    # is a cheap compare, and `upsert_record` is the ONE write path
+    # `core/records.py:update_on_log` (module `insights`) calls after it
+    # has already decided a value strictly exceeds the stored one; this
+    # layer does no comparison of its own, mirroring `set_target`'s own
+    # "storage just stores" split.
+    # -----------------------------------------------------------------
+
+    def get_records(self, user_id: str, habit_id: str | None = None) -> list[sqlite3.Row]:
+        """Every record row for `user_id`, optionally filtered to one
+        habit -- `core/records.py:render`'s own read path for `/records`
+        [habit]`. No rows yet (a fresh user, or a habit that's never
+        broken a record) is a normal empty list, not an error."""
+        if habit_id is not None:
+            return self._conn.execute(
+                "SELECT * FROM habit_records WHERE user_id = ? AND habit_id = ? ORDER BY record_type",
+                (user_id, habit_id),
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM habit_records WHERE user_id = ? ORDER BY habit_id, record_type", (user_id,)
+        ).fetchall()
+
+    def get_record(self, user_id: str, habit_id: str, record_type: str) -> float | None:
+        """The stored value for one `(user_id, habit_id, record_type)`,
+        or `None` if that record has never been set -- `update_on_log`'s
+        own "is this a new record?" comparison reads through here."""
+        row = self._conn.execute(
+            "SELECT value FROM habit_records WHERE user_id = ? AND habit_id = ? AND record_type = ?",
+            (user_id, habit_id, record_type),
+        ).fetchone()
+        return float(row["value"]) if row is not None else None
+
+    def upsert_record(self, user_id: str, habit_id: str, record_type: str, value: float, achieved_on: str) -> None:
+        """Upsert -- `ON CONFLICT(user_id, habit_id, record_type)` matches
+        migration 009's own composite `PRIMARY KEY`. Called only after the
+        caller has already confirmed `value` strictly exceeds the
+        previous one (R-R2); this method does not re-check that itself,
+        mirroring `set_target`'s own "storage just stores" split."""
+        self._conn.execute(
+            "INSERT INTO habit_records (user_id, habit_id, record_type, value, achieved_on) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, habit_id, record_type) DO UPDATE SET "
+            "value = excluded.value, achieved_on = excluded.achieved_on",
+            (user_id, habit_id, record_type, value, achieved_on),
+        )
+        self._conn.commit()
+
     def list_users(self) -> list[sqlite3.Row]:
         """SPEC-v1.2.md R-A4 (`/users`, module `access`): every user, in
         the order they first contacted the bot."""
