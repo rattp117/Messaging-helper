@@ -20,6 +20,11 @@ def test_build_extraction_schema_default_registry_shape():
     assert schema["properties"]["category"]["enum"] == ["water", "stretch", "diary", "unknown"]
     assert schema["properties"]["value"]["type"] == ["number", "string", "boolean", "null"]
     assert schema["properties"]["confidence"]["type"] == "number"
+    # SPEC-v1.8.md §2.4/R-B5: `date_offset` is a NEW, OPTIONAL property --
+    # present in `properties` but deliberately absent from `required`
+    # (AC-9: a backend that ignores it entirely still produces a
+    # schema-conformant, byte-identical-to-v1.7 response).
+    assert schema["properties"]["date_offset"]["type"] == ["integer", "null"]
     assert set(schema["required"]) == {"category", "value", "confidence"}
 
 
@@ -31,7 +36,11 @@ def test_build_extraction_schema_size_independent_of_habit_count():
     big_enum = [f"habit_{i}" for i in range(30)] + ["unknown"]
     big_schema = build_extraction_schema(big_enum)
 
-    assert set(small_schema["properties"]) == set(big_schema["properties"]) == {"category", "value", "confidence"}
+    assert (
+        set(small_schema["properties"])
+        == set(big_schema["properties"])
+        == {"category", "value", "confidence", "date_offset"}
+    )
     assert big_schema["properties"]["category"]["enum"] == big_enum
 
 

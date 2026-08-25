@@ -456,8 +456,15 @@ class _AsyncMainFakeChannel(Channel):
     async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         self.sent.append(text)
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2 (integration step): `async_main` now also
+        # registers a SECOND, owner-scoped menu -- this fake only records
+        # the DEFAULT (global, `scope_chat_id=None`) registration, exactly
+        # as it did pre-v1.8, so this file's own pre-existing "registered
+        # once at startup" assertions (`len(...) == 1`, `[0]` indexing)
+        # stay unaffected by that additional, separate call.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     async def run(self, on_message, on_callback=None) -> None:
         raise _StopAfterSchedulerStart()
@@ -941,7 +948,16 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
 
     UPDATED AGAIN at SPEC-v1.7.md's own integration step (IMPL-v1.7-
     integration.md): `addhabit`/`delhabit` joined the public menu too
-    (16 total, module `habitdef`, R-A2)."""
+    (16 total, module `habitdef`, R-A2).
+
+    UPDATED AGAIN at SPEC-v1.8.md's own integration step (IMPL-v1.8-
+    integration.md): `log`/`routine` joined the public menu too (18
+    total, modules `quicklog`/`routines`, R-D2) -- the owner-only
+    `invite`/`approve`/`block`/`users`/`audit` commands are now
+    registered on a SEPARATE, owner-chat-SCOPED menu instead (R-D2),
+    which `set_my_commands_calls[0]` (the default/global registration,
+    per this file's own fake) never captures -- this exact-set check is
+    exactly what would catch one of them leaking into the PUBLIC menu."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     main_module = _run_async_main(monkeypatch, config)
     args = SimpleNamespace(seed=False, dry_run=None, test_reminder=None)
@@ -953,7 +969,7 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     registered = channel.set_my_commands_calls[0]
     expected = {
         "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
-        "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit",
+        "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit", "log", "routine",
     }
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]

@@ -332,7 +332,7 @@ class _RecordingChannel(Channel):
     async def send_actionable(self, chat_id, text, buttons):
         self.sent.append((chat_id, text))
 
-    async def set_my_commands(self, commands):
+    async def set_my_commands(self, commands, *, scope_chat_id=None):
         pass
 
     async def run(self, on_message, on_callback=None):

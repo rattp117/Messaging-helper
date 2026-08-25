@@ -74,6 +74,31 @@ def _coerce_number(value: object) -> float | None:
     return None
 
 
+def _coerce_date_offset(value: object) -> int | None:
+    """SPEC-v1.8.md §2.4/R-B5: the LLM's OPTIONAL `date_offset` (days
+    back) -- accepted only as a genuine non-negative integer (or an
+    integer-valued float/numeric string, e.g. a model that emits `3.0`);
+    anything else (missing, negative, fractional, `"a couple"`, etc.)
+    fails closed to `None`, i.e. "no LLM-inferred date" -- mirrors
+    `_coerce_number`'s own bool-exclusion and fail-closed posture. A
+    negative/malformed value is not itself an error worth surfacing here;
+    `core/backfill.resolve_days_back` (integration's own consumer) is
+    where an in-range-vs-out-of-range judgment belongs, not this coercer."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
 def _coerce_boolean(value: object) -> bool | None:
     """boolean coercion (SPEC-v0.7.md §4 R8): a genuine `bool`; a numeric
     1/0; or one of the bilingual truthy/falsy string forms. Anything else
@@ -120,12 +145,15 @@ def _validate(
         confidence_is_genuine = False
 
     value = data.get("value")
+    # SPEC-v1.8.md §2.4/R-B5: optional, additive -- `None` (missing/
+    # malformed/negative) is the exact pre-v1.8 shape (AC-9).
+    date_offset = _coerce_date_offset(data.get("date_offset"))
 
     if habit.type in ("numeric", "duration"):
         number = _coerce_number(value)
         if number is None or number <= 0:
             return ExtractionResult.unknown()
-        result = ExtractionResult(category, number, confidence)
+        result = ExtractionResult(category, number, confidence, date_offset)
 
     elif habit.type == "text":
         if value is None:
@@ -133,13 +161,13 @@ def _validate(
         text_value = value if isinstance(value, str) else str(value)
         if not text_value.strip():
             return ExtractionResult.unknown()
-        result = ExtractionResult(category, text_value, confidence)
+        result = ExtractionResult(category, text_value, confidence, date_offset)
 
     else:  # boolean
         flag = _coerce_boolean(value)
         if flag is None:
             return ExtractionResult.unknown()
-        result = ExtractionResult(category, flag, confidence)
+        result = ExtractionResult(category, flag, confidence, date_offset)
 
     # AC2.3/AC7: a schema-valid, business-valid extraction whose confidence
     # is below the configured threshold is treated as unknown (clarify, no

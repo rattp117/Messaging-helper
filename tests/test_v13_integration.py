@@ -124,14 +124,18 @@ class _ScriptedChannel(Channel):
         self.set_my_commands_calls: list[dict] = []
         _ScriptedChannel.last_instance = self
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         self.sent.append((chat_id, text))
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]
@@ -937,7 +941,7 @@ async def test_migration_007_rehearsal_on_a_v1_2_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 10  # SPEC-v1.5.md's additive migration 008 + SPEC-v1.6.md's additive migration 009 also land now
+        assert db.schema_version == 11  # SPEC-v1.5.md's additive migration 008 + SPEC-v1.6.md's additive migration 009 also land now
         assert db.get_target(OWNER, "water") == 2500.0
         rows = db.recent_audit(10)
         assert len(rows) == 1

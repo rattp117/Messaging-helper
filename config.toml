@@ -195,6 +195,40 @@ type = "text"
 reminder_times = ["21:30"]
 label = { en = "diary", th = "ไดอารี่" }
 
+# SPEC-v1.8.md "One-tap quick-log keyboard + reactions, routines, backfill,
+# gentle riders". Five new sections, all defaulted -- an absent section here
+# uses config.py's own class defaults (AC-5), same convention as every prior
+# config addition. `[notifications] silent_proactive` is the one deliberate
+# v1.8.0 behavior change: reminders/check-ins/nudges now send silently
+# (no notification ping) by default -- set to false to restore the pre-v1.8
+# notifying behavior.
+[notifications]
+silent_proactive = true
+
+# /log (Thai: บันทึก) pops an inline keyboard of amount buttons built from
+# your own habit registry. max_buttons_per_habit caps how many amount
+# buttons one habit can contribute.
+[quicklog]
+enabled = true
+max_buttons_per_habit = 3
+
+# The bot reacts with an emoji on your own typed log message (not on a
+# quick-log button tap). Fails silently if the reaction can't be set.
+[reactions]
+enabled = true
+
+# Retroactive logging ("500ml yesterday") -- how many days back a
+# recognized date phrase may resolve to. A date further back, or in the
+# future, is rejected with a friendly error.
+[backfill]
+max_days_back = 14
+
+# /routine <name> = <habit> <val>[, ...] bundles a habit stack into one
+# command or one tap. max_per_user caps how many routines one user may
+# create.
+[routines]
+max_per_user = 20
+
 # SPEC-v1.7.md "Per-user custom habits": /addhabit lets a user define their
 # own tracker from chat (base [[habits]] above is unaffected -- these are
 # stored per-user in the DB, not here). max_per_user bounds how many

@@ -528,8 +528,14 @@ class _AsyncMainFakeChannel(Channel):
         self.actionable.append((text, buttons))
         self.sent.append(text)
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale. The transport-error simulation below still
+        # applies to EITHER call (public or owner-scoped), matching
+        # `async_main`'s own independent try/except around each.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
         if _AsyncMainFakeChannel.raise_on_set_my_commands:
             raise ConnectionError("simulated setMyCommands transport failure")
 

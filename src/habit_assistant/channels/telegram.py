@@ -59,12 +59,22 @@ class TelegramChannel(Channel):
         self._backoff_initial = backoff_initial_seconds
         self._backoff_max = backoff_max_seconds
 
-    def build_send_request(self, chat_id: str, text: str) -> tuple[str, dict[str, Any]]:
-        """Exposed for testing: returns (url, json_payload) without sending."""
-        return f"{self._base_url}/sendMessage", {"chat_id": chat_id, "text": text}
+    def build_send_request(
+        self, chat_id: str, text: str, *, disable_notification: bool = False
+    ) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: returns (url, json_payload) without sending.
+        SPEC-v1.8.md R-S1: `disable_notification` is only ADDED to the
+        payload when `True` -- the default `False` produces the exact
+        pre-v1.8 payload shape (AC-1), so `send_actionable`/`send_and_pin`
+        below (which call this with no `disable_notification` argument)
+        are unaffected."""
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if disable_notification:
+            payload["disable_notification"] = True
+        return f"{self._base_url}/sendMessage", payload
 
-    async def send(self, chat_id: str, text: str) -> None:
-        url, payload = self.build_send_request(chat_id, text)
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
+        url, payload = self.build_send_request(chat_id, text, disable_notification=disable_notification)
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
 
@@ -86,16 +96,37 @@ class TelegramChannel(Channel):
         resp = await self._client.post(url, data=data, files=files)
         resp.raise_for_status()
 
+    # SPEC-v1.8.md integration step (Archi-directed follow-up, flagged by
+    # both IMPL-v1.8-quicklog.md and TEST-v1.8-quicklog.md's "Known
+    # non-module limitation"): `/log`'s quick-log keyboard can carry many
+    # buttons (every loggable habit's amount buttons, flattened) -- a
+    # single-row layout renders as one long, awkward row. Chunked into rows
+    # of at most `_ACTIONABLE_ROW_SIZE` buttons each, in registry/list
+    # order. Backward-compatible by construction: <=3 buttons is exactly
+    # one row, identical to the pre-v1.8 shape (same button objects in the
+    # same order) -- so `undo_ui.undo_button`'s own one-button payload (and
+    # every other pre-v1.8 caller, none of which ever passed more than a
+    # couple of buttons) is byte-identical.
+    _ACTIONABLE_ROW_SIZE = 3
+
     def build_send_actionable_request(
         self, chat_id: str, text: str, buttons: list[Button]
     ) -> tuple[str, dict[str, Any]]:
-        """Exposed for testing: `sendMessage` + a one-row inline keyboard
-        (SPEC-v1.1.md §5) -- each `(label, callback_data)` pair becomes one
-        button in the row."""
+        """Exposed for testing: `sendMessage` + an inline keyboard
+        (SPEC-v1.1.md §5, chunked per SPEC-v1.8.md's own integration note
+        above) -- each `(label, callback_data)` pair becomes one button,
+        at most `_ACTIONABLE_ROW_SIZE` per row."""
         url, payload = self.build_send_request(chat_id, text)
         payload = dict(payload)
+        if buttons:
+            rows = [
+                buttons[i : i + self._ACTIONABLE_ROW_SIZE]
+                for i in range(0, len(buttons), self._ACTIONABLE_ROW_SIZE)
+            ]
+        else:
+            rows = [[]]  # SPEC-v1.1.md §5's own "no buttons -> one empty row" shape, unchanged.
         payload["reply_markup"] = {
-            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]
+            "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in row] for row in rows]
         }
         return url, payload
 
@@ -105,13 +136,17 @@ class TelegramChannel(Channel):
         resp.raise_for_status()
 
     def build_set_my_commands_requests(
-        self, commands: dict[str, list[tuple[str, str]]]
+        self, commands: dict[str, list[tuple[str, str]]], *, scope_chat_id: str | None = None
     ) -> list[tuple[str, dict[str, Any]]]:
         """Exposed for testing: one `setMyCommands` request per language
         code in `commands` (SPEC-v1.1.md §5) -- `"en"` is the Bot API's
         default set (no `language_code` field); any other code (e.g.
         `"th"`) is sent with `language_code` so it only applies to clients
-        in that language. Global, not per-chat (R-C1)."""
+        in that language. Global, not per-chat (R-C1), UNLESS
+        `scope_chat_id` is given (SPEC-v1.8.md R-S3): then every request
+        also carries `"scope": {"type": "chat", "chat_id": scope_chat_id}`,
+        registering a chat-scoped menu instead of the default one -- the
+        default `None` leaves every payload byte-identical to v1.7 (AC-3)."""
         requests: list[tuple[str, dict[str, Any]]] = []
         url = f"{self._base_url}/setMyCommands"
         for lang_code, cmds in commands.items():
@@ -120,11 +155,15 @@ class TelegramChannel(Channel):
             }
             if lang_code != "en":
                 payload["language_code"] = lang_code
+            if scope_chat_id is not None:
+                payload["scope"] = {"type": "chat", "chat_id": scope_chat_id}
             requests.append((url, payload))
         return requests
 
-    async def set_my_commands(self, commands: dict[str, list[tuple[str, str]]]) -> None:
-        for url, payload in self.build_set_my_commands_requests(commands):
+    async def set_my_commands(
+        self, commands: dict[str, list[tuple[str, str]]], *, scope_chat_id: str | None = None
+    ) -> None:
+        for url, payload in self.build_set_my_commands_requests(commands, scope_chat_id=scope_chat_id):
             resp = await self._client.post(url, json=payload)
             resp.raise_for_status()
 
@@ -135,6 +174,30 @@ class TelegramChannel(Channel):
             payload["text"] = text
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
+
+    def build_set_message_reaction_request(
+        self, chat_id: str, message_id: str, emoji: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Exposed for testing: Bot API 7.0 `setMessageReaction` -- one
+        emoji reaction, replacing any previous reaction this bot set on
+        the message (SPEC-v1.8.md R-S2)."""
+        return f"{self._base_url}/setMessageReaction", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{"type": "emoji", "emoji": emoji}],
+        }
+
+    async def set_message_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        """SPEC-v1.8.md R-S2/AC-2: NEVER raises -- a reaction is purely
+        decorative (module `quicklog`'s own R-Q4 fail-open call), so a
+        transport error here is logged and swallowed, exactly like
+        `unpin`'s own best-effort posture above."""
+        url, payload = self.build_set_message_reaction_request(chat_id, message_id, emoji)
+        try:
+            resp = await self._client.post(url, json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.exception("setMessageReaction failed for %s/%s; continuing (fail-open)", chat_id, message_id)
 
     def build_pin_request(self, chat_id: str, message_id: str) -> tuple[str, dict[str, Any]]:
         """Exposed for testing: `pinChatMessage` -- no `disable_notification`
@@ -248,6 +311,14 @@ class TelegramChannel(Channel):
         name = sender.get("first_name")
         return name if name else None
 
+    @staticmethod
+    def _message_id_of(message: dict[str, Any]) -> str | None:
+        """SPEC-v1.8.md R-S4: `message.message_id` as a `str` (Telegram
+        sends it as a JSON int, same conversion-at-the-boundary rationale
+        as `_chat_id_of` above), or `None` if absent."""
+        message_id = message.get("message_id")
+        return str(message_id) if message_id is not None else None
+
     async def run(
         self,
         on_message: Callable[[str, str], Awaitable[None]],
@@ -306,8 +377,12 @@ class TelegramChannel(Channel):
                     continue
                 chat_id = self._chat_id_of(message)
                 display_name = self._display_name_of(message)
+                # SPEC-v1.8.md R-S4: the trailing, defaulted 4th arg -- see
+                # channels/base.py's module docstring for the full
+                # additive-signature rationale (mirrors display_name above).
+                message_id = self._message_id_of(message)
                 try:
-                    await on_message(chat_id, text, display_name)
+                    await on_message(chat_id, text, display_name, message_id)
                 except Exception:
                     logger.exception("on_message handler raised; continuing inbound loop")
 

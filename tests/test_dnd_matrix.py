@@ -200,7 +200,7 @@ class _JobRunningChannel(Channel):
     async def send_image(self, chat_id, image, caption):
         self.sent.append((chat_id, caption))
 
-    async def set_my_commands(self, commands):
+    async def set_my_commands(self, commands, *, scope_chat_id=None):
         pass
 
     def sent_to(self, chat_id):

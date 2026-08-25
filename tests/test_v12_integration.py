@@ -168,15 +168,19 @@ class _ScriptedChannel(Channel):
         self.set_my_commands_calls: list[dict] = []
         _ScriptedChannel.last_instance = self
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         self.actionable.append((chat_id, text, buttons))
         self.sent.append((chat_id, text))
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]
@@ -500,7 +504,7 @@ async def test_ac_o1_health_alert_reaches_only_the_owner_even_with_other_active_
         sent: list[tuple[str, str]] = []
 
         class _RecordingChannel(Channel):
-            async def send(self, chat_id, text):
+            async def send(self, chat_id, text, *, disable_notification: bool = False):
                 sent.append((chat_id, text))
 
             async def run(self, on_message, on_callback=None):
@@ -610,11 +614,16 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
         # command of its own, rides /checkin enablement).
         # SPEC-v1.7.md's own integration step added "addhabit"/"delhabit"
         # too (module `habitdef`, R-A2).
+        # SPEC-v1.8.md's own integration step added "log"/"routine" too
+        # (modules `quicklog`/`routines`, R-D2); the five true admin
+        # commands (now including "audit") are registered on a SEPARATE,
+        # owner-chat-scoped menu instead (R-D2) -- `set_my_commands_calls`
+        # here only ever captures the default/global registration.
         assert names == {
             "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
-            "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit",
+            "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit", "log", "routine",
         }
-        assert not names & {"approve", "block", "users", "invite"}
+        assert not names & {"approve", "block", "users", "invite", "audit"}
 
 
 # ===========================================================================
@@ -990,7 +999,7 @@ async def test_admin_kind_reaching_handle_inbound_message_directly_does_not_corr
     row_id = db.insert_log(LogEntry(None, OWNER, "2026-08-21T09:00:00", "water", 500.0, None, "500ml", "reply"))
 
     class _RaisingChannel(Channel):
-        async def send(self, chat_id, text) -> None:
+        async def send(self, chat_id, text, *, disable_notification: bool = False) -> None:
             raise AssertionError(f"channel.send must never be called for a safety-net no-op (got {text!r})")
 
         async def send_actionable(self, chat_id, text, buttons) -> None:
@@ -1204,7 +1213,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 10  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
+        assert db.schema_version == 11  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

@@ -29,7 +29,7 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append(text)
 
     async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:

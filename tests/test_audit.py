@@ -61,7 +61,12 @@ def test_actions_matches_the_spec_vocabulary_exactly():
     extend the vocabulary once more -- `/addhabit` records `habit_create`;
     `/delhabit` records `habit_archive` (soft-delete, has history) or
     `habit_delete` (hard-delete, no logs yet), per R-C2's smart-delete
-    split."""
+    split.
+
+    SPEC-v1.8.md R-S6 (shared surface, module `routines`' own dependency):
+    `routine_create`/`routine_delete`/`routine_run` extend the vocabulary
+    once more -- quick-log and backfill produce ordinary `logs` rows and
+    are deliberately NOT audited (R-S6's own explicit carve-out)."""
     assert set(audit.ACTIONS) == {
         "undo", "edit", "target_set", "target_clear", "remind_set", "remind_off",
         "remind_default", "lang_set", "quiet_set", "quiet_off",
@@ -69,6 +74,7 @@ def test_actions_matches_the_spec_vocabulary_exactly():
         "dashboard_set", "dashboard_off",
         "user_approve", "user_block", "user_pending",
         "habit_create", "habit_archive", "habit_delete",
+        "routine_create", "routine_delete", "routine_run",
     }
 
 
@@ -265,7 +271,7 @@ class _FakeChannel(Channel):
     async def send(self, chat_id, text):
         pass
 
-    async def set_my_commands(self, commands):
+    async def set_my_commands(self, commands, *, scope_chat_id=None):
         pass
 
     async def run(self, on_message, on_callback=None):

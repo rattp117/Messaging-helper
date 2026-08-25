@@ -288,6 +288,22 @@ CommandKind = Literal[
     # what's reserved.
     "addhabit",
     "delhabit",
+    # SPEC-v1.8.md §5/§6/§11 (shared surface): two bare Literal entries for
+    # the two parallel modules that build on this pass, same skeleton
+    # convention as the v1.6.0 four-kind block above -- `dispatch()` itself
+    # does not yet recognize either; each module adds only its own
+    # `_match_*` matcher function (see the `# module quicklog` / `# module
+    # routines` stub comments in SPEC-v1.8.md §5) + one `dispatch()`
+    # branch, disjoint from one another. "log" (module `quicklog`, R-Q1):
+    # `/log`/`บันทึก`'s own kind -- the quick-log inline keyboard has no
+    # further parsed fields (the keyboard itself is built from the
+    # registry, not from anything in the command's tail), so no new
+    # `Command` field is needed. "routine" (module `routines`, R-R1-R-R5):
+    # `/routine ...`'s own kind, covering create/list/run/delete -- module
+    # `routines`' own later edit adds whatever `Command` fields its parser
+    # needs.
+    "log",
+    "routine",
 ]
 
 
@@ -353,6 +369,22 @@ class Command:
     # since a habit slated for deletion may not even be in the live
     # registry (archived id).
     fields: dict[str, str] | None = None
+    # SPEC-v1.8.md §5/§6 (module `routines`, R-R1-R-R5): the parsed SHAPE
+    # of a "routine" command -- which operation (`routine_action`), the
+    # raw (stripped-but-NOT-yet-lowercased/length-checked) routine name
+    # token (`routine_name` -- full R-R1 normalization is `core/
+    # routines.py`'s own job, mirroring `_parse_addhabit_fields`'s own
+    # "stripped-but-verbatim, caller normalizes" convention for `id=`),
+    # and, for "create" only, the raw `[(habit_token, value_str), ...]`
+    # item list (`routine_items`). `routine_action`/`routine_name` are
+    # both `None` only for the bare "/routine" (list) form. `routine_items
+    # = None` for a "create"-shaped command means the tail after "=" had
+    # no comma/whitespace-SHAPED items at all -- `execute_routine` treats
+    # that as a usage reply, not a dispatch failure, same convention
+    # `fields=None` already establishes for "addhabit".
+    routine_action: Literal["create", "list", "run", "delete"] | None = None
+    routine_name: str | None = None
+    routine_items: list[tuple[str, str]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1473,6 +1505,198 @@ def _match_delhabit(stripped: str, registry: "HabitRegistry") -> "Command | None
 
 
 # ---------------------------------------------------------------------------
+# log -- SPEC-v1.8.md §4 R-Q1 (module `quicklog`). `/log`, Thai alias
+# `บันทึก` -- pops the quick-log inline keyboard (built by `core/quicklog.
+# build_keyboard`, this module's own job is only to recognize the trigger
+# SHAPE). No further parsed fields (SPEC-v1.8.md §5's own skeleton comment
+# on `CommandKind`'s "log" entry: "the keyboard itself is built from the
+# registry, not from anything in the command's tail") -- `Command(kind=
+# "log")` is the whole of it, mirroring `/help`'s/`/habits`' own bare-kind
+# shape (SPEC-v1.1.md R-D1) rather than any of the settings-style commands'
+# tail-parsing.
+#
+# CRITICAL false-positive hazard flagged by the coordinator: `บันทึก`
+# ("log"/"save"/"record") is a common Thai word that legitimately opens
+# ordinary diary-log prose -- e.g. "บันทึกไดอารี่ วันนี้เหนื่อย" ("[diary]
+# entry: today I'm tired") MUST still be classified as a diary log, NOT
+# this command. Unlike `เตือน`/`ภาษา`/`เงียบ`/`ย้อนหลัง`/`เช็คอิน`/
+# `แดชบอร์ด`/`ปฏิทิน`/`สถิติ`/`แนวโน้ม`/`เพิ่มนิสัย`/`ลบนิสัย` above --
+# every one of which was hardened via a REGISTRY-anchored habit-token
+# alternation or a value-shape whitelist for whatever tail follows the
+# trigger -- `/log`'s own grammar has no tail to anchor against at all
+# (R-Q1: bare command only). So the mitigation here is the strictest one
+# in this file: `_LOG_RE` matches ONLY the two EXACT, WHOLE stripped
+# messages "/log" and "บันทึก" -- zero tail tolerance, not even a single
+# trailing space's worth of extra text (unlike `/help`'s/`/habits`' own
+# already-conservative whole-message-only patterns, which at least don't
+# have this specific real-word collision risk to defend against). Any
+# continuation at all -- "บันทึกไดอารี่...", "บันทึก 500 น้ำ", "บันทึกด้วยนะ"
+# -- leaves characters unconsumed after the trigger, so the match fails
+# and falls through to the normal parser exactly like an ordinary diary
+# log always has (verified against an adversarial corpus in
+# tests/test_quicklog.py, mirroring `tests/test_commands.py`'s own
+# discipline for every other Thai alias above).
+# ---------------------------------------------------------------------------
+
+_LOG_RE = re.compile(r"^(?:/log|บันทึก)$", re.IGNORECASE)
+
+
+def _match_log(stripped: str) -> "Command | None":
+    if _LOG_RE.match(stripped) is not None:
+        return Command(kind="log")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# routine -- SPEC-v1.8.md §4 R-R1-R-R5 (module `routines`). `/routine <name>
+# = <habit> <val>[, ...]` (create), bare `/routine` (list), `/routine <name>`
+# (run), `/routine delete <name>` (delete) -- plus the Thai alias `กิจวัตร`
+# for create/run/delete (SPEC-v1.8.md §2.3's own "(Thai: กิจวัตร)"/"(Thai
+# tail: ลบ)" annotations; notably NOT annotated on the bare-list line, so
+# `กิจวัตร` alone carries no "list" meaning -- see below).
+#
+# The slash form stays fully permissive for delete/create/run (mirrors
+# every other settings-style slash command above -- an explicit "/" prefix
+# is a near-zero false-positive surface no normal sentence starts with),
+# INCLUDING a malformed create tail (`routine_items=None`, letting `core/
+# routines.py:execute_routine` reply with a usage message rather than this
+# shape-only layer silently swallowing it) -- same "recognized shape here,
+# semantic/validation there" split as `/addhabit`'s own `fields=None`
+# convention. `routine_name` here is raw/stripped, NOT yet lowercased or
+# length/charset-checked (R-R1's own `^[a-z0-9_]+$`/`<=32` normalization is
+# `execute_routine`'s job, mirroring `_parse_addhabit_fields`'s own
+# "caller normalizes `id=`" split) -- an invalid name still reaches
+# `execute_routine`, which replies with the friendly `routine_invalid_name`
+# error, never a silent non-match.
+#
+# The Thai alias `กิจวัตร` ("routine"/"daily practice") is, like `เพิ่มนิสัย`
+# before it, an ordinary Thai compound that could plausibly open real prose
+# ("กิจวัตรประจำวันของฉันคือ..." -- "my daily routine is..."). Unlike
+# `ลบนิสัย`/`เตือน`/etc., there is no existing registry to anchor a routine
+# NAME against (routine names are per-user, DB-only state this dispatch
+# layer -- which only ever sees a `HabitRegistry` -- has no access to).
+# Instead, this reuses R-R1's OWN id-shape constraint as the anchor: a
+# routine name is BY DEFINITION restricted to `^[a-z0-9_]+$` (ASCII lower/
+# digits/underscore), a character class ordinary Thai prose can never
+# produce a token in -- so `กิจวัตร` followed by whitespace then an
+# ASCII-id-shaped token (optionally followed by `=<items>` or a trailing
+# `ลบ`) structurally cannot occur inside a genuine Thai sentence, which
+# never actually contains such tokens (verified against the adversarial
+# corpus in tests/test_commands.py). This is at least as tight a
+# false-positive guard as the registry-anchoring strategy `_build_delhabit_
+# th_pattern`/`_build_remind_th_pattern` use elsewhere, just keyed on the
+# argument's OWN shape instead of a live habit list. A BARE "กิจวัตร" (the
+# whole message, nothing after it) does NOT match at all -- unlike
+# `เช็คอิน`/`แดชบอร์ด`'s own "bare word = show" convention, SPEC-v1.8.md
+# §2.3 never annotates the bare-list line with a Thai alias, so `กิจวัตร`
+# alone falls through to `None` (verified by the existing shared-surface
+# skeleton test `test_reserved_trigger_words_covers_every_real_command_
+# stem`, which already asserts the bare word dispatches to `None`).
+# ---------------------------------------------------------------------------
+
+_ROUTINE_SLASH_BARE_RE = re.compile(r"^/routine$", re.IGNORECASE)
+_ROUTINE_SLASH_DELETE_RE = re.compile(r"^/routine\s+delete\s+(?P<name>\S+)$", re.IGNORECASE)
+# TEST-v1.8-routines.md Finding 1 (Archi-directed follow-up fix): `items`
+# was `.+` (>=1 char), so a fully bare "/routine <name> = " -- nothing at
+# all after "=" once `dispatch()`'s own `text.strip()` has removed any
+# trailing whitespace -- failed to match this regex AT ALL, meaning
+# `commands.dispatch` returned `None` and the message silently fell through
+# to the general log/LLM path instead of reaching `execute_routine`'s
+# friendly `routine_create_usage` error. `.*` (>=0 chars) lets a truly
+# empty tail still dispatch, with `routine_items=None` (`_parse_routine_
+# items("")` already returns `None` for an all-empty items string, the
+# same "no non-empty segments" branch a single bare habit-token-with-no-
+# value tail already hits) -- `_create`'s existing `if command.routine_
+# items is None: return routine_create_usage` then fires exactly like the
+# "/routine morning = water" (habit token, no value) case already does.
+_ROUTINE_SLASH_CREATE_RE = re.compile(r"^/routine\s+(?P<name>\S+?)\s*=\s*(?P<items>.*)$", re.IGNORECASE)
+_ROUTINE_SLASH_RUN_RE = re.compile(r"^/routine\s+(?P<name>\S+)$", re.IGNORECASE)
+
+# The Thai alias's own name token is anchored to R-R1's id shape itself
+# (see the module comment above) -- not the live registry.
+_ROUTINE_TH_DELETE_RE = re.compile(r"^กิจวัตร\s+(?P<name>[a-z0-9_]+)\s*ลบ$", re.IGNORECASE)
+# Same `.+` -> `.*` fix as `_ROUTINE_SLASH_CREATE_RE` above, applied
+# symmetrically to the Thai alias for the identical reason (a bare
+# "กิจวัตร morning =" would otherwise silently fail to dispatch too).
+_ROUTINE_TH_CREATE_RE = re.compile(r"^กิจวัตร\s+(?P<name>[a-z0-9_]+?)\s*=\s*(?P<items>.*)$", re.IGNORECASE)
+_ROUTINE_TH_RUN_RE = re.compile(r"^กิจวัตร\s+(?P<name>[a-z0-9_]+)$", re.IGNORECASE)
+
+
+def _parse_routine_items(items_str: str) -> list[tuple[str, str]] | None:
+    """SPEC-v1.8.md §2.3's create grammar: comma-separated `"<habit>
+    <val>"` items after `"="` -- SHAPE-only parsing (mirrors
+    `_parse_addhabit_fields`'s own recognize-shape/validate-elsewhere
+    split): each non-empty comma-segment must split into at least two
+    whitespace-separated tokens (a habit token + a value tail, the value
+    tail kept verbatim -- it may itself contain a space, e.g. an amount +
+    unit like "20 min", mirroring `_parse_target_value`'s own tail
+    shape). Returns `None` if ANY non-empty segment has fewer than two
+    tokens, or there are no non-empty segments at all -- `core/
+    routines.py:execute_routine`'s caller replies with a usage message for
+    a `None` result, same convention `_parse_addhabit_fields`'s `None`
+    already establishes for a malformed "/addhabit" tail."""
+    items: list[tuple[str, str]] = []
+    for segment in items_str.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        tokens = segment.split(None, 1)
+        if len(tokens) < 2:
+            return None
+        items.append((tokens[0], tokens[1].strip()))
+    return items if items else None
+
+
+def _match_routine(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    """SPEC-v1.8.md §5: `registry` is accepted only to match every other
+    `_match_*` function's own calling convention (`dispatch()` threads the
+    same `registry` positionally to all of them) -- unused here, since
+    routine names/items are per-user DB state this dispatch layer has no
+    access to (see the module comment above for why the Thai alias is
+    anchored on the name's own id SHAPE instead of a registry lookup)."""
+    del registry
+
+    if _ROUTINE_SLASH_BARE_RE.match(stripped):
+        return Command(kind="routine", routine_action="list")
+
+    match = _ROUTINE_SLASH_DELETE_RE.match(stripped)
+    if match is not None:
+        return Command(kind="routine", routine_action="delete", routine_name=match.group("name").strip())
+
+    match = _ROUTINE_SLASH_CREATE_RE.match(stripped)
+    if match is not None:
+        return Command(
+            kind="routine",
+            routine_action="create",
+            routine_name=match.group("name").strip(),
+            routine_items=_parse_routine_items(match.group("items")),
+        )
+
+    match = _ROUTINE_SLASH_RUN_RE.match(stripped)
+    if match is not None:
+        return Command(kind="routine", routine_action="run", routine_name=match.group("name").strip())
+
+    match = _ROUTINE_TH_DELETE_RE.match(stripped)
+    if match is not None:
+        return Command(kind="routine", routine_action="delete", routine_name=match.group("name"))
+
+    match = _ROUTINE_TH_CREATE_RE.match(stripped)
+    if match is not None:
+        return Command(
+            kind="routine",
+            routine_action="create",
+            routine_name=match.group("name"),
+            routine_items=_parse_routine_items(match.group("items")),
+        )
+
+    match = _ROUTINE_TH_RUN_RE.match(stripped)
+    if match is not None:
+        return Command(kind="routine", routine_action="run", routine_name=match.group("name"))
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
 # interrogative markers only: none of these substrings/endings can occur in
 # a normal habit log (verified against the full adversarial corpus in
@@ -1699,6 +1923,24 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     if delhabit_command is not None:
         return delhabit_command
 
+    # SPEC-v1.8.md §4 R-Q1 (module `quicklog`): `/log`/`บันทึก` -- disjoint
+    # trigger text from every pattern above/below (see `_match_log`'s own
+    # comment block for the `บันทึก`-vs-diary-prose false-positive
+    # analysis), grouped here with `/addhabit`'s/`/delhabit`'s own
+    # definition/action-style commands for readability (exact placement
+    # doesn't change behavior).
+    log_command = _match_log(stripped)
+    if log_command is not None:
+        return log_command
+
+    # SPEC-v1.8.md §4 R-R1-R-R5 (module `routines`): `/routine`/`กิจวัตร` --
+    # disjoint trigger text from every pattern above/below, grouped here
+    # with `/addhabit`'s/`/delhabit`'s own definition-style commands for
+    # readability (exact placement doesn't change behavior).
+    routine_command = _match_routine(stripped, registry)
+    if routine_command is not None:
+        return routine_command
+
     if _match_help(stripped):
         return Command(kind="help")
 
@@ -1835,5 +2077,20 @@ def reserved_trigger_words() -> frozenset[str]:
             "delhabit",
             "เพิ่มนิสัย",
             "ลบนิสัย",
+            # SPEC-v1.8.md R-S5 (shared surface): "log"/"routine" reserved
+            # ahead of the two parallel modules that will actually add
+            # `_match_log`/`_match_routine` (module `quicklog`/`routines`) --
+            # same "skeleton reserves the word before the matcher exists"
+            # posture as the `CommandKind` skeleton entries just above in
+            # this file. These are the exact literals SPEC-v1.8.md §2.1/§2.3
+            # documents as the trigger words those two future matchers will
+            # anchor on ("/log"/"บันทึก", "/routine"/"กิจวัตร") -- so a custom
+            # habit named after any of them is rejected by `habitdef` today
+            # (AC-8), and the reservation needs no edit once the matchers
+            # themselves land.
+            "log",
+            "บันทึก",
+            "routine",
+            "กิจวัตร",
         }
     )

@@ -43,7 +43,7 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
@@ -498,13 +498,13 @@ class _FakeTelegramChannel:
     def __init__(self, *args, **kwargs):
         pass
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         pass
 
     async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         pass
 
-    async def set_my_commands(self, commands) -> None:
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
         pass
 
     async def run(self, on_message, on_callback=None):

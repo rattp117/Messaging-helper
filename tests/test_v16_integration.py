@@ -86,7 +86,7 @@ class _CapturingChannel(Channel):
         self._next_msg_id = 5000
         self.edit_should_fail_once_for: set[str] = set()
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append(text)
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
@@ -348,7 +348,7 @@ class _ScriptedChannel(Channel):
         self.edit_should_fail_once_for: set[str] = set()
         _ScriptedChannel.last_instance = self
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
@@ -376,8 +376,12 @@ class _ScriptedChannel(Channel):
         if self.pinned.get(chat_id) == message_id:
             del self.pinned[chat_id]
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]
@@ -548,6 +552,18 @@ async def test_weekly_review_includes_a_trends_section_through_the_real_job(tmp_
 
 
 async def test_nudge_fires_through_the_real_tick_for_an_enabled_almost_there_user(tmp_path, monkeypatch):
+    """The nudge clock below must name the SAME calendar day `_run` actually
+    logs "2100ml" on -- `_run` inserts through the real `handle_inbound_
+    message` default `clock=datetime.now`, i.e. whatever day this test
+    happens to run on, not a fixed one. Pinning the nudge clock to a fixed
+    past date (as originally written, 2026-08-24) silently rots the moment
+    a test run crosses midnight past that date -- the log lands "today"
+    (real) while the nudge tick looks for "today" on its own frozen
+    yesterday, finds nothing, and never fires. Found stale exactly this way
+    during SPEC-v1.8.md's shared-surface pass (unrelated to that work);
+    `datetime.now()` here is captured once, at collection-adjacent runtime,
+    so the nudge tick's own "today" always matches `_run`'s real insert
+    day."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     script = [("message", OWNER, "/checkin on", None), ("message", OWNER, "2100ml", None)]  # 2100/2500 = 84%
     channel = await _run(monkeypatch, config, script)
@@ -555,8 +571,10 @@ async def test_nudge_fires_through_the_real_tick_for_an_enabled_almost_there_use
 
     db = Database(tmp_path / "habits.db")
     registry = HabitRegistry.from_config(config)
+    today = datetime.now()
+    nudge_clock = lambda: today.replace(hour=20, minute=0, second=0, microsecond=0)  # noqa: E731
     try:
-        await nudge.run_due_nudges(channel, config, registry, db, clock=lambda: datetime(2026, 8, 24, 20, 0, 0))
+        await nudge.run_due_nudges(channel, config, registry, db, clock=nudge_clock)
     finally:
         db.close()
 
@@ -1058,6 +1076,12 @@ async def test_trends_block_present_and_after_garmin_when_garmin_configured(tmp_
 
 
 async def test_nudge_and_20_00_checkin_both_fire_independently_without_interference(tmp_path, monkeypatch):
+    """`fixed_20` below must name the SAME calendar day `_run` actually logs
+    "2100ml" on -- see `test_nudge_fires_through_the_real_tick_for_an_
+    enabled_almost_there_user`'s own docstring (same file) for the full
+    root-cause note on why a hardcoded past date rots the moment a test
+    run crosses midnight past it; found stale exactly this way during
+    SPEC-v1.8.md's shared-surface pass (unrelated to that work)."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     script = [("message", OWNER, "/checkin on", None), ("message", OWNER, "2100ml", None)]  # 2100/2500 = 84% -- "close"
     channel = await _run(monkeypatch, config, script)
@@ -1065,7 +1089,8 @@ async def test_nudge_and_20_00_checkin_both_fire_independently_without_interfere
 
     db = Database(tmp_path / "habits.db")
     registry = HabitRegistry.from_config(config)
-    fixed_20 = lambda: datetime(2026, 8, 24, 20, 0, 0)  # noqa: E731
+    today = datetime.now()
+    fixed_20 = lambda: today.replace(hour=20, minute=0, second=0, microsecond=0)  # noqa: E731
     try:
         # Both real tick functions, fired at the exact same real minute
         # (20:00) -- the default check-in window (08:00-20:00) AND the
@@ -1087,12 +1112,16 @@ async def test_nudge_and_20_00_checkin_both_fire_independently_without_interfere
 # ---------------------------------------------------------------------------
 
 
-async def test_menu_has_exactly_16_public_commands_both_languages(tmp_path, monkeypatch):
-    # RENAMED (Archi-approved housekeeping, TEST-v1.7-integration.md release
-    # gate pass) at SPEC-v1.7.md's own integration step (IMPL-v1.7-
-    # integration.md): `addhabit`/`delhabit` joined the public menu too
-    # (16 total) -- the test name now matches its own updated body/count
-    # instead of documenting the stale "as of v1.6" figure.
+async def test_menu_has_exactly_18_public_commands_both_languages(tmp_path, monkeypatch):
+    # RENAMED again (Archi-directed, SPEC-v1.8.md integration pass): `/log`/
+    # `/routine` joined the public menu too (16 -> 18 total) -- the test
+    # name now matches its own updated body/count instead of documenting
+    # the stale "as of v1.7" figure. `channel.set_my_commands_calls` only
+    # ever records the DEFAULT (global, `scope_chat_id=None`) registration
+    # (see this file's own fake, above) -- the owner-scoped second menu
+    # (AC-D2) additionally listing the five admin commands is a SEPARATE
+    # call this list never captures, so the admin-hidden assertion below
+    # still holds unchanged for the public menu.
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     channel = await _run(monkeypatch, config, script=[])
 
@@ -1100,9 +1129,10 @@ async def test_menu_has_exactly_16_public_commands_both_languages(tmp_path, monk
     assert set(registered.keys()) == {"en", "th"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 16, f"{lang} menu has {len(names)} commands: {names}"
-        assert len(set(names)) == 16  # no duplicates
+        assert len(names) == 18, f"{lang} menu has {len(names)} commands: {names}"
+        assert len(set(names)) == 18  # no duplicates
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})  # admin-hidden, unchanged
+        assert {"log", "routine"} <= set(names)  # SPEC-v1.8.md R-D2: the two new v1.8 public commands
 
 
 async def test_help_text_lists_the_four_new_v16_commands_bilingually(tmp_path, monkeypatch):
@@ -1233,7 +1263,7 @@ async def test_migration_009_rehearsal_on_a_v1_5_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 10
+        assert db.schema_version == 11
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert "dashboard_msg_id" in cols
         tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

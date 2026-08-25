@@ -1032,6 +1032,20 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "habit deleted",
         "th": "ลบนิสัย",
     },
+    # SPEC-v1.8.md R-S6 (shared surface, module `routines`' own dependency,
+    # core/audit.py:ACTIONS' three new values).
+    "audit_action_routine_create": {
+        "en": "routine created",
+        "th": "สร้างกิจวัตร",
+    },
+    "audit_action_routine_delete": {
+        "en": "routine deleted",
+        "th": "ลบกิจวัตร",
+    },
+    "audit_action_routine_run": {
+        "en": "routine run",
+        "th": "รันกิจวัตร",
+    },
 
     # -----------------------------------------------------------------
     # Module `history` (/history, ย้อนหลัง -- SPEC-v1.4.md R-R1-R-R5,
@@ -1553,4 +1567,159 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": '🗑️ Removed "{id}".',
         "th": '🗑️ ลบ "{id}" แล้ว',
     },
+
+    # ===================================================================
+    # SPEC-v1.8.md "One-tap quick-log keyboard + reactions, routines,
+    # backfill, gentle riders" -- shared-surface key-block skeletons (§11:
+    # "the i18n key-block skeletons are created in the shared surface
+    # first; each module then fills only its own disjoint keys", same
+    # convention as SPEC-v1.7.md's own skeleton markers above). No key is
+    # added under any of the four markers below yet, only the section
+    # marker + the reserved key-name prefix each module must use, so a
+    # later module edit here can never collide with another parallel
+    # module's own addition. Module `riders` (silent sends/owner-scoped
+    # menus/the `/audit` language fix) owns no new user-facing copy at all
+    # -- no marker needed for it.
+    #
+    # Module `quicklog` (R-Q1-R-Q6): the /log inline keyboard (button
+    # labels, the "nothing to quick-log yet" hint) and reaction path (which
+    # has no user-facing copy of its own -- `core/reactions.py` never calls
+    # `i18n.t`). Keys must use a `quicklog_*` prefix.
+    "quicklog_prompt": {
+        "en": "👇 Tap to log:",
+        "th": "👇 แตะเพื่อบันทึก:",
+    },
+    "quicklog_empty": {
+        "en": "🤔 Nothing to quick-log yet — add a habit with /addhabit first.",
+        "th": "🤔 ยังไม่มีอะไรให้บันทึกด่วนนะ ลองเพิ่มนิสัยด้วย /addhabit ก่อน",
+    },
+    "quicklog_done_button": {
+        "en": "done ✓",
+        "th": "เสร็จแล้ว ✓",
+    },
+    "quicklog_unknown_habit": {
+        "en": "🤷 That's not one of your habits.",
+        "th": "🤷 นี่ไม่ใช่นิสัยของคุณนะ",
+    },
+    #
+    # Module `routines` (R-R1-R-R6): /routine create/list/run/delete
+    # confirmations + validation errors (§3.3's own sample copy). Keys must
+    # use a `routine_*` prefix -- disjoint from `audit_action_routine_*`
+    # above (a different key-name region entirely).
+    "routine_create_usage": {
+        "en": "🤔 To create a routine: /routine <name> = <habit> <value>[, <habit> <value> ...]\n"
+        "Example: /routine morning = water 500, stretch 10",
+        "th": "🤔 สร้างกิจวัตรแบบนี้: /routine <ชื่อ> = <นิสัย> <ค่า>[, <นิสัย> <ค่า> ...]\n"
+        "ตัวอย่าง: /routine morning = water 500, stretch 10",
+    },
+    "routine_invalid_name": {
+        "en": "🤔 Couldn't save that: routine names can only use lowercase letters, numbers, and _ (up to 32 characters).",
+        "th": "🤔 บันทึกไม่ได้: ชื่อกิจวัตรใช้ได้เฉพาะตัวพิมพ์เล็ก ตัวเลข และ _ (ไม่เกิน 32 ตัวอักษร)",
+    },
+    "routine_name_taken": {
+        "en": '🤔 You already have a routine named "{name}". Delete it first with /routine delete {name}.',
+        "th": '🤔 คุณมีกิจวัตรชื่อ "{name}" อยู่แล้ว ลบก่อนด้วย /routine delete {name}',
+    },
+    "routine_cap_reached": {
+        "en": "🤔 You've reached your limit of {cap} routines. Delete one with /routine delete <name> to make room.",
+        "th": "🤔 คุณสร้างกิจวัตรครบ {cap} รายการแล้ว ลบสักรายการด้วย /routine delete <ชื่อ> เพื่อเพิ่มที่ว่าง",
+    },
+    "routine_invalid_habit": {
+        "en": '🤔 Couldn\'t save that: "{token}" isn\'t one of your habits. Use /habits to see them.',
+        "th": '🤔 บันทึกไม่ได้: "{token}" ไม่ใช่นิสัยของคุณ ดูรายการได้ที่ /habits',
+    },
+    "routine_invalid_value": {
+        "en": '🤔 Couldn\'t save that: couldn\'t understand the value for "{habit}" ("{value}").',
+        "th": '🤔 บันทึกไม่ได้: เข้าใจค่าของ "{habit}" ไม่ได้ ("{value}")',
+    },
+    "routine_save_failed": {
+        "en": "😥 Couldn't save that right now. Try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "routine_create_success": {
+        "en": '✅ Saved routine "{name}": {items}. Run it with /routine {name}.',
+        "th": '✅ บันทึกกิจวัตร "{name}" แล้ว: {items} รันได้ด้วย /routine {name}',
+    },
+    "routine_list_empty": {
+        "en": "You don't have any routines yet. Create one: /routine <name> = <habit> <value>[, ...]",
+        "th": "คุณยังไม่มีกิจวัตร สร้างได้ด้วย /routine <ชื่อ> = <นิสัย> <ค่า>[, ...]",
+    },
+    "routine_list_header": {
+        "en": "📋 Your routines:",
+        "th": "📋 กิจวัตรของคุณ:",
+    },
+    "routine_list_item": {
+        "en": '• "{name}": {items}',
+        "th": '• "{name}": {items}',
+    },
+    "routine_run_button_label": {
+        "en": "▶️ {name}",
+        "th": "▶️ {name}",
+    },
+    "routine_list_more": {
+        "en": "…and {count} more routine(s). Use /routine <name> to run one.",
+        "th": "…และอีก {count} กิจวัตร ใช้ /routine <ชื่อ> เพื่อรัน",
+    },
+    "routine_run_usage": {
+        "en": "🤔 Usage: /routine <name>",
+        "th": "🤔 วิธีใช้: /routine <ชื่อ>",
+    },
+    "routine_run_not_found": {
+        "en": '🤔 No routine named "{name}". Use /routine to see yours.',
+        "th": '🤔 ไม่พบกิจวัตรชื่อ "{name}" ดูรายการได้ที่ /routine',
+    },
+    "routine_run_summary_full": {
+        "en": "▶️ {name} — logged {items} ({count} of {total}).",
+        "th": "▶️ {name} — บันทึกแล้ว {items} ({count} จาก {total})",
+    },
+    "routine_run_summary_partial": {
+        "en": "▶️ {name} — logged {items} ({count} of {total}). Skipped: {skipped}.",
+        "th": "▶️ {name} — บันทึกแล้ว {items} ({count} จาก {total}) ข้าม: {skipped}",
+    },
+    "routine_run_nothing": {
+        "en": "▶️ {name} — nothing to log.",
+        "th": "▶️ {name} — ไม่มีอะไรให้บันทึก",
+    },
+    "routine_run_nothing_skipped": {
+        "en": "▶️ {name} — nothing to log. Skipped: {skipped}.",
+        "th": "▶️ {name} — ไม่มีอะไรให้บันทึก ข้าม: {skipped}",
+    },
+    "routine_skip_removed": {
+        "en": "{habit} (removed)",
+        "th": "{habit} (ถูกลบแล้ว)",
+    },
+    "routine_skip_text": {
+        "en": "{habit} (can't auto-log text)",
+        "th": "{habit} (บันทึกข้อความอัตโนมัติไม่ได้)",
+    },
+    "routine_delete_usage": {
+        "en": "🤔 Usage: /routine delete <name>",
+        "th": "🤔 วิธีใช้: /routine delete <ชื่อ>",
+    },
+    "routine_delete_not_found": {
+        "en": '🤔 No routine named "{name}" to delete.',
+        "th": '🤔 ไม่พบกิจวัตรชื่อ "{name}" ให้ลบ',
+    },
+    "routine_delete_success": {
+        "en": '🗑️ Deleted routine "{name}".',
+        "th": '🗑️ ลบกิจวัตร "{name}" แล้ว',
+    },
+    #
+    # Module `backfill` (R-B1-R-B6): the backdated-log confirmation prefix
+    # and the future/too-old bounds errors (§3.4). Keys must use a
+    # `backfill_*` prefix.
+    # -----------------------------------------------------------------
+    "backfill_confirmation_prefix": {
+        "en": "📅 Logged for {day} — ",
+        "th": "📅 บันทึกสำหรับ {day} — ",
+    },
+    "backfill_error_future": {
+        "en": "🤔 That date is in the future — I can only backfill up to {max_days} day(s) back.",
+        "th": "🤔 วันที่นั้นเป็นอนาคตนะ ย้อนหลังบันทึกได้สูงสุด {max_days} วันเท่านั้น",
+    },
+    "backfill_error_too_old": {
+        "en": "🤔 That's too far back — I can only backfill up to {max_days} day(s).",
+        "th": "🤔 ย้อนหลังไปไกลเกินไปนะ บันทึกย้อนหลังได้สูงสุด {max_days} วัน",
+    },
+    # ===================================================================
 }

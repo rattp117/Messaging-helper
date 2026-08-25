@@ -14,7 +14,7 @@ import logging
 import random
 import sys
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -30,6 +30,7 @@ from habit_assistant.core import (
     announce,
     audit,
     audit_view,
+    backfill,
     checkins,
     commands,
     dashboard,
@@ -42,7 +43,10 @@ from habit_assistant.core import (
     preferences,
     preparse,
     query,
+    quicklog,
+    reactions,
     records,
+    routines,
     schedules,
     streaks,
     target_nl,
@@ -50,6 +54,7 @@ from habit_assistant.core import (
     targets_command,
     trends,
     undo_ui,
+    user_prefs,
 )
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
@@ -208,6 +213,45 @@ DELHABIT_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "Remove a habit you created",
     "th": "ลบนิสัยที่คุณสร้างไว้",
 }
+# SPEC-v1.8.md §6/§11 integration step (modules `quicklog`/`routines`):
+# `/log` and `/routine` join the public menu -- same rationale as every
+# other genuinely user-facing command above (16 -> 18 public commands).
+LOG_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Tap to log a habit instantly",
+    "th": "แตะเพื่อบันทึกกิจกรรมทันที",
+}
+ROUTINE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Create or run a bundle of habits at once",
+    "th": "สร้างหรือรันชุดกิจกรรมพร้อมกัน",
+}
+# SPEC-v1.8.md R-D2 (module `riders`, integration step): the five true
+# admin commands -- previously deliberately excluded from the (global)
+# public menu, per START_/etc. COMMAND_DESCRIPTIONS' own comment above
+# ("a needless information leak ... to every ordinary member") -- now get
+# their own descriptions here so they can be registered on a SECOND,
+# owner-chat-SCOPED menu (`set_my_commands(..., scope_chat_id=owner_
+# chat_id)`, R-S3), visible only in the owner's own chat, never leaked to
+# the global menu every user sees.
+INVITE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Invite someone to use this bot",
+    "th": "เชิญคนอื่นมาใช้บอทนี้",
+}
+APPROVE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Approve a pending user",
+    "th": "อนุมัติผู้ใช้ที่รอการอนุมัติ",
+}
+BLOCK_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Block a user",
+    "th": "บล็อกผู้ใช้",
+}
+USERS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "List all users and their status",
+    "th": "ดูรายชื่อผู้ใช้ทั้งหมดและสถานะ",
+}
+AUDIT_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "View the audit log of account changes",
+    "th": "ดูประวัติการเปลี่ยนแปลงบัญชี",
+}
 
 
 def ordinal(n: int) -> str:
@@ -236,20 +280,18 @@ def setup_logging(level: str) -> None:
 
 
 def _stored_language_pref(db: Database, user_id: str) -> str:
-    """SPEC-v1.2.md R-P1's read side (integration step, punch-list item 3):
-    `user_id`'s stored `users.language_pref`, defaulting to `"auto"` on a
-    missing row or a DB read error -- fail-open, mirrors `core/access.py:
-    _resolve_unprompted_language_for`'s and `core/reminders.py:
-    _user_language_pref`'s identical posture (each file keeps its own
-    small copy, this codebase's established convention -- see e.g.
-    `_seed` duplicated per test file). A preference lookup must never
-    crash or block ordinary message handling."""
-    try:
-        row = db.get_user(user_id)
-    except Exception:
-        logger.exception("Failed to read language preference for user %r; defaulting to auto", user_id)
-        return "auto"
-    return row["language_pref"] if row is not None else "auto"
+    """SPEC-v1.8.md integration step: thin alias for the shared
+    `core/user_prefs.stored_language_pref` -- see that module's own
+    docstring. Was previously the FIRST of what TEST-v1.8-quicklog.md's
+    round-2 re-verification flagged as a growing risk: this exact lookup
+    independently duplicated across `main.py` (here), `core/access.py:
+    _resolve_unprompted_language_for`, `core/reminders.py:
+    _user_language_pref`, and `core/quicklog.py:_stored_language_pref`.
+    Kept as a same-named wrapper (rather than rewriting every call site to
+    `user_prefs.stored_language_pref` directly) purely so this file's own
+    docstrings citing `_stored_language_pref` by name stay accurate --
+    behavior is unchanged."""
+    return user_prefs.stored_language_pref(db, user_id)
 
 
 async def _execute_undo(
@@ -556,6 +598,30 @@ async def _send_recovered_generic(
         await channel.send_actionable(chat_id, i18n.t("recovered_text", lang, label=habit.label(lang)), buttons)
 
 
+async def _react_to_typed_log(
+    channel: Channel, config: Config, chat_id: str, inbound_message_id: str | None, habit: Habit
+) -> None:
+    """SPEC-v1.8.md R-Q4/R-Q5 (integration step, module `quicklog`): fires
+    `reactions.react` right after a successful TYPED inbound-message log
+    confirmation -- and ONLY then (R-Q5's own exclusion list: never for a
+    quick-log button tap, undo, a command reply, a clarifying question, or
+    a deferred/unparsed ack -- none of those call sites call this helper
+    at all, so the exclusion holds structurally, not by a runtime check
+    here). Gated on `inbound_message_id is not None` (a callback-query
+    update carries no reactable message -- `None` here, by construction,
+    for every call site other than `handle_inbound_message`'s own four
+    successful-log branches) and `[reactions] enabled`. `reactions.react`
+    is itself fail-open (never raises, R-Q4) -- this wrapper only adds the
+    two integration-level gates R-Q4 requires before calling it; a
+    backfilled log reaches this too (R-Q4's own wording is unconditional
+    on "a successful typed log", and a backfill's confirmation is still
+    the normal per-habit one, just prefixed -- SPEC-v1.8.md draws no
+    distinction here)."""
+    if inbound_message_id is None or not config.reactions.enabled:
+        return
+    await reactions.react(channel, chat_id, inbound_message_id, habit)
+
+
 async def handle_inbound_message(
     text: str,
     *,
@@ -572,6 +638,7 @@ async def handle_inbound_message(
     scheduler: AsyncIOScheduler | None = None,
     reminder_state: ReminderState | None = None,
     provider: RegistryProvider | None = None,
+    inbound_message_id: str | None = None,
 ) -> None:
     """Command dispatch -> (act + confirm) OR Parse -> validate -> (write
     row + confirm) OR (clarifying question). Confirmation formats are
@@ -720,7 +787,17 @@ async def handle_inbound_message(
     which is what makes "no restart" true in production; a caller that
     omits it (every pre-v1.7 test, `--dry-run`) gets a fresh one-off
     `RegistryProvider` built on the spot -- correct for a single call,
-    just without the cross-call persistence."""
+    just without the cross-call persistence.
+
+    SPEC-v1.8.md R-S4 (shared surface, plumbing only): `inbound_message_id`
+    (new, optional, default `None`) is the `str` `message_id` of the
+    inbound message being handled, threaded here from `main.py:on_message`
+    (which got it from `TelegramChannel.run`, itself optional/defaulted --
+    see `channels/base.py`'s module docstring). This shared-surface pass
+    only threads the value through this function's signature; it is not
+    yet read anywhere in the body below -- module `quicklog`'s own
+    integration step (R-Q4) is what fires `reactions.react` using it,
+    after a successful typed-log confirmation."""
     registry = registry or HabitRegistry.from_config(config)
     # SPEC-v1.2.md R-P1 call site #1 of 5 (integration step): the acting
     # user's own stored /lang preference now participates in "auto"
@@ -871,6 +948,58 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "log":
+            # SPEC-v1.8.md §11 integration step (module `quicklog`, R-Q1):
+            # deterministic, LLM-free -- same "before the deferral check"
+            # placement as `records`/`trends` above. Needs a real channel
+            # to send the keyboard/hint (mirrors `heatmap`'s own
+            # dry-run-declines posture just below/above).
+            if dry_run:
+                print({"kind": "log", "note": "requires a real channel; not supported in --dry-run"})
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            buttons = quicklog.build_keyboard(registry, config, db, lang, user_id)
+            if buttons:
+                await channel.send_actionable(user_id, quicklog.keyboard_prompt_text(lang), buttons)
+            else:
+                await channel.send(user_id, quicklog.empty_keyboard_hint(lang))
+            return
+        if command.kind == "routine":
+            # SPEC-v1.8.md §11 integration step (module `routines`, R-R1-
+            # R-R4): deterministic, LLM-free. `execute_routine` itself
+            # needs a real `channel` (list/run send their own messages) --
+            # declined in `--dry-run`, same posture as `heatmap`/`log`.
+            if dry_run:
+                print(
+                    {
+                        "kind": "routine",
+                        "routine_action": command.routine_action,
+                        "routine_name": command.routine_name,
+                        "note": "requires a real channel; not supported in --dry-run",
+                    }
+                )
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            # SPEC-v1.7.md R-G3's own established fallback convention
+            # (mirrors the `addhabit`/`delhabit` branch above): a caller
+            # without a process-global `provider` (e.g. a bare
+            # `handle_inbound_message` test call) gets a fresh one-off
+            # instance -- correct for a single call, just without
+            # cross-call cache persistence.
+            active_provider = provider if provider is not None else RegistryProvider(config, db)
+            reply = await routines.execute_routine(
+                command,
+                db=db,
+                channel=channel,
+                config=config,
+                provider=active_provider,
+                lang=lang,
+                user_id=user_id,
+                clock=clock,
+            )
+            if reply is not None:
+                await channel.send(user_id, reply)
+            return
         if command.kind == "query":
             # ROADMAP.md v0.8.0: read-only (AC8.5) -- never touches health_monitor
             # deferral or the extractor below; classify_query_intent fails closed
@@ -965,7 +1094,35 @@ async def handle_inbound_message(
     # converge on the same `result` variable feeding the exact same
     # downstream confirmation code -- this is what guarantees AC-14's
     # byte-identical confirmation between the two paths.
-    preparsed = preparse.deterministic_parse(text, registry)
+    # SPEC-v1.8.md R-B1/R-B2 (integration step, module `backfill`): a
+    # leading/trailing recognized date phrase is stripped from the raw
+    # text BEFORE preparse -- the RESIDUAL (`parse_text`) is what actually
+    # gets parsed for habit+value below, so "500ml yesterday" backdates to
+    # yesterday from residual "500ml" (still hits the zero-LLM preparse
+    # skip just below when the residual itself is a bare NUMBER+UNIT).
+    # `backfill_date` stays `None` -- and `parse_text` stays the ORIGINAL
+    # `text` -- whenever no phrase was recognized OR it resolved to exactly
+    # today (R-B5's own "falls through unchanged" case), so every branch
+    # below behaves byte-identically to v1.7 whenever backfill isn't
+    # actually invoked (AC-9/AC-C5). A phrase resolving OUTSIDE
+    # `[today - max_days_back, today)` is rejected immediately with a
+    # friendly bilingual error and NO write, deterministically -- before
+    # the Ollama up/down check below, since bounds-checking a date phrase
+    # never needs the LLM (R-B5/AC-C4).
+    backfill_result = backfill.extract_date(text, clock, max_days_back=config.backfill.max_days_back)
+    parse_text = text
+    backfill_date: date | None = None
+    if isinstance(backfill_result, backfill.OutOfRange):
+        if dry_run:
+            print({"kind": "backfill_out_of_range", "reason": backfill_result.reason})
+            return
+        assert channel is not None, "channel is required outside dry-run"
+        await channel.send(user_id, backfill.bounds_error_text(backfill_result, lang, config.backfill.max_days_back))
+        return
+    if backfill_result is not None:
+        parse_text, backfill_date = backfill_result
+
+    preparsed = preparse.deterministic_parse(parse_text, registry)
     if preparsed is not None:
         result = preparsed
     else:
@@ -990,7 +1147,12 @@ async def handle_inbound_message(
         # `None` result here (gate miss, low confidence, or any classifier
         # failure) falls straight through to the normal log-parsing path,
         # unchanged (R-C5).
-        if health_monitor is None or health_monitor.ollama_up:
+        # SPEC-v1.8.md R-B2's own "run through preparse -> LLM" phrasing
+        # (not the target-intent step): a backfill never reaches the
+        # full-NL target-intent gate at all -- "500ml yesterday" residual
+        # "500ml" logging a habit, not silently becoming a `/target` set,
+        # is the whole point of R-B2's own two-step composition.
+        if backfill_date is None and (health_monitor is None or health_monitor.ollama_up):
             if target_nl.looks_like_target_phrasing(text):
                 intent = await target_nl.classify_target_intent(text, llm, registry, config)
                 if intent is not None:
@@ -1020,7 +1182,35 @@ async def handle_inbound_message(
                     await dashboard.refresh(db, channel, config, registry, user_id, clock)
                     return  # AC29/AC30: no `logs` row is written for a target-intent hit
 
-        result = await parse_message(text, llm, registry, config.ollama.confidence_threshold)
+        result = await parse_message(parse_text, llm, registry, config.ollama.confidence_threshold)
+
+        # SPEC-v1.8.md §2.4/R-B5 (integration step): "the LLM extraction
+        # path may additionally return an optional integer date_offset
+        # ..., honored only when present and within bounds" -- only
+        # reachable here (the LLM branch), and only when the deterministic
+        # pass above did NOT already resolve a date (`backfill_date is
+        # None`): the deterministic parse wins whenever both are present,
+        # per R-B1's own "deterministic, EN+TH" primacy. Subject to the
+        # exact same bounds as a deterministic phrase (`resolve_days_back`
+        # shares `_bound` with `extract_date`) -- an out-of-range offset
+        # is rejected with the SAME friendly bilingual error, no write;
+        # `None`/0 (today, or the field was absent/malformed) leaves
+        # `backfill_date` untouched, i.e. the normal path (AC-9).
+        if backfill_date is None and result.date_offset is not None:
+            offset_result = backfill.resolve_days_back(
+                clock, result.date_offset, max_days_back=config.backfill.max_days_back
+            )
+            if isinstance(offset_result, backfill.OutOfRange):
+                if dry_run:
+                    print({"kind": "backfill_out_of_range", "reason": offset_result.reason})
+                    return
+                assert channel is not None, "channel is required outside dry-run"
+                await channel.send(
+                    user_id, backfill.bounds_error_text(offset_result, lang, config.backfill.max_days_back)
+                )
+                return
+            if offset_result is not None:
+                backfill_date = offset_result
 
     if dry_run:
         print(asdict(result))
@@ -1029,7 +1219,15 @@ async def handle_inbound_message(
     assert channel is not None, "channel is required outside dry-run"
 
     now = clock()
-    ts = now.isoformat(timespec="seconds")
+    # SPEC-v1.8.md R-B2/R-B4 (integration step): a backfilled row's `ts`
+    # is the resolved date at local noon (`backfill.backdated_ts`), NOT
+    # `now` -- but `today_str` (used below for "today's totals" in every
+    # confirmation branch, and for the milestone/streak checks) stays the
+    # REAL today throughout, so a backfilled log's confirmation shows
+    # today's totals UNCHANGED (SPEC-v1.8.md §3.4's own worked example:
+    # "today's totals unchanged") -- the backdated row simply doesn't
+    # match `today_str`'s own date prefix in any aggregation.
+    ts = backfill.backdated_ts(backfill_date) if backfill_date is not None else now.isoformat(timespec="seconds")
     today_str = now.date().isoformat()
 
     habit = registry.get(result.category)
@@ -1043,18 +1241,28 @@ async def handle_inbound_message(
     # detects a genuine crossing without any persisted "already announced"
     # flag (see its docstring). Skipped entirely when gamification is
     # disabled, so a disabled install pays no extra DB reads for this.
+    # SPEC-v1.8.md R-B4: also skipped entirely for a backfill -- a
+    # backdated row can never affect TODAY's own streak-qualification
+    # state, so this would always be a no-op read; skipping it outright
+    # is what guarantees "no milestone celebration line" by construction,
+    # not by incidental non-crossing.
     was_qualified_before = (
-        streaks.day_qualifies(db, config, habit, today_str, user_id) if config.gamification.enabled else False
+        streaks.day_qualifies(db, config, habit, today_str, user_id)
+        if config.gamification.enabled and backfill_date is None
+        else False
     )
 
     entry = log_entry_from_result(habit, result, ts, text, source, user_id)
     # SPEC-v1.1.md R-U2: the inserted row's id drives the inline "Undo"
-    # button attached to this confirmation below.
+    # button attached to this confirmation below. SPEC-v1.8.md R-B6/AC-C6:
+    # this holds unchanged for a backfilled row too -- undo operates by
+    # row id, never by `ts` ordering, so no code change is needed here for
+    # a backfilled log to keep a working undo button.
     row_id = db.insert_log(entry)
     undo_buttons = undo_ui.undo_button(row_id, lang)
 
     milestone_suffix = ""
-    if config.gamification.enabled:
+    if config.gamification.enabled and backfill_date is None:
         crossed = streaks.crossed_milestone(db, config, habit, now.date(), was_qualified_before, user_id)
         if crossed is not None:
             milestone_suffix = "\n\n" + i18n.t("milestone_reached", lang, streak=crossed, label=habit.label(lang))
@@ -1068,12 +1276,30 @@ async def handle_inbound_message(
     # sync and already fail-open internally (R-R2's own "a records error
     # never blocks the confirmation" contract) -- no extra try/except
     # needed here, mirroring `crossed_milestone`'s own call above.
+    #
+    # SPEC-v1.8.md R-B4: "stored records are still recomputed silently so
+    # they stay accurate" -- for a backfill, evaluated against the
+    # RESOLVED (backdated) day, not today (a backdated big log can
+    # legitimately set a new best-day/best-week/streak record for that
+    # PAST day), by passing `update_on_log` a clock pinned to that day's
+    # own noon; the return is discarded outright (no `record_suffix` is
+    # ever built for a backfill), which is what makes "no retro-
+    # celebration" true by construction rather than incidental.
     record_suffix = ""
-    broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
-    if broken_records:
-        record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang)
+    if backfill_date is not None:
+        records.update_on_log(
+            db, config, registry, habit, user_id, clock=lambda: datetime.combine(backfill_date, time(12, 0))
+        )
+    else:
+        broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
+        if broken_records:
+            record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang)
 
     confirmation_suffix = milestone_suffix + record_suffix
+    # SPEC-v1.8.md §3.4/R-B2: "the normal per-habit confirmation, prefixed
+    # with the resolved date" -- reuses whichever confirmation formatter
+    # below unchanged (no second formatter), just prepended.
+    confirmation_prefix = backfill.confirmation_prefix(backfill_date, lang) if backfill_date is not None else ""
 
     if habit.id == "water":
         water_ml = int(result.value)  # type: ignore[arg-type]
@@ -1084,15 +1310,23 @@ async def handle_inbound_message(
         pct = round(100 * total / goal) if goal else 0
         await channel.send_actionable(
             user_id,
-            i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
+            confirmation_prefix
+            + i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
             + confirmation_suffix,
             undo_buttons,
         )
+        await _react_to_typed_log(channel, config, user_id, inbound_message_id, habit)
         # SPEC-v1.6.md R-D5 (module `dashboard`): refresh AFTER the
         # confirmation is sent, never before -- a dashboard hiccup must
         # never swallow a log. `refresh` itself is fail-open (whole body
         # is one try) and no-ops for a user with no live dashboard.
-        await dashboard.refresh(db, channel, config, registry, user_id, clock)
+        # SPEC-v1.8.md R-B4: skipped entirely for a backfill -- "does not
+        # edit today's live dashboard" (the board shows TODAY, which a
+        # backdated row never changes anyway, but skipping the call
+        # outright is what makes this true by construction, not
+        # incidentally, and avoids a pointless refresh).
+        if backfill_date is None:
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     if habit.id == "stretch":
@@ -1100,11 +1334,14 @@ async def handle_inbound_message(
         count = db.stretch_count(user_id, today_str)
         await channel.send_actionable(
             user_id,
-            i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
+            confirmation_prefix
+            + i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=ordinal(count), count=count)
             + confirmation_suffix,
             undo_buttons,
         )
-        await dashboard.refresh(db, channel, config, registry, user_id, clock)
+        await _react_to_typed_log(channel, config, user_id, inbound_message_id, habit)
+        if backfill_date is None:
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     if habit.id == "diary":
@@ -1116,15 +1353,21 @@ async def handle_inbound_message(
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
         await channel.send_actionable(
-            user_id, i18n.t("diary_confirmation", lang, reflection=reflection) + confirmation_suffix, undo_buttons
+            user_id,
+            confirmation_prefix + i18n.t("diary_confirmation", lang, reflection=reflection) + confirmation_suffix,
+            undo_buttons,
         )
-        await dashboard.refresh(db, channel, config, registry, user_id, clock)
+        await _react_to_typed_log(channel, config, user_id, inbound_message_id, habit)
+        if backfill_date is None:
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
         return
 
     # Any other configured habit: type-generic confirmation (AC9).
     message = await _generic_confirmation(db, llm, habit, result.value, today_str, lang, config, user_id)
-    await channel.send_actionable(user_id, message + confirmation_suffix, undo_buttons)
-    await dashboard.refresh(db, channel, config, registry, user_id, clock)
+    await channel.send_actionable(user_id, confirmation_prefix + message + confirmation_suffix, undo_buttons)
+    await _react_to_typed_log(channel, config, user_id, inbound_message_id, habit)
+    if backfill_date is None:
+        await dashboard.refresh(db, channel, config, registry, user_id, clock)
 
 
 async def reparse_pending_unparsed(
@@ -1488,21 +1731,20 @@ async def async_main(args: argparse.Namespace) -> None:
     await announce.announce_release(db, channel, config, __version__)
 
     # SPEC-v1.1.md R-U1/R-D4/AC1-AC2/AC40, extended by SPEC-v1.2.md §11,
-    # SPEC-v1.4.md R-A2, SPEC-v1.5.md §6/§11, SPEC-v1.6.md §6/§11, and
-    # SPEC-v1.7.md R-A2/§11 integration steps: register the bot command menu
-    # once at startup -- `/start` + `/undo` (undo_ui's own contribution) +
-    # `/target` (this integration step's, see TARGET_COMMAND_DESCRIPTIONS
-    # above) + `/help` + `/habits` (discoverability) + `/remind` + `/lang` +
-    # `/quiet` + `/history` + `/checkin` + `/dashboard` + `/heatmap` +
-    # `/records` + `/trends` + `/addhabit` + `/delhabit` (see START_/REMIND_/
+    # SPEC-v1.4.md R-A2, SPEC-v1.5.md §6/§11, SPEC-v1.6.md §6/§11,
+    # SPEC-v1.7.md R-A2/§11, and SPEC-v1.8.md R-D2/§11 integration steps:
+    # register the bot command menu once at startup -- `/start` + `/undo`
+    # (undo_ui's own contribution) + `/target` (this integration step's,
+    # see TARGET_COMMAND_DESCRIPTIONS above) + `/help` + `/habits`
+    # (discoverability) + `/remind` + `/lang` + `/quiet` + `/history` +
+    # `/checkin` + `/dashboard` + `/heatmap` + `/records` + `/trends` +
+    # `/addhabit` + `/delhabit` + `/log` + `/routine` (see START_/REMIND_/
     # LANG_/QUIET_/HISTORY_/CHECKIN_/DASHBOARD_/HEATMAP_/RECORDS_/TRENDS_/
-    # ADDHABIT_/DELHABIT_COMMAND_DESCRIPTIONS above for why the four true
-    # admin commands -- and owner-only `/audit` -- are deliberately
-    # excluded; `/dnd` is deliberately excluded too, sharing `/quiet`'s
-    # entry, per CHECKIN_COMMAND_DESCRIPTIONS's own comment above; the
-    # nudge has no command of its own, OQ2), English default + a Thai set.
-    # 16 public commands total. A transport error here is logged and never
-    # crashes startup (AC2) -- same belt-and-suspenders posture as the
+    # ADDHABIT_/DELHABIT_/LOG_/ROUTINE_COMMAND_DESCRIPTIONS above; `/dnd` is
+    # deliberately excluded, sharing `/quiet`'s entry; the nudge has no
+    # command of its own, OQ2), English default + a Thai set. 18 public
+    # commands total. A transport error here is logged and never crashes
+    # startup (AC2) -- same belt-and-suspenders posture as the
     # schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
@@ -1522,6 +1764,8 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("trends", TRENDS_COMMAND_DESCRIPTIONS[lang])]
             + [("addhabit", ADDHABIT_COMMAND_DESCRIPTIONS[lang])]
             + [("delhabit", DELHABIT_COMMAND_DESCRIPTIONS[lang])]
+            + [("log", LOG_COMMAND_DESCRIPTIONS[lang])]
+            + [("routine", ROUTINE_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -1529,6 +1773,34 @@ async def async_main(args: argparse.Namespace) -> None:
         await channel.set_my_commands(command_menu)
     except Exception:
         logger.exception("set_my_commands failed at startup; continuing")
+
+    # SPEC-v1.8.md R-D2/AC-D2 (module `riders`, integration step): a SECOND
+    # menu, scoped to just the owner's own chat (`scope_chat_id=`), that
+    # additionally lists the five true admin commands -- a non-owner chat
+    # never sees this menu at all (Telegram only shows a chat-scoped menu
+    # to that one chat; every other chat keeps seeing the public default
+    # menu registered above). Built by extending the SAME public list
+    # (never duplicated/re-typed), so the owner's menu is always a strict
+    # superset of the public one. A transport error here is independently
+    # caught -- belt-and-suspenders, mirrors the public registration just
+    # above -- so a scoped-menu failure can never crash startup, and can
+    # never prevent the public menu (already registered above) from taking
+    # effect either.
+    owner_command_menu = {
+        lang: (
+            entries
+            + [("invite", INVITE_COMMAND_DESCRIPTIONS[lang])]
+            + [("approve", APPROVE_COMMAND_DESCRIPTIONS[lang])]
+            + [("block", BLOCK_COMMAND_DESCRIPTIONS[lang])]
+            + [("users", USERS_COMMAND_DESCRIPTIONS[lang])]
+            + [("audit", AUDIT_COMMAND_DESCRIPTIONS[lang])]
+        )
+        for lang, entries in command_menu.items()
+    }
+    try:
+        await channel.set_my_commands(owner_command_menu, scope_chat_id=secrets.telegram_chat_id)
+    except Exception:
+        logger.exception("set_my_commands (owner-scoped) failed at startup; continuing")
 
     # ROADMAP.md v0.4.0 AC3.3: catch up on anything deferred by a
     # *previous* process run before entering the main loop. If Ollama is
@@ -1761,7 +2033,9 @@ async def async_main(args: argparse.Namespace) -> None:
     scheduler.start()
     logger.info("Scheduler started; entering Telegram long-poll loop")
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         # SPEC-v1.2.md R-C2: `chat_id` (the acting user) is threaded
         # straight into `handle_inbound_message`'s `user_id`. `display_name`
         # is TelegramChannel's own newly-added third argument (channels/
@@ -1769,6 +2043,13 @@ async def async_main(args: argparse.Namespace) -> None:
         # limitations" #1) -- defaulted to `None` so any caller/fake that
         # still passes only 2 args (every pre-integration test) is
         # unaffected.
+        #
+        # SPEC-v1.8.md R-S4 (shared surface): `message_id` is
+        # TelegramChannel's own newly-added FOURTH argument (channels/
+        # telegram.py's `_message_id_of`) -- same trailing/defaulted shape,
+        # threaded into `handle_inbound_message`'s `inbound_message_id`
+        # below (plumbing only; module `quicklog`'s integration step is
+        # what actually consumes it, R-Q4).
         #
         # SPEC-v1.2.md §11 integration step, in order:
         # 1. The access gate (R-A1) runs FIRST, before any logging/LLM/
@@ -1822,8 +2103,23 @@ async def async_main(args: argparse.Namespace) -> None:
         # itself already applies to its own four owner-only kinds).
         if command is not None and command.kind == "audit":
             if access.classify(db, chat_id) == "owner":
+                # SPEC-v1.8.md R-D3/AC-D3 (module `riders`, integration
+                # step): resolve the acting (owner) user's stored `/lang`
+                # preference into THIS reply's own language -- mirrors
+                # every other reply path in this app (`handle_inbound_
+                # message`'s own R-P1 call sites), which `on_message`'s
+                # `lang` above never did (pre-existing bug: it only ever
+                # followed the inbound TEXT's detected language / the
+                # global config force, never the stored preference).
+                # Deliberately scoped to just this one reply -- `lang`
+                # above, used for the access gate/admin replies, is left
+                # unchanged (AC-D4's own "changes only language
+                # resolution [of /audit], not row content/order").
+                audit_lang = i18n.resolve_reply_language(
+                    text, config, user_pref=user_prefs.stored_language_pref(db, chat_id)
+                )
                 reply = audit_view.render_recent(
-                    db, config, lang, limit=command.limit, owner_chat_id=secrets.telegram_chat_id
+                    db, config, audit_lang, limit=command.limit, owner_chat_id=secrets.telegram_chat_id
                 )
                 await channel.send(chat_id, reply)
             return
@@ -1840,6 +2136,7 @@ async def async_main(args: argparse.Namespace) -> None:
             scheduler=scheduler,
             reminder_state=reminder_state,
             provider=provider,
+            inbound_message_id=message_id,
         )
 
     async def on_callback(chat_id: str, data: str, source_text: str, callback_id: str) -> None:
@@ -1867,6 +2164,45 @@ async def async_main(args: argparse.Namespace) -> None:
         # a custom-habit log resolves/re-renders exactly like a base one
         # (AC-S1 surface #3).
         user_registry = provider.for_user(chat_id)
+
+        # SPEC-v1.8.md §11 integration step: dispatch by payload prefix --
+        # `log:` -> module `quicklog` (R-Q2/R-Q3), `routine:run:` -> module
+        # `routines` (R-R3/R-R5), everything else (in practice `undo:`,
+        # SPEC-v1.1.md R-U4/R-U5) -> the pre-existing `undo_ui` path below,
+        # unchanged. The access gate above stays first for EVERY prefix
+        # (SPEC-v1.2.md R-A1), matching this dispatch's own docstring.
+        # `quicklog.handle_log_callback`/`routines.handle_routine_callback`
+        # each already refresh the dashboard themselves as part of their
+        # own "log + confirm" flow (mirrors the typed-log path) -- so
+        # neither branch below needs (or gets) the extra `dashboard.
+        # refresh` call the `undo_ui` fallback still makes for itself.
+        if data.startswith("log:"):
+            await quicklog.handle_log_callback(
+                chat_id,
+                data,
+                source_text,
+                callback_id,
+                db=db,
+                channel=channel,
+                config=config,
+                registry=user_registry,
+                clock=datetime.now,
+            )
+            return
+        if data.startswith("routine:run:"):
+            await routines.handle_routine_callback(
+                chat_id,
+                data,
+                source_text,
+                callback_id,
+                db=db,
+                channel=channel,
+                config=config,
+                provider=provider,
+                clock=datetime.now,
+            )
+            return
+
         await undo_ui.handle_undo_callback(
             chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, clock=datetime.now, registry=user_registry
         )

@@ -557,7 +557,7 @@ class _FakeTelegramChannel:
         self.sent.append(text)
         self.calls.append("send_actionable")
 
-    async def set_my_commands(self, commands) -> None:
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
         # Deliberately NOT appended to `self.calls` -- that list is this
         # fake's pre-existing "send vs. send_image ordering" contract
         # (see class docstring), which this test's own assertions index

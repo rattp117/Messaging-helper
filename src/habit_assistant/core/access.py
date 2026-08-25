@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Literal
 
 from habit_assistant import __version__
 from habit_assistant.channels.base import Channel
-from habit_assistant.core import audit, i18n
+from habit_assistant.core import audit, i18n, user_prefs
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -92,15 +92,13 @@ def _resolve_unprompted_language_for(db: "Database", config: "Config", chat_id: 
     `access_request` notification to the owner (triggered by someone
     else's message) and the `access_granted` notification to a
     newly-approved user (triggered by the owner's `/approve`). Reads
-    `chat_id`'s own stored `language_pref`, defaulting to `"auto"` (the
-    column's own default) if the row can't be read, mirroring
-    `i18n.resolve_unprompted_language`'s existing fail-open shape for a
-    missing preference."""
-    try:
-        row = db.get_user(chat_id)
-    except Exception:
-        row = None
-    pref = row["language_pref"] if row is not None else "auto"
+    `chat_id`'s own stored `language_pref` via the shared `core/user_prefs.
+    stored_language_pref` (SPEC-v1.8.md integration step's consolidation of
+    what used to be four independent per-file copies of this lookup),
+    defaulting to `"auto"` (the column's own default) if the row can't be
+    read, mirroring `i18n.resolve_unprompted_language`'s existing fail-open
+    shape for a missing preference."""
+    pref = user_prefs.stored_language_pref(db, chat_id)
     return i18n.resolve_unprompted_language(config, user_pref=pref)
 
 

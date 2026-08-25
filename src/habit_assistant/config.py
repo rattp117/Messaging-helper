@@ -294,6 +294,80 @@ class GarminConfig(BaseModel):
     discrepancy_threshold_ml: float = 300
 
 
+class NotificationsConfig(BaseModel):
+    """SPEC-v1.8.md §2.5/R-D1 (module `riders`): `silent_proactive = true`
+    (default) is the one deliberate v1.8.0 behavior change -- the three
+    proactive-send sites (`reminders.send_reminder`, `checkins.
+    run_due_checkins`, `nudge.run_due_nudges`) send with `Channel.send(...,
+    disable_notification=True)` instead of the default notifying send.
+    User-initiated confirmations/replies and the one-time dashboard pin are
+    NOT gated by this flag -- module `riders`' own send-site edits are the
+    only call sites that read it. `false` restores pre-v1.8 byte-identical
+    proactive-send payloads (AC-D4)."""
+
+    silent_proactive: bool = True
+
+
+class QuicklogConfig(BaseModel):
+    """SPEC-v1.8.md §2.5/R-Q1 (module `quicklog`): `enabled = true`
+    (default) turns on the `/log`/`บันทึก` inline keyboard.
+    `max_buttons_per_habit` caps how many amount buttons one goal-bearing/
+    aliased numeric or duration habit can contribute (R-Q1's own ladder/
+    alias-multiplier derivation is module `quicklog`'s concern; this class
+    only carries the raw cap)."""
+
+    enabled: bool = True
+    max_buttons_per_habit: int = 3
+
+    @field_validator("max_buttons_per_habit")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("quicklog.max_buttons_per_habit must be a positive integer")
+        return v
+
+
+class ReactionsConfig(BaseModel):
+    """SPEC-v1.8.md §2.5/R-Q4 (module `quicklog`): `enabled = true`
+    (default) turns on the emoji reaction `core/reactions.py:react` fires
+    after a successful typed-message log (R-Q4/R-Q5). `false` skips the
+    `set_message_reaction` call entirely -- not just a silent no-op, so a
+    disabled install makes zero extra Bot API calls."""
+
+    enabled: bool = True
+
+
+class BackfillConfig(BaseModel):
+    """SPEC-v1.8.md §2.5/R-B5 (module `backfill`): how many days back a
+    recognized relative-date phrase ("3 days ago", "3 วันที่แล้ว") may
+    resolve to -- a date older than this (or in the future) is a bounds
+    error, no write (AC-C4)."""
+
+    max_days_back: int = 14
+
+    @field_validator("max_days_back")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("backfill.max_days_back must be a positive integer")
+        return v
+
+
+class RoutinesConfig(BaseModel):
+    """SPEC-v1.8.md §2.5/R-R1 (module `routines`): per-user cap on how many
+    routines one user may create (`/routine <name> = ...` past the cap is
+    a friendly error, no write, R-R1's own validation list)."""
+
+    max_per_user: int = 20
+
+    @field_validator("max_per_user")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("routines.max_per_user must be a positive integer")
+        return v
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -425,6 +499,15 @@ class Config(BaseModel):
     garmin: GarminConfig = GarminConfig()
     audit: AuditConfig = AuditConfig()
     custom_habits: HabitsConfig = HabitsConfig()
+    # SPEC-v1.8.md §2.5/§6 (shared surface): five new sections, all
+    # defaulted -- an absent section in config.toml uses the class
+    # defaults above (AC-5), same "no existing key changes meaning"
+    # posture as every prior config addition in this file.
+    notifications: NotificationsConfig = NotificationsConfig()
+    quicklog: QuicklogConfig = QuicklogConfig()
+    reactions: ReactionsConfig = ReactionsConfig()
+    backfill: BackfillConfig = BackfillConfig()
+    routines: RoutinesConfig = RoutinesConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

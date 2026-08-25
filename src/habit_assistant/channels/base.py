@@ -19,7 +19,19 @@ doesn't bother extracting a display name) keeps working unmodified --
 only `TelegramChannel.run()` actually supplies it, and only
 `main.py:on_message` actually reads it (threaded into
 `access.handle_gate`'s own `display_name` param so `access_request`/
-`/users` can show a friendly name instead of a bare chat id, R-A2)."""
+`/users` can show a friendly name instead of a bare chat id, R-A2).
+
+SPEC-v1.8.md R-S4 (shared surface, module `quicklog`'s own dependency):
+`on_message` may likewise optionally be called with a FOURTH argument,
+`message_id` -- the inbound `message.message_id` (as `str`) of the
+message that triggered it, or `None`. Same additive/trailing/defaulted
+shape as `display_name` just above, so every 2- or 3-arg caller/fake is
+unaffected (AC-4); only `TelegramChannel.run()` actually supplies it (for
+a text message -- a callback-query update carries no loggable inbound
+message and never reaches `on_message` at all), and only
+`main.py:on_message` threads it into `handle_inbound_message`'s own
+`inbound_message_id` param, where module `quicklog`'s reaction call
+(R-Q4) consumes it at integration time."""
 
 from __future__ import annotations
 
@@ -32,8 +44,19 @@ Button = tuple[str, str]
 
 class Channel(ABC):
     @abstractmethod
-    async def send(self, chat_id: str, text: str) -> None:
-        """Push a message to `chat_id`."""
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
+        """Push a message to `chat_id`.
+
+        SPEC-v1.8.md R-S1 (shared surface): `disable_notification` is an
+        additive, keyword-only, DEFAULTED param -- `False` (the default)
+        must produce a payload byte-identical to pre-v1.8 (AC-1), so every
+        existing caller/fake that still calls `send(chat_id, text)` is
+        unaffected. `True` is used by the three proactive-send sites
+        (`reminders.send_reminder`, `checkins.run_due_checkins`,
+        `nudge.run_due_nudges`, module `riders`, R-D1) when
+        `[notifications] silent_proactive` is on -- user-initiated
+        confirmations/replies and the one-time dashboard pin never pass
+        `True`."""
 
     @abstractmethod
     async def run(
@@ -91,11 +114,22 @@ class Channel(ABC):
         can render an inline keyboard)."""
         await self.send(chat_id, text)
 
-    async def set_my_commands(self, commands: dict[str, list[tuple[str, str]]]) -> None:
+    async def set_my_commands(
+        self, commands: dict[str, list[tuple[str, str]]], *, scope_chat_id: str | None = None
+    ) -> None:
         """Register the platform's command menu. `commands` =
         {lang_code: [(command, description), ...]}. SPEC-v1.2.md R-C1:
         stays global (not per-chat) -- Telegram's `setMyCommands` sets the
         menu for every user of the bot in one call, not per recipient.
+
+        SPEC-v1.8.md R-S3 (shared surface, module `riders`' own
+        dependency): `scope_chat_id`, additive keyword-only and defaulted
+        to `None` -- `None` registers the DEFAULT (global) menu,
+        byte-identical to v1.7 (AC-3); a non-`None` chat id additionally
+        scopes the call to just that chat (Telegram's `scope={type:chat,
+        chat_id:...}`), letting `main.py`'s integration step register a
+        second, owner-only menu at the owner's own chat id (R-D2) without
+        this signature change affecting the existing global-menu call.
         Default: no-op (only Telegram's Bot API has a `setMyCommands`
         concept)."""
         return None
@@ -141,4 +175,19 @@ class Channel(ABC):
         """Unpin (and best-effort delete) a previously pinned message.
         Default: no-op (no pin capability, so there is nothing to
         undo)."""
+        return None
+
+    # SPEC-v1.8.md §2.2/§5 (shared surface, module `quicklog`'s own
+    # dependency, R-S2): same concrete-default degradation pattern as
+    # `send_image`/`send_actionable`/`set_my_commands`/`send_and_pin`/
+    # `edit_message`/`unpin` above -- a channel that can't react to a
+    # message (channels/line.py's stub, every existing test fake) needs no
+    # changes to keep satisfying this ABC. `TelegramChannel` overrides it
+    # via Bot API 7.0's `setMessageReaction`, and (unlike `edit_message`,
+    # which reports failure via its return value) NEVER RAISES -- a
+    # reaction is purely decorative (AC-2/AC-A4), so even a transport error
+    # must not propagate into the log-confirmation flow that triggers it.
+    async def set_message_reaction(self, chat_id: str, message_id: str, emoji: str) -> None:
+        """Set one emoji reaction on a previously-sent message. Default:
+        no-op (no reaction capability)."""
         return None

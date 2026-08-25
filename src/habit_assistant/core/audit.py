@@ -62,6 +62,15 @@ Action = Literal[
     "habit_create",
     "habit_archive",
     "habit_delete",
+    # SPEC-v1.8.md R-S6 (shared surface, module `routines`' own dependency):
+    # /routine create/delete/run, one fail-open audit row each -- quick-log
+    # and backfill produce ordinary `logs` rows and are deliberately NOT
+    # audited (logging has never been audited in this codebase, only
+    # mutations -- undo/edit/target/remind/lang/quiet/approve/block/invite/
+    # onboard/addhabit/delhabit, and now routine create/delete/run).
+    "routine_create",
+    "routine_delete",
+    "routine_run",
 ]
 ACTIONS: tuple[Action, ...] = (
     "undo",
@@ -85,6 +94,9 @@ ACTIONS: tuple[Action, ...] = (
     "habit_create",
     "habit_archive",
     "habit_delete",
+    "routine_create",
+    "routine_delete",
+    "routine_run",
 )
 
 Source = Literal["command", "nl", "button", "admin"]

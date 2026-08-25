@@ -82,6 +82,10 @@ _ACTION_LABEL_MSG_IDS: dict[str, str] = {
     "habit_create": "audit_action_habit_create",
     "habit_archive": "audit_action_habit_archive",
     "habit_delete": "audit_action_habit_delete",
+    # SPEC-v1.8.md R-S6 (shared surface, module `routines`' own dependency).
+    "routine_create": "audit_action_routine_create",
+    "routine_delete": "audit_action_routine_delete",
+    "routine_run": "audit_action_routine_run",
 }
 
 

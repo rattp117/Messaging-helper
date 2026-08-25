@@ -79,10 +79,13 @@ def test_no_migration_was_added_for_history(tmp_path):
     literal just has to track the CURRENT total like every other pinned
     migration-count guard in this suite.
     UPDATED (v1.6.0): now also includes SPEC-v1.6.md's own migration 009
-    (`dashboard_msg_id`/`habit_records`) -- same reasoning."""
-    assert len(MIGRATIONS) == 10
+    (`dashboard_msg_id`/`habit_records`) -- same reasoning.
+    UPDATED (v1.8.0): now also includes SPEC-v1.7.md's own migration 010
+    (`user_habits`) and SPEC-v1.8.md's own migration 011 (`routines`/
+    `routine_items`) -- same reasoning."""
+    assert len(MIGRATIONS) == 11
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 10
+    assert db.schema_version == 11
     db.close()
 
 
@@ -432,8 +435,12 @@ class _ScriptedChannel(Channel):
     async def send_actionable(self, chat_id, text, buttons):
         self.sent.append((chat_id, text))
 
-    async def set_my_commands(self, commands):
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None):
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id):
         return [text for cid, text in self.sent if cid == chat_id]

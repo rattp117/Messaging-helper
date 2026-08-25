@@ -88,14 +88,21 @@ Write the weekly review narrative."""
 
 _SYSTEM_PROMPT_HEADER = """You are a strict data-extraction assistant for a habit tracker.
 The user writes a short message in Thai and/or English describing one of their
-tracked habits. Extract structured data as a single JSON object with exactly
-three keys: "category" (one of the ids below), "value" (the extracted amount/
-text/done-flag for that category, or null for "unknown"), and "confidence"
-(a number from 0 to 1).
+tracked habits. Extract structured data as a single JSON object with three
+required keys: "category" (one of the ids below), "value" (the extracted
+amount/text/done-flag for that category, or null for "unknown"), and
+"confidence" (a number from 0 to 1) -- plus one OPTIONAL fourth key,
+"date_offset" (see below).
 
 Unit rule: an explicit, stated unit (e.g. "500ml", "10 min") always wins over
 a casual/alias unit. For a casual unit, multiply its per-unit base value by
 the stated quantity (e.g. "2 glasses" = 2 x the glass value below).
+
+date_offset rule (OPTIONAL -- omit entirely for almost every message): only
+include "date_offset" when the message clearly describes a PAST day other
+than today (an integer count of days back, e.g. yesterday = 1, two days back
+= 2). Leave it out completely for a message about today (the normal,
+overwhelmingly common case).
 
 Categories:"""
 
@@ -104,7 +111,8 @@ If you cannot confidently determine the value, or the message doesn't fit any
 category above, return category "unknown" with confidence <= 0.4 and a null
 value.
 
-Examples (follow this exact shape — three keys, always present, no extras):"""
+Examples (follow this exact shape — three keys always present; a fourth,
+"date_offset", ONLY when the message names a past day, omitted otherwise):"""
 
 _UNKNOWN_EXAMPLE = (
     'Message: purple elephants dance sideways -> '
@@ -113,8 +121,8 @@ _UNKNOWN_EXAMPLE = (
 
 _RESPONSE_INSTRUCTIONS = """
 Respond with JSON only, matching the given schema exactly (category, value,
-confidence — no extra keys, no missing keys). No prose, no explanation, no
-markdown."""
+confidence, plus "date_offset" ONLY when applicable — no other extra keys, no
+missing required keys). No prose, no explanation, no markdown."""
 
 
 def _category_line(habit: "Habit") -> str:

@@ -100,7 +100,7 @@ class _CapturingChannel(Channel):
         self.sent: list[str] = []
         self.actionable: list[tuple[str, str, list]] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append(text)
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
@@ -353,14 +353,18 @@ class _ScriptedChannel(Channel):
         self.set_my_commands_calls: list[dict] = []
         _ScriptedChannel.last_instance = self
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         self.sent.append((chat_id, text))
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]
@@ -732,32 +736,31 @@ async def test_checkin_setting_changes_write_audit_rows_rendered_bilingually_in_
     # Same sequence, but read back with the Thai alias `ประวัติ` this time
     # -- a fresh DB/run so the Thai reply isn't polluted by the English one.
     #
-    # FINDING (worth flagging, not a bug this pass introduced): `/audit`'s
-    # own reply language is resolved by `main.py:on_message`'s `lang =
-    # i18n.resolve_reply_language(text, config)` call (main.py:1487) --
-    # WITHOUT `user_pref=_stored_language_pref(...)`, unlike every OTHER
-    # command reply (which all route through `handle_inbound_message`,
-    # whose own `lang` resolution at line 657/983 DOES thread the user's
-    # stored `/lang` preference). This means `/audit`'s language purely
-    # auto-detects from the INBOUND TRIGGER TEXT itself, never the
-    # asker's saved preference -- an owner who ran `/lang th` still gets
-    # an ENGLISH `/audit` reply if they type the (all-ASCII) "/audit"
-    # trigger; only the Thai alias `ประวัติ` (which itself contains Thai
-    # characters) auto-detects Thai. Pre-existing since v1.3's own
-    # `/audit` wiring, not introduced or touched by this pass -- verified
-    # both ways below rather than silently worked around.
+    # FIXED (SPEC-v1.8.md R-D3/AC-D3, `main.py` integration pass): this
+    # test used to lock in a pre-existing bug -- `/audit`'s own reply
+    # language was resolved by `main.py:on_message`'s `lang = i18n.
+    # resolve_reply_language(text, config)` call WITHOUT `user_pref=
+    # _stored_language_pref(...)`, unlike every OTHER command reply (which
+    # all route through `handle_inbound_message`, whose own `lang`
+    # resolution DOES thread the user's stored `/lang` preference). An
+    # owner who ran `/lang th` got an ENGLISH `/audit` reply if they typed
+    # the (all-ASCII) "/audit" trigger -- only the Thai alias `ประวัติ`
+    # (which itself contains Thai characters) auto-detected Thai. R-D3
+    # now resolves the stored preference into `/audit`'s own reply
+    # language BEFORE the interception, so BOTH trigger shapes now render
+    # in the owner's chosen language.
     config2 = Config.model_validate({"app": {"db_path": str(tmp_path / "habits2.db")}})
     script_th = [
         ("message", OWNER, "/checkin on", None),
         ("message", OWNER, "/checkin off", None),
         ("message", OWNER, "/lang th", None),
-        ("message", OWNER, "/audit", None),  # English trigger -> still English, despite /lang th
+        ("message", OWNER, "/audit", None),  # English trigger -> now Thai too, per /lang th (R-D3 fix)
         ("message", OWNER, "ประวัติ", None),  # Thai alias trigger -> auto-detects Thai
     ]
     channel2 = await _run(monkeypatch, config2, script_th)
     audit_replies = channel2.sent_to(OWNER)[-2:]
     audit_reply_via_slash, audit_reply_via_thai_alias = audit_replies
-    assert i18n.t("audit_action_checkin_set", "en") in audit_reply_via_slash  # the finding, locked in
+    assert i18n.t("audit_action_checkin_set", "th") in audit_reply_via_slash  # R-D3: stored /lang now wins
     assert i18n.t("audit_action_checkin_set", "th") in audit_reply_via_thai_alias
     assert i18n.t("audit_action_checkin_off", "th") in audit_reply_via_thai_alias
 
@@ -858,8 +861,8 @@ async def test_announce_user_several_versions_behind_gets_only_the_current_note_
 
 async def test_current_pinned_version_announces_to_active_users_today(tmp_path, monkeypatch):
     """UPDATED post-release (Archi's Phase 6.5 version bump landed,
-    v1.6.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
-    now genuinely "1.6.0", matching a real `RELEASE_NOTES` entry -- so a
+    v1.7.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
+    now genuinely "1.7.0", matching a real `RELEASE_NOTES` entry -- so a
     real startup TODAY, using the app's actual current constant (not a
     synthetic one, and not this file's own default `_run` neutralization
     -- passed explicitly as `version=current_version` below to exercise
@@ -868,9 +871,13 @@ async def test_current_pinned_version_announces_to_active_users_today(tmp_path, 
     "announces nothing" sanity check before the release shipped; its own
     docstring at the time predicted exactly this update would be needed
     the moment `__version__` was bumped -- that's expected, not a bug.
-    UPDATED AGAIN at v1.6.0 (same reason) -- each Phase 6.5 bump moves
-    this pin forward by construction; a future bump (e.g. v1.7.0) will
-    need the same one-line update, not a design change."""
+    UPDATED AGAIN at v1.7.0 (same reason, found stale during SPEC-v1.8.md's
+    shared-surface pass -- confirmed pre-existing/unrelated to that work,
+    same "each Phase 6.5 bump moves this pin forward by construction"
+    pattern IMPL-v1.7-shared.md's own prior fix of this exact test already
+    documented) -- each Phase 6.5 bump moves this pin forward by
+    construction; a future bump (e.g. v1.9.0) will need the same one-line
+    update, not a design change."""
     from habit_assistant import __version__ as current_version
 
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
@@ -888,7 +895,7 @@ async def test_current_pinned_version_announces_to_active_users_today(tmp_path, 
         assert db.get_last_announced_version(MEMBER) == current_version
     finally:
         db.close()
-    assert current_version == "1.6.0"  # documents the exact post-release state this test relies on
+    assert current_version == "1.8.0"  # documents the exact post-release state this test relies on
 
 
 # ---------------------------------------------------------------------------
@@ -938,7 +945,7 @@ async def test_health_alert_and_access_request_notification_not_suppressed_by_ow
     sent: list[tuple[str, str]] = []
 
     class _RecordingChannel(Channel):
-        async def send(self, chat_id, text):
+        async def send(self, chat_id, text, *, disable_notification: bool = False):
             sent.append((chat_id, text))
 
         async def run(self, on_message, on_callback=None):
@@ -1186,7 +1193,7 @@ async def test_migration_008_rehearsal_on_a_v1_4_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 10
+        assert db.schema_version == 11
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert {"checkin_window", "last_announced_version"} <= cols
         assert db.get_last_announced_version(OWNER) is None  # no backfill (migration's own contract)

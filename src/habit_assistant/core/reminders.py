@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import i18n, targets, user_prefs
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -198,18 +198,14 @@ def in_dnd_now(db: Database, config: Config, chat_id: str, clock=datetime.now) -
 
 
 def _user_language_pref(db: Database, chat_id: str) -> str:
-    """Integration step (SPEC-v1.2.md R-P1's read side, punch-list item 3
-    call site `core/reminders.py:297`): `chat_id`'s stored `users.
-    language_pref`, defaulting to `"auto"` on a missing row or a DB read
-    error -- fail-open, mirrors `effective_quiet_windows`'s own posture a
-    few lines up. A preference lookup must never block or crash the
-    minutely tick for every OTHER user in the same fan-out."""
-    try:
-        user = db.get_user(chat_id)
-    except Exception:
-        logger.exception("Reading language preference failed for %s; defaulting to auto (fail-open)", chat_id)
-        return "auto"
-    return user["language_pref"] if user is not None else "auto"
+    """SPEC-v1.8.md integration step: now a thin alias for the shared
+    `core/user_prefs.stored_language_pref` (Archi-approved consolidation of
+    what used to be four independent per-file copies of this exact lookup;
+    see that module's own docstring). Kept as a same-named wrapper here
+    (rather than rewriting every call site to `user_prefs.stored_language_
+    pref` directly) purely so this file's own docstrings/comments citing
+    `_user_language_pref` by name stay accurate -- behavior is unchanged."""
+    return user_prefs.stored_language_pref(db, chat_id)
 
 
 def effective_reminder_times(db: Database, config: Config, habit: Habit, user_id: str) -> list[str]:
@@ -294,7 +290,14 @@ async def send_reminder(
     SPEC-v1.2.md R-S2: quiet-hours now uses `chat_id`'s OWN effective
     windows (`effective_quiet_windows`), not just the global config, so a
     custom-time reminder is suppressed under the same per-user rules as a
-    config-time one (AC-S6)."""
+    config-time one (AC-S6).
+
+    SPEC-v1.8.md R-D1 (module `riders`): the actual send below passes
+    `disable_notification=config.notifications.silent_proactive` when
+    `config` is given (the real `run_due_reminders` caller always binds
+    it), else `False` -- a bare `send_reminder(channel, chat_id, habit,
+    lang)` call with no `config` (pre-v1.8 tests, direct callers) stays
+    byte-identical (AC-D4)."""
     if config is not None:
         windows = effective_quiet_windows(db, config, chat_id)
         if windows:
@@ -313,7 +316,8 @@ async def send_reminder(
     else:
         custom = habit.reminder_text(language)
         text = custom if custom is not None else i18n.t("reminder_generic", language, label=habit.label(language))
-    await channel.send(chat_id, text)
+    silent = config is not None and config.notifications.silent_proactive
+    await channel.send(chat_id, text, disable_notification=silent)
     if state is not None:
         state.last_habit_id[chat_id] = habit.id
 

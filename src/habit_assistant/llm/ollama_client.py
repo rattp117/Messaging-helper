@@ -87,11 +87,24 @@ class ExtractionResult:
     """Generic across every habit type (SPEC-v0.7.md §4 R9): `category` is
     a habit id or `"unknown"`; `value` is the single extracted value,
     typed per the matched habit (`float` for numeric/duration, `str` for
-    text, `bool` for boolean), or `None` for `unknown`."""
+    text, `bool` for boolean), or `None` for `unknown`.
+
+    SPEC-v1.8.md §2.4/R-B5 (module `backfill`, integration-consumed):
+    `date_offset` is a NEW, additive, defaulted (`None`) field -- "the
+    LLM extraction path may additionally return an optional integer
+    date_offset (days back), honored only when present and within
+    bounds". Every pre-v1.8 construction site (positional or the three
+    original keyword names) is unaffected -- the field simply defaults to
+    `None`, meaning "no LLM-inferred date" (AC-9's own byte-identical
+    contract). `main.py`'s integration step is what actually acts on a
+    non-`None` value (via `core/backfill.resolve_days_back`), only when
+    `core/backfill.extract_date`'s own deterministic pass didn't already
+    resolve a date -- deterministic wins when both are present."""
 
     category: str
     value: float | str | bool | None
     confidence: float
+    date_offset: int | None = None
 
     @classmethod
     def unknown(cls) -> "ExtractionResult":
@@ -105,13 +118,22 @@ def build_extraction_schema(category_enum: list[str]) -> dict[str, Any]:
     of how many habits are configured (one field, not one per habit),
     to avoid growing the payload the schema-weak MLX backend already
     struggles with (module docstring; the fallback chain in `chat_json`
-    remains the safety net)."""
+    remains the safety net).
+
+    SPEC-v1.8.md §2.4/R-B5: `date_offset` is an OPTIONAL integer property
+    (NOT in `required`) -- a backend that ignores it entirely still
+    produces a schema-conformant response (only the three original keys),
+    so this is additive/backward-compatible, not a breaking schema
+    change. `core/parser.py:_validate` fails closed to `None` for any
+    malformed/out-of-shape value, mirroring `confidence`'s own coercion
+    posture."""
     return {
         "type": "object",
         "properties": {
             "category": {"type": "string", "enum": list(category_enum)},
             "value": {"type": ["number", "string", "boolean", "null"]},
             "confidence": {"type": "number"},
+            "date_offset": {"type": ["integer", "null"]},
         },
         "required": ["category", "value", "confidence"],
     }

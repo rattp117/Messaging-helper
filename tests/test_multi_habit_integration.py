@@ -116,7 +116,7 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append(text)
 
     async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
@@ -553,7 +553,7 @@ def test_migration_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp
     # backfills them to OWNER (AC-M2).
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 10
+    assert db.schema_version == 11
     db.attribute_legacy_to_owner(OWNER)
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated

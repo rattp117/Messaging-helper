@@ -130,8 +130,12 @@ class _ScriptedChannel(Channel):
         if self.pinned.get(chat_id) == message_id:
             del self.pinned[chat_id]
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]

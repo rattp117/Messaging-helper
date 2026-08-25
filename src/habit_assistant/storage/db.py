@@ -695,3 +695,91 @@ class Database:
         cursor = self._conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff_ts,))
         self._conn.commit()
         return cursor.rowcount
+
+    # -----------------------------------------------------------------
+    # routines / routine_items (SPEC-v1.8.md R-R1-R-R6, module `routines`,
+    # migration 011): a per-user habit-stack store, `PRIMARY KEY (user_id,
+    # name)` on `routines` -- a routine name is only reserved within ONE
+    # user's own namespace, mirroring `user_habits`' own per-user id
+    # scoping. Storage-only throughout: `core/routines.py` is where
+    # name normalization (R-R1), item validation (habit-token resolution,
+    # unit-lookup value parsing), and the cap check (`config.routines.
+    # max_per_user`) all happen -- this layer just stores/reads what it's
+    # given, same "storage just stores" split `set_target`/`add_user_habit`
+    # already establish.
+    # -----------------------------------------------------------------
+
+    def add_routine(self, user_id: str, name: str, items: list[tuple[str, float | None]]) -> None:
+        """Insert one new routine + its ordered items, in a single
+        transaction (both inserts share one `commit()` -- a routine is
+        never left half-written). `items` is `[(habit_id, value), ...]`,
+        already validated/resolved by the caller (R-C1) -- `seq` is this
+        list's own 0-based index, so `list_routines`/`get_routine` can
+        always replay items in creation order. The caller is responsible
+        for the R-R1 "not already used by this user" / cap checks before
+        calling this -- this method itself performs no validation."""
+        self._conn.execute("INSERT INTO routines (user_id, name) VALUES (?, ?)", (user_id, name))
+        self._conn.executemany(
+            "INSERT INTO routine_items (user_id, name, seq, habit_id, value) VALUES (?, ?, ?, ?, ?)",
+            [(user_id, name, seq, habit_id, value) for seq, (habit_id, value) in enumerate(items)],
+        )
+        self._conn.commit()
+
+    def list_routines(self, user_id: str) -> list[tuple[str, list[tuple[str, float | None]]]]:
+        """`user_id`'s own routines, in creation order (`routines.
+        created_at`/rowid order -- this table has no explicit ordering
+        column, mirrors `list_user_habits`' own "insertion order" note),
+        each paired with its own items in `seq` order -- the shape
+        `core/routines.py`'s `/routine` list view (R-R2) and `execute_
+        routine`'s run path (R-R3) both read through."""
+        routine_rows = self._conn.execute(
+            "SELECT name FROM routines WHERE user_id = ? ORDER BY created_at, name", (user_id,)
+        ).fetchall()
+        result: list[tuple[str, list[tuple[str, float | None]]]] = []
+        for row in routine_rows:
+            name = row["name"]
+            item_rows = self._conn.execute(
+                "SELECT habit_id, value FROM routine_items WHERE user_id = ? AND name = ? ORDER BY seq",
+                (user_id, name),
+            ).fetchall()
+            result.append((name, [(item["habit_id"], item["value"]) for item in item_rows]))
+        return result
+
+    def get_routine(self, user_id: str, name: str) -> list[tuple[str, float | None]] | None:
+        """One routine's own items (`seq` order), or `None` if `user_id`
+        has no routine by that exact `name` -- R-R5's own isolation seam:
+        a name owned by a DIFFERENT user simply isn't found here (the
+        query is scoped to `user_id` by construction), so a `routine:run:
+        <name>` callback tapped by a non-owning chat resolves to `None`
+        the same way a genuinely nonexistent name does -- both are the
+        same friendly no-op to the caller."""
+        routine_row = self._conn.execute(
+            "SELECT 1 FROM routines WHERE user_id = ? AND name = ?", (user_id, name)
+        ).fetchone()
+        if routine_row is None:
+            return None
+        item_rows = self._conn.execute(
+            "SELECT habit_id, value FROM routine_items WHERE user_id = ? AND name = ? ORDER BY seq",
+            (user_id, name),
+        ).fetchall()
+        return [(item["habit_id"], item["value"]) for item in item_rows]
+
+    def delete_routine(self, user_id: str, name: str) -> bool:
+        """Remove a routine + its items (R-R4's own hard-delete -- routines
+        have no history to preserve the way a habit's `logs` rows do, so
+        there is no soft-delete/archive branch here, unlike `user_habits`).
+        Returns whether a routine actually existed to delete -- the caller
+        uses this to report `routine_delete_not_found` vs. a real success,
+        mirroring `clear_target`'s own "no-op, not an error" shape but
+        surfacing the outcome instead of staying silent about it."""
+        cursor = self._conn.execute("DELETE FROM routines WHERE user_id = ? AND name = ?", (user_id, name))
+        existed = cursor.rowcount > 0
+        self._conn.execute("DELETE FROM routine_items WHERE user_id = ? AND name = ?", (user_id, name))
+        self._conn.commit()
+        return existed
+
+    def count_routines(self, user_id: str) -> int:
+        """R-R1's own per-user cap check (`config.routines.max_per_user`,
+        default 20)."""
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM routines WHERE user_id = ?", (user_id,)).fetchone()
+        return int(row["n"])

@@ -133,8 +133,12 @@ class _ScriptedChannel(Channel):
         if self.pinned.get(chat_id) == message_id:
             del self.pinned[chat_id]
 
-    async def set_my_commands(self, commands) -> None:
-        self.set_my_commands_calls.append(commands)
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
+        # SPEC-v1.8.md R-D2: only records the default (global) menu
+        # registration -- see test_discoverability.py's identical fake for
+        # the full rationale.
+        if scope_chat_id is None:
+            self.set_my_commands_calls.append(commands)
 
     def sent_to(self, chat_id: str) -> list[str]:
         return [text for cid, text in self.sent if cid == chat_id]
@@ -324,24 +328,32 @@ async def test_delhabit_through_the_no_provider_fallback_path_archives_and_hard_
 # ===========================================================================
 
 
-async def test_public_menu_is_exactly_16_commands_addhabit_delhabit_last_both_languages(tmp_path, monkeypatch):
+async def test_public_menu_is_exactly_18_commands_log_routine_last_both_languages(tmp_path, monkeypatch):
+    # RENAMED (SPEC-v1.8.md's own integration step, mirrors this file's
+    # own established "each release renames + extends this test" pattern):
+    # `log`/`routine` (modules `quicklog`/`routines`, R-D2) now append
+    # after `addhabit`/`delhabit` (16 -> 18 total) -- the owner-only
+    # commands (including `audit`) are registered on a SEPARATE,
+    # owner-chat-scoped menu instead (R-D2), which `set_my_commands_
+    # calls[0]` (the default/global registration) never captures.
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     _seed_users(tmp_path)
     channel = await _run(monkeypatch, config, script=[])
 
     registered = channel.set_my_commands_calls[0]
     assert set(registered.keys()) == {"en", "th"}
-    expected_tail = ["addhabit", "delhabit"]
+    expected_tail = ["log", "routine"]
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 16, f"{lang}: {names}"
-        assert len(set(names)) == 16, f"{lang}: duplicate command name(s)"
+        assert len(names) == 18, f"{lang}: {names}"
+        assert len(set(names)) == 18, f"{lang}: duplicate command name(s)"
         # Established convention: each release appends its OWN new
         # commands at the end of the chain (see main.py's own
-        # command_menu comment) -- v1.7.0's addhabit/delhabit must be
-        # the last two entries, in that order, after v1.6.0's trends.
+        # command_menu comment) -- v1.8.0's log/routine must be the last
+        # two entries, in that order, after v1.7.0's addhabit/delhabit.
         assert names[-2:] == expected_tail, f"{lang}: {names}"
-        assert names[-3] == "trends", f"{lang}: {names}"
+        assert names[-4:-2] == ["addhabit", "delhabit"], f"{lang}: {names}"
+        assert names[-5] == "trends", f"{lang}: {names}"
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})
 
 

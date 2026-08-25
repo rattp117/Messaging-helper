@@ -36,7 +36,7 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append((chat_id, text))
 
     async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
@@ -56,7 +56,7 @@ class RaisingForChannel(Channel):
         self.sent: list[tuple[str, str]] = []
         self._fail_for = fail_for or set()
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         if chat_id in self._fail_for:
             raise RuntimeError(f"simulated send failure for {chat_id}")
         self.sent.append((chat_id, text))

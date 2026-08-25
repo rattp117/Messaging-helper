@@ -162,7 +162,9 @@ async def test_backoff_grows_and_caps_across_consecutive_transport_errors(monkey
         "token", "chat", client=client, backoff_initial_seconds=1.0, backoff_max_seconds=4.0
     )
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         pass
 
     with pytest.raises(_StopPolling):
@@ -200,7 +202,9 @@ async def test_backoff_resets_to_initial_after_a_successful_poll(monkeypatch):
         "token", "chat", client=client, backoff_initial_seconds=1.0, backoff_max_seconds=60.0
     )
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         pass
 
     with pytest.raises(_StopPolling):
@@ -258,7 +262,9 @@ async def test_offset_never_advances_on_failure_and_recovery_resumes_from_correc
 
     received: list[str] = []
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         received.append(text)
 
     with pytest.raises(_StopPolling):
@@ -298,7 +304,9 @@ async def test_telegram_unreachable_is_logged_and_retried_without_crashing(monke
         "token", "chat", client=client, backoff_initial_seconds=0.0, backoff_max_seconds=0.0
     )
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         pass
 
     import logging
@@ -473,7 +481,9 @@ async def test_only_allowed_hosts_contacted_across_all_resilience_paths(monkeypa
     await ollama_client.chat_json("sys", "usr", EXTRACTION_JSON_SCHEMA, {"water", "stretch", "diary", "unknown"})
     await health.run_once()
 
-    async def on_message(chat_id: str, text: str, display_name: str | None = None) -> None:
+    async def on_message(
+        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+    ) -> None:
         pass
 
     with pytest.raises(_StopPolling):

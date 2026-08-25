@@ -37,7 +37,7 @@ class LineChannel(Channel):
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError("LineChannel is a documented stub; see channels/line.py docstring.")
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         raise NotImplementedError
 
     async def run(

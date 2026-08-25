@@ -313,6 +313,58 @@ def _migration_010_user_habits(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_011_routines(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.8.md §5/§6 (module `routines`, R-R6): two new tables, no
+    existing table/column/row touched at all -- purely additive, like
+    migration 010 (and every migration except 006's own sanctioned break).
+    `routines` is one row per user-defined habit stack (`PRIMARY KEY
+    (user_id, name)`, so a routine name is only reserved within THAT
+    user's own namespace, mirroring `user_habits`' own per-user id
+    scoping). `routine_items` is the ordered item list for each routine
+    (`PRIMARY KEY (user_id, name, seq)`, `seq` a zero-based insertion
+    index so `core/routines.py` can always replay items in the order the
+    user created them -- SQLite gives no ordering guarantee across rows
+    without an explicit column to sort by). `habit_id` is stored as a raw
+    TEXT reference (not a FOREIGN KEY -- this codebase's schema never uses
+    them, e.g. `logs.category`/`habit_targets.habit_id` are likewise
+    unconstrained text) so a routine item can keep referencing a habit id
+    even after that habit is later archived/deleted (R-R3's own "skip and
+    note" behavior for a since-removed item depends on the row surviving
+    that habit's own removal). `value` is nullable REAL -- a boolean or
+    text habit item carries no meaningful numeric value (R-R3: boolean
+    always logs true regardless, text is always skipped), so `NULL` is the
+    correct stored value for those, while a numeric/duration item's
+    already-validated, already-unit-resolved base-unit value is stored
+    directly (no re-parsing at run time). A fresh/pre-v1.8 install starts
+    with zero rows in both tables, so `core/routines.py:execute_routine`'s
+    "no routines yet" list view is exactly what every existing user sees
+    until they create one (AC-9's own "inert until invoked" gate).
+    Idempotent the same way every migration here is: the runner only ever
+    applies this once, guarded by `PRAGMA user_version` (AC-B6)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS routines (
+          user_id    TEXT NOT NULL,
+          name       TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          PRIMARY KEY (user_id, name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS routine_items (
+          user_id  TEXT NOT NULL,
+          name     TEXT NOT NULL,
+          seq      INTEGER NOT NULL,
+          habit_id TEXT NOT NULL,
+          value    REAL,
+          PRIMARY KEY (user_id, name, seq)
+        )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -327,6 +379,7 @@ MIGRATIONS: list[Migration] = [
     _migration_008_checkin_and_announce,
     _migration_009_dashboard_and_records,
     _migration_010_user_habits,
+    _migration_011_routines,
 ]
 
 

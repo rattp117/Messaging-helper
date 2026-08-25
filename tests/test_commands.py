@@ -858,20 +858,22 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 
 
 def test_fresh_db_migrates_to_schema_version_10(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.7.md
-    "Per-user custom habits" (migration 010: `user_habits`, purely
-    additive) there are exactly 10 migrations, and a fresh DB must land on
-    version 10. Bump this literal deliberately the next time a migration
-    is added -- unlike a bare `== len(MIGRATIONS)` comparison, this fails
-    if a migration is silently added/removed without the test being
-    updated.
+    """Pinned regression guard (not tautological): as of SPEC-v1.8.md
+    "routines / habit stacks" (migration 011: `routines`/`routine_items`,
+    purely additive) there are exactly 11 migrations, and a fresh DB must
+    land on version 11. Bump this literal deliberately the next time a
+    migration is added -- unlike a bare `== len(MIGRATIONS)` comparison,
+    this fails if a migration is silently added/removed without the test
+    being updated.
     CHANGED (v1.7.0): was `== 9` / `test_..._schema_version_9` before
-    migration 010 was added -- see IMPL-v1.7-shared.md."""
-    assert len(MIGRATIONS) == 10
+    migration 010 was added -- see IMPL-v1.7-shared.md.
+    CHANGED (v1.8.0): was `== 10` before migration 011 was added -- see
+    IMPL-v1.8-routines.md."""
+    assert len(MIGRATIONS) == 11
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 10
+    assert database.schema_version == 11
     database.close()
 
 
@@ -912,6 +914,22 @@ def test_v16_kinds_are_valid_command_dataclass_values():
 
 def test_v17_kinds_are_valid_command_dataclass_values():
     for kind in ("addhabit", "delhabit"):
+        cmd = commands.Command(kind=kind)
+        assert cmd.kind == kind
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.8.md §5/§6/§11 skeleton (shared surface): `CommandKind` gained
+# "log"/"routine" so the parallel `quicklog`/`routines` modules never
+# collide on this file's own `CommandKind = Literal[...]` declaration. Same
+# "durable guarantee only" precedent as v1.6's/v1.7's own skeleton tests
+# above -- each module's own `_match_*`/dispatch-branch/adversarial-corpus
+# coverage lands in its own parallel-track pass and its own test file.
+# ---------------------------------------------------------------------------
+
+
+def test_v18_kinds_are_valid_command_dataclass_values():
+    for kind in ("log", "routine"):
         cmd = commands.Command(kind=kind)
         assert cmd.kind == kind
 
@@ -990,6 +1008,17 @@ _RESERVED_WORD_EXPECTED_KIND = {
     "delhabit": None,
     "เพิ่มนิสัย": None,
     "ลบนิสัย": None,
+    # SPEC-v1.8.md R-S5/R-Q1 (module `quicklog` landed "log"/"บันทึก";
+    # `routine`/`กิจวัตร` still await module `routines`'s own matcher). Bare
+    # "log" (no leading "/") still doesn't dispatch -- SPEC-v1.8.md §2.1
+    # only gives an English SLASH form ("/log"), no bare-word English
+    # alias -- so it stays `None`, same "slash-gated" bucket as
+    # "target"/"remind"/etc. above. "บันทึก" IS a bare-word Thai alias
+    # (`core/commands.py:_match_log`), so it now dispatches to "log".
+    "log": None,
+    "บันทึก": "log",
+    "routine": None,
+    "กิจวัตร": None,
 }
 
 
@@ -1017,6 +1046,24 @@ def test_reserved_trigger_words_addhabit_delhabit_not_yet_live_but_reserved():
     base_registry = HabitRegistry.from_config(Config())
     words = commands.reserved_trigger_words()
     for word in ("addhabit", "delhabit", "เพิ่มนิสัย", "ลบนิสัย"):
+        assert word in words
+        assert commands.dispatch(word, base_registry) is None
+
+
+def test_reserved_trigger_words_log_routine_not_yet_live_but_reserved():
+    # SPEC-v1.8.md R-S5: `routines`'s own matcher doesn't exist in this
+    # file yet, and bare "log" (no leading "/") was never given a live
+    # meaning at all (§2.1: English is slash-only) -- these words must not
+    # accidentally collide with any EXISTING command, and must be present
+    # in the reserved set for `habitdef`'s validation to consume (AC-8).
+    # "บันทึก" is EXCLUDED here -- module `quicklog` landed its own
+    # `_match_log` Thai-alias matcher, so it now dispatches live (see
+    # `_RESERVED_WORD_EXPECTED_KIND`/`test_reserved_trigger_words_covers_
+    # every_real_command_stem` above for its coverage, and
+    # tests/test_quicklog.py for the full adversarial corpus).
+    base_registry = HabitRegistry.from_config(Config())
+    words = commands.reserved_trigger_words()
+    for word in ("log", "routine", "กิจวัตร"):
         assert word in words
         assert commands.dispatch(word, base_registry) is None
 

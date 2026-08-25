@@ -134,7 +134,7 @@ class _CapturingChannel(Channel):
         self.images: list[tuple[str, bytes, str]] = []
         self._next_msg_id = 6000
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
         self.sent.append(text)
 
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:

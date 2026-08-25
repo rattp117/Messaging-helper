@@ -506,7 +506,7 @@ class _FakeTelegramChannel:
     async def send_actionable(self, chat_id: str, text: str, buttons) -> None:
         self.sent.append(text)
 
-    async def set_my_commands(self, commands) -> None:
+    async def set_my_commands(self, commands, *, scope_chat_id=None) -> None:
         pass
 
     async def run(self, on_message, on_callback=None):

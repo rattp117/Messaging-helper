@@ -83,6 +83,30 @@ RELEASE_NOTES: dict[str, dict[i18n.Language, str]] = {
             "• นิสัยที่กำหนดเองเป็นส่วนตัวของคุณเท่านั้น"
         ),
     },
+    "1.8.0": {
+        "en": (
+            "🎉 What's new in v1.8.0\n"
+            "• One-tap quick-log — /log pops a keyboard of your habits, tap once to log\n"
+            "• Instant reactions — the bot reacts on your typed logs, no extra reply\n"
+            "• Routines — /routine morning = water 500, stretch 10 bundles a whole habit "
+            "stack into one command or one tap\n"
+            '• Backfill — log for a past day, e.g. "500ml yesterday" or "stretched 20 min '
+            'on Monday"\n'
+            "• Reminders, check-ins, and nudges now arrive silently by default (no more "
+            "notification ping) — set [notifications] silent_proactive = false to go back"
+        ),
+        "th": (
+            "🎉 มีอะไรใหม่ใน v1.8.0\n"
+            "• บันทึกด่วนแบบแตะเดียว — พิมพ์ /log เพื่อเปิดปุ่มนิสัยของคุณ แตะครั้งเดียวก็บันทึกได้\n"
+            "• รีแอคชันทันที — บอทจะกดรีแอคชันบนข้อความบันทึกของคุณ ไม่ต้องตอบเพิ่ม\n"
+            "• กิจวัตร — /routine morning = water 500, stretch 10 รวมชุดนิสัยไว้ในคำสั่งเดียว "
+            "หรือแตะเดียว\n"
+            '• บันทึกย้อนหลัง — บันทึกของวันก่อนได้ เช่น "เมื่อวาน ดื่มน้ำ 500" หรือ '
+            '"ยืดเส้น 20 นาที วันจันทร์"\n'
+            "• การเตือน เช็คอิน และการกระตุ้นเบาๆ จะส่งแบบไม่มีเสียงแจ้งเตือนเป็นค่าเริ่มต้นแล้ว "
+            "— ตั้งค่า [notifications] silent_proactive = false เพื่อกลับไปแบบเดิม"
+        ),
+    },
 }
 
 

@@ -196,7 +196,12 @@ async def run_due_nudges(
     every other per-user failure in this loop) -- same additive, optional,
     backward-compatible convention as `run_due_reminders`'s own
     `registry_for`: omitted, every existing caller/test keeps using
-    `registry` for every user, byte-identical to pre-v1.7 (AC-5)."""
+    `registry` for every user, byte-identical to pre-v1.7 (AC-5).
+
+    SPEC-v1.8.md R-D1 (module `riders`): the send below passes
+    `disable_notification=config.notifications.silent_proactive` (default
+    `True`, AC-D1); `false` restores the pre-v1.8 notifying payload
+    (AC-D4)."""
     hhmm = _now_hhmm(clock, config.app.timezone)
     if hhmm != config.nudge.time:
         return
@@ -221,7 +226,7 @@ async def run_due_nudges(
             continue
 
         try:
-            await channel.send(user_id, message)
+            await channel.send(user_id, message, disable_notification=config.notifications.silent_proactive)
         except Exception:
             logger.exception("Sending the end-of-day nudge failed for %s; skipping (fail-open)", user_id)
             continue
