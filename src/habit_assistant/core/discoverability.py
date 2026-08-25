@@ -109,6 +109,18 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     # track landed.
     lines.append(i18n.t("help_addhabit_cmd", lang))
     lines.append(i18n.t("help_delhabit_cmd", lang))
+    # v1.8.1 gap-fix (small patch scope, no SPEC-v1.8.md-numbered §11
+    # integration step of its own -- the v1.8.0 integration pass updated
+    # the Telegram command menu but never appended these /help lines):
+    # same "data only in each module's own catalog block, wiring is a
+    # later append" posture as every block above. `/log` (module
+    # `quicklog`), `/routine` (module `routines`), then the backfill
+    # message-syntax capability line (module `backfill` -- not a command,
+    # so no menu entry of its own, mirroring `help_query`'s own
+    # syntax-not-command shape).
+    lines.append(i18n.t("help_log_cmd", lang))
+    lines.append(i18n.t("help_routine_cmd", lang))
+    lines.append(i18n.t("help_backfill", lang, max_days=config.backfill.max_days_back))
 
     return "\n\n".join(lines)
 

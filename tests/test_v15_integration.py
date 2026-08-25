@@ -859,6 +859,20 @@ async def test_announce_user_several_versions_behind_gets_only_the_current_note_
         db.close()
 
 
+def _latest_entry_bearing_version() -> str:
+    """The newest key in `release_notes.RELEASE_NOTES`, by SemVer tuple
+    order -- NOT necessarily today's `__version__` itself. A patch/gap-fix
+    release can (and, per R-N1's own "patch releases shouldn't message
+    users" convention, sometimes deliberately does -- v1.8.1 is exactly
+    this shape) ship with no `RELEASE_NOTES` entry of its own, in which
+    case the latest ENTRY-bearing version is an older one. Every version
+    key in this catalog is a plain "X.Y.Z" string (no pre-release/build
+    suffixes), so a plain per-component integer tuple compare is safe."""
+    from habit_assistant.core import release_notes
+
+    return max(release_notes.RELEASE_NOTES, key=lambda v: tuple(int(p) for p in v.split(".")))
+
+
 async def test_current_pinned_version_announces_to_active_users_today(tmp_path, monkeypatch):
     """UPDATED post-release (Archi's Phase 6.5 version bump landed,
     v1.7.0 tag exists): `src/habit_assistant/__init__.py:__version__` is
@@ -875,27 +889,82 @@ async def test_current_pinned_version_announces_to_active_users_today(tmp_path, 
     shared-surface pass -- confirmed pre-existing/unrelated to that work,
     same "each Phase 6.5 bump moves this pin forward by construction"
     pattern IMPL-v1.7-shared.md's own prior fix of this exact test already
-    documented) -- each Phase 6.5 bump moves this pin forward by
-    construction; a future bump (e.g. v1.9.0) will need the same one-line
-    update, not a design change."""
+    documented).
+
+    UPDATED AGAIN at v1.8.1 (Vera, release-prep for that gap-fix patch):
+    the previous shape hard-pinned `current_version == "1.8.0"` and
+    asserted ONLY the "announces" half -- both would have broken the
+    moment Archi bumped `__version__` to "1.8.1", because that patch
+    deliberately ships with NO `RELEASE_NOTES` entry (an invisible
+    `/help`-copy fix isn't worth interrupting users for, same R-N1
+    convention `core/announce.py:announce_release`'s own docstring
+    documents: "a version with no catalog entry at all announces
+    nothing"). Restructured into two halves so the suite stays green
+    through THIS bump and every future patch-without-notes bump, with no
+    literal edit required unless a new notes entry actually ships:
+    - Half A pins the "announces + marks caught up" behavior against the
+      latest ENTRY-bearing version (`_latest_entry_bearing_version()`,
+      currently "1.8.0"'s own real entry) -- not `__version__` itself, so
+      this half is stable across a no-entry patch bump.
+    - Half B drives the REAL `__version__` constant, whatever it is right
+      now, through the same wired `async_main` startup, and asserts
+      whichever shape matches: announced-and-marked if `__version__` has
+      an entry, or silently-nothing if it doesn't -- derived from
+      `current_version in release_notes.RELEASE_NOTES`, never a hardcoded
+      equality. A future release that ships v1.9.0 WITH a notes entry
+      exercises Half B's "announces" branch automatically; a future
+      patch that ships v1.8.2 WITHOUT one exercises the "silent no-op"
+      branch automatically -- no test edit needed either way, only a new
+      RELEASE_NOTES entry (or its absence) drives which branch runs."""
     from habit_assistant import __version__ as current_version
+    from habit_assistant.core import release_notes
 
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     seed_db = Database(tmp_path / "habits.db")
     seed_db.upsert_user(MEMBER, role="member", status="active")
     seed_db.close()
 
-    channel = await _run(monkeypatch, config, script=[], version=current_version)
+    # Half A: a current version WITH a RELEASE_NOTES entry announces to
+    # every active user and marks them caught up -- pinned against the
+    # latest entry-bearing version, not `__version__` itself (see the
+    # docstring above).
+    entry_version = _latest_entry_bearing_version()
+    channel = await _run(monkeypatch, config, script=[], version=entry_version)
 
     assert channel.sent_to(OWNER) != []
     assert channel.sent_to(MEMBER) != []
     db = Database(tmp_path / "habits.db")
     try:
-        assert db.get_last_announced_version(OWNER) == current_version
-        assert db.get_last_announced_version(MEMBER) == current_version
+        assert db.get_last_announced_version(OWNER) == entry_version
+        assert db.get_last_announced_version(MEMBER) == entry_version
     finally:
         db.close()
-    assert current_version == "1.8.0"  # documents the exact post-release state this test relies on
+
+    # Half B: today's ACTUAL `__version__` constant, through the SAME real
+    # startup wiring, against a freshly-active user who was not caught up
+    # by Half A above (so either branch below is a genuine end-to-end
+    # probe, not a tautology carried over from Half A's state). Whether it
+    # announces or stays silent is derived from the real catalog, not
+    # asserted as a fixed expectation -- this is what lets the test survive
+    # a future bump either way.
+    newcomer = "5005"
+    seed_db2 = Database(tmp_path / "habits.db")
+    seed_db2.upsert_user(newcomer, role="member", status="active")
+    seed_db2.close()
+
+    channel2 = await _run(monkeypatch, config, script=[], version=current_version)
+
+    db2 = Database(tmp_path / "habits.db")
+    try:
+        if current_version in release_notes.RELEASE_NOTES:
+            assert channel2.sent_to(newcomer) != []
+            assert db2.get_last_announced_version(newcomer) == current_version
+        else:
+            # The v1.8.1 shape: no catalog entry -> silent no-op, R-N1.
+            assert channel2.sent_to(newcomer) == []
+            assert db2.get_last_announced_version(newcomer) is None
+    finally:
+        db2.close()
 
 
 # ---------------------------------------------------------------------------

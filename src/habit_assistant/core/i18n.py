@@ -1601,6 +1601,14 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🤷 That's not one of your habits.",
         "th": "🤷 นี่ไม่ใช่นิสัยของคุณนะ",
     },
+    # --- /help addition (v1.8.1 gap-fix, integration-time append, same
+    # "data only, wiring is a later step" posture as `help_dashboard_cmd`/
+    # `help_heatmap_cmd`/`help_addhabit_cmd` above -- `core/quicklog.py`'s
+    # own IMPL never claimed `core/discoverability.py`'s file ownership) --
+    "help_log_cmd": {
+        "en": '👇 One-tap quick-log: /log pops a keyboard of your habits, tap once to log (Thai: "บันทึก").',
+        "th": '👇 บันทึกด่วนแบบแตะเดียว: พิมพ์ /log เพื่อเปิดปุ่มนิสัยของคุณ แตะครั้งเดียวก็บันทึกได้ (หรือ "บันทึก")',
+    },
     #
     # Module `routines` (R-R1-R-R6): /routine create/list/run/delete
     # confirmations + validation errors (§3.3's own sample copy). Keys must
@@ -1704,6 +1712,18 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": '🗑️ Deleted routine "{name}".',
         "th": '🗑️ ลบกิจวัตร "{name}" แล้ว',
     },
+    # --- /help addition (v1.8.1 gap-fix, integration-time append, same
+    # posture as `help_log_cmd` above) -------------------------------------
+    "help_routine_cmd": {
+        "en": (
+            '📋 Bundle a habit stack into one command: /routine morning = water 500, stretch 10, '
+            'then /routine morning to run it (Thai: "กิจวัตร ...").'
+        ),
+        "th": (
+            '📋 รวมชุดนิสัยไว้ในคำสั่งเดียว: /routine morning = water 500, stretch 10 '
+            'แล้วพิมพ์ /routine morning เพื่อรัน (หรือ "กิจวัตร ...")'
+        ),
+    },
     #
     # Module `backfill` (R-B1-R-B6): the backdated-log confirmation prefix
     # and the future/too-old bounds errors (§3.4). Keys must use a
@@ -1720,6 +1740,21 @@ CATALOG: dict[str, dict[Language, str]] = {
     "backfill_error_too_old": {
         "en": "🤔 That's too far back — I can only backfill up to {max_days} day(s).",
         "th": "🤔 ย้อนหลังไปไกลเกินไปนะ บันทึกย้อนหลังได้สูงสุด {max_days} วัน",
+    },
+    # --- /help addition (v1.8.1 gap-fix, integration-time append, same
+    # posture as `help_log_cmd`/`help_routine_cmd` above): a capability
+    # line, not a command -- `{max_days}` is read live from
+    # `config.backfill.max_days_back`, same "never hard-coded" rule as
+    # `help_snooze`'s `{minutes}` (SPEC-v1.1.md AC36) -------------------
+    "help_backfill": {
+        "en": (
+            '📅 Log for a past day: add "yesterday", "3 days ago", or "on Monday" to your log '
+            "— up to {max_days} day(s) back."
+        ),
+        "th": (
+            '📅 บันทึกย้อนหลังได้: เติม "เมื่อวาน", "3 วันที่แล้ว" หรือ "วันจันทร์" ต่อท้ายข้อความบันทึก '
+            "— ย้อนหลังได้สูงสุด {max_days} วัน"
+        ),
     },
     # ===================================================================
 }

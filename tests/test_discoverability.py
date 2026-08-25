@@ -863,6 +863,99 @@ def test_help_multiple_quiet_hour_windows_all_shown():
 
 
 # ---------------------------------------------------------------------------
+# v1.8.1 gap-fix: `/help` never got the v1.8.0 /log, /routine, and backfill
+# lines appended (the v1.8.0 integration pass updated the Telegram command
+# menu but missed these three /help lines). Same conventions as the
+# pre-existing help-content tests above: real `Config`, both languages,
+# concrete substring checks, no mocks.
+# ---------------------------------------------------------------------------
+
+
+def test_help_v181_mentions_log_command_in_both_languages():
+    config = Config()
+    text_en = discoverability.build_help_text(config, "en")
+    text_th = discoverability.build_help_text(config, "th")
+    assert "/log" in text_en
+    assert "บันทึก" in text_en  # Thai alias called out even in the EN reply
+    assert "/log" in text_th
+    assert "บันทึก" in text_th
+
+
+def test_help_v181_mentions_routine_command_in_both_languages():
+    config = Config()
+    text_en = discoverability.build_help_text(config, "en")
+    text_th = discoverability.build_help_text(config, "th")
+    assert "/routine" in text_en
+    assert "กิจวัตร" in text_en  # Thai alias called out even in the EN reply
+    assert "/routine" in text_th
+    assert "กิจวัตร" in text_th
+
+
+def test_help_v181_mentions_backfill_syntax_in_both_languages():
+    """R-B1's own recognized phrase bodies (`core/backfill.py`): EN
+    "yesterday"/"N days ago"/"on <weekday>", TH "เมื่อวาน"/"N วันที่แล้ว"/
+    "วัน<weekday>". This is message syntax, not a command -- no /command
+    token, unlike the /log and /routine checks above."""
+    config = Config()
+    text_en = discoverability.build_help_text(config, "en")
+    text_th = discoverability.build_help_text(config, "th")
+    assert "yesterday" in text_en
+    assert "days ago" in text_en
+    assert "Monday" in text_en
+    assert "เมื่อวาน" in text_th
+    assert "วันที่แล้ว" in text_th
+    assert "วันจันทร์" in text_th
+
+
+def test_help_v181_backfill_max_days_read_live_from_config_not_hardcoded():
+    """Same "never hard-coded" rule as `help_snooze`'s `{minutes}`
+    (SPEC-v1.1.md AC36, exercised elsewhere in this file for
+    weekly_review.time/snooze.default_minutes) -- here for
+    `config.backfill.max_days_back`."""
+    config_a = Config.model_validate({"backfill": {"max_days_back": 5}})
+    config_b = Config.model_validate({"backfill": {"max_days_back": 21}})
+
+    text_a = discoverability.build_help_text(config_a, "en")
+    text_b = discoverability.build_help_text(config_b, "en")
+
+    assert "5 day" in text_a and "21 day" not in text_a
+    assert "21 day" in text_b and "5 day" not in text_b
+
+
+def test_help_v181_new_lines_appear_after_delhabit_and_structure_otherwise_unchanged():
+    """The three new lines are a pure append after the existing
+    `help_delhabit_cmd` line (mirrors every earlier integration-time
+    append in `core/discoverability.py:build_help_text`) -- every
+    pre-existing section (header through /delhabit) is still present,
+    unperturbed, and in its original relative order; the new content is
+    strictly after it."""
+    config = Config()
+    text = discoverability.build_help_text(config, "en")
+
+    delhabit_idx = text.index("/delhabit")
+    log_idx = text.index("/log")
+    routine_idx = text.index("/routine")
+    backfill_idx = text.index("yesterday")
+
+    assert delhabit_idx < log_idx < routine_idx < backfill_idx
+
+    # Every pre-existing section (through the v1.7.0 /addhabit-/delhabit
+    # append) is still present -- this is the "structure unchanged
+    # otherwise" half of the check.
+    for msg_id in (
+        "help_header", "help_log", "help_undo", "help_target", "help_query",
+        "help_lang", "help_quiet_cmd", "help_dnd_cmd",
+        "help_dashboard_cmd", "help_heatmap_cmd", "help_records_cmd", "help_trends_cmd",
+        "help_addhabit_cmd", "help_delhabit_cmd",
+    ):
+        # Every one of these keys renders with no runtime kwargs at all (the
+        # ones that DO take kwargs -- help_streaks/help_remind_cmd/etc. --
+        # are already covered by the AC36 tests above), so a plain `i18n.t`
+        # call is a valid literal substring check here.
+        assert i18n.t(msg_id, "en") in text
+
+
+# ---------------------------------------------------------------------------
 # i18n: no missing-key KeyErrors in either language, no mojibake, and an
 # exact (not just subset) command-menu check.
 # ---------------------------------------------------------------------------

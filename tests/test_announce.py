@@ -121,6 +121,28 @@ async def test_ac22_no_catalog_entry_sends_nothing_and_never_raises(db, channel,
     assert db.get_last_announced_version(MEMBER) is None
 
 
+async def test_ac22_v181_gap_fix_patch_has_no_catalog_entry_and_announces_nothing(db, channel, config):
+    """v1.8.1 release-prep (Vera, per the coordinator's dispatch brief):
+    a concrete, version-pinned proof of the exact real-world case
+    `test_ac22_no_catalog_entry_sends_nothing_and_never_raises` above
+    already covers generically via `UNKNOWN_VERSION` -- IMPL-v1.8.1.md's
+    own "Announce-machinery finding" cites `core/announce.py:announce_release`
+    line 65-66 (`if version not in RELEASE_NOTES: return`) as proof this
+    patch fail-opens/skips silently, and the release checklist deliberately
+    did NOT add a `RELEASE_NOTES["1.8.1"]` entry (a `/help`-copy fix isn't
+    worth interrupting users for). First assert the precondition this test
+    relies on -- "1.8.1" genuinely has no entry -- so a future contributor
+    who adds one is told by an assertion failure here, not a silently
+    wrong test."""
+    assert "1.8.1" not in release_notes.RELEASE_NOTES
+
+    db.upsert_user(MEMBER, role="member", status="active")
+    await announce.announce_release(db, channel, config, "1.8.1")
+    assert channel.sent == []
+    assert db.get_last_announced_version(OWNER) is None
+    assert db.get_last_announced_version(MEMBER) is None
+
+
 async def test_ac20_active_user_receives_note_and_is_marked(db, channel, config):
     db.upsert_user(MEMBER, role="member", status="active")
     await announce.announce_release(db, channel, config, KNOWN_VERSION)
