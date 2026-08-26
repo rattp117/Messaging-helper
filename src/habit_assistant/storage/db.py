@@ -14,6 +14,7 @@ forget to scope a read — the parameter is required, not optional.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 from habit_assistant.storage.migrations import run_migrations
@@ -783,3 +784,236 @@ class Database:
         default 20)."""
         row = self._conn.execute("SELECT COUNT(*) AS n FROM routines WHERE user_id = ?", (user_id,)).fetchone()
         return int(row["n"])
+
+    # -----------------------------------------------------------------
+    # habit_cadence / grace_ledger / pauses (SPEC-v1.9.md §5/§6, migration
+    # 012): SHARED read accessors -- `core/streaks.py`'s reworked
+    # `compute_streak` calls these (once per invocation, R95's own "loads
+    # ... once" rule, not per-day) to decide whether a habit is on the
+    # daily or weekly walk, and which dates are NEUTRAL (held). The write
+    # side of each table (`set_cadence`/`clear_cadence`, `record_grace`/
+    # `grace_used_in_week`, `insert_pause`/`clear_pauses`) is each owning
+    # module's OWN later, disjoint edit to this file (M1/M2/M3) -- mirrors
+    # `user_habits`'/`routines`' own "shared surface reads, module writes"
+    # split is not quite right here (both read+write are eventually in
+    # this file), so more precisely: this shared surface owns exactly the
+    # READ methods every module's write path needs to already coexist
+    # with (the engine must be able to read a cadence/pause/grace row the
+    # moment ANY module writes one, without further plumbing changes).
+    # -----------------------------------------------------------------
+
+    def get_cadence(self, user_id: str, habit_id: str) -> int | None:
+        """The stored weekly cadence (`per_week`) for `(user_id,
+        habit_id)`, or `None` if this habit has no cadence row -- `None`
+        is what `streaks.compute_streak`/`streak_unit` treat as "daily"
+        (R1/R5). A fresh/pre-v1.9 install has zero `habit_cadence` rows,
+        so every habit reads `None` here by construction (AC2/AC3's own
+        byte-identical gate)."""
+        row = self._conn.execute(
+            "SELECT per_week FROM habit_cadence WHERE user_id = ? AND habit_id = ?", (user_id, habit_id)
+        ).fetchone()
+        return int(row["per_week"]) if row is not None else None
+
+    def paused_dates(self, user_id: str, habit_id: str, start: str, end: str) -> set[str]:
+        """Every 'YYYY-MM-DD' date in `[start, end]` (inclusive) that an
+        active pause covers for `(user_id, habit_id)` -- either a
+        habit-scoped `pauses` row or an all-habits row (`habit_id IS
+        NULL`, R12). Returned already expanded to individual date strings
+        (not left as a start/end range) because `streaks.compute_streak`'s
+        backward walk/weekly aggregation both test per-day membership;
+        expanding here, once, off however many overlapping pause rows
+        exist, is cheaper than re-deriving the range on every day/week of
+        the walk. A fresh/pre-v1.9 install (or any user with no active
+        pause) has zero matching rows, so this is always the empty set by
+        construction (AC2/AC3's own byte-identical gate). Plain
+        lexicographic string comparison on the ISO date columns is
+        correct across a year boundary (e.g. "2026-12-31" < "2027-01-01"),
+        the same convention `logs_between`/`prune_audit` already rely on
+        for `ts`."""
+        rows = self._conn.execute(
+            "SELECT start_date, end_date FROM pauses WHERE user_id = ? AND (habit_id = ? OR habit_id IS NULL) "
+            "AND start_date <= ? AND end_date >= ?",
+            (user_id, habit_id, end, start),
+        ).fetchall()
+        dates: set[str] = set()
+        for row in rows:
+            clamped_start = max(row["start_date"], start)
+            clamped_end = min(row["end_date"], end)
+            day = date.fromisoformat(clamped_start)
+            last = date.fromisoformat(clamped_end)
+            while day <= last:
+                dates.add(day.isoformat())
+                day += timedelta(days=1)
+        return dates
+
+    def grace_protected_dates(self, user_id: str, habit_id: str, start: str, end: str) -> set[str]:
+        """Every 'YYYY-MM-DD' date in `[start, end]` (inclusive) that the
+        nightly `grace.evaluate_grace` job has already bridged for
+        `(user_id, habit_id)` (R9) -- these dates are NEUTRAL in the
+        streak walk (R2), consistently across every subsequent read
+        (review/records/dashboard/summary/heatmap, R9's own "the engine
+        treats it as NEUTRAL for every subsequent read" guarantee). A
+        fresh/pre-v1.9 install (or a habit whose grace was never
+        consumed) has zero matching rows, so this is always the empty set
+        by construction (AC2/AC3's own byte-identical gate)."""
+        rows = self._conn.execute(
+            "SELECT protected_date FROM grace_ledger WHERE user_id = ? AND habit_id = ? "
+            "AND protected_date >= ? AND protected_date <= ?",
+            (user_id, habit_id, start, end),
+        ).fetchall()
+        return {row["protected_date"] for row in rows}
+
+    def active_pauses(self, user_id: str) -> list[sqlite3.Row]:
+        """Every `pauses` row `user_id` currently owns (habit-scoped or
+        all-habits), raw -- no date filtering against "today" happens
+        here (storage just stores/returns, mirrors `list_user_habits`'s/
+        `get_checkin_window`'s own "raw value, owning module interprets"
+        split); `/dashboard`/`/habits`' own R17 rendering (module `pause`)
+        is where "does this row cover today" is decided. A resumed pause
+        is deleted outright (`clear_pauses`, R13), so a row appearing here
+        is always one that hasn't been explicitly ended yet -- it may
+        still be naturally expired (past `end_date`) until its owner logs
+        in and/or a caller checks coverage."""
+        return self._conn.execute("SELECT * FROM pauses WHERE user_id = ?", (user_id,)).fetchall()
+
+    # -----------------------------------------------------------------
+    # pauses -- M3's own write region (SPEC-v1.9.md §5/§6, module `pause`,
+    # R12/R13). `core/pause.py:execute_pause` is the ONLY caller of
+    # `insert_pause` (always paired with a preceding `clear_pauses` for
+    # the SAME `(user_id, habit_id)` key -- "extend/replace", not "stack
+    # overlapping rows for the same scope", R12's own adversarial-edge
+    # resolution for "pausing a habit that's already paused": a second
+    # `/pause` for the same habit-or-all scope simply REPLACES the prior
+    # window rather than creating a second row or being rejected).
+    # `execute_resume` is the only caller of `clear_pauses`.
+    # -----------------------------------------------------------------
+
+    def insert_pause(self, user_id: str, habit_id: str | None, start: str, end: str) -> None:
+        """Insert one new active pause row -- `habit_id=None` stores SQL
+        NULL (R12's "all habits"). Callers needing "replace any existing
+        pause for this exact scope" call `clear_pauses(user_id, habit_id)`
+        first (this method itself performs no such check -- mirrors
+        `add_routine`'s own "storage just stores what it's given, caller
+        decides the policy" split)."""
+        self._conn.execute(
+            "INSERT INTO pauses (user_id, habit_id, start_date, end_date) VALUES (?, ?, ?, ?)",
+            (user_id, habit_id, start, end),
+        )
+        self._conn.commit()
+
+    def clear_pauses(self, user_id: str, habit_id: str | None) -> int:
+        """Delete every pause row for `user_id` whose `habit_id` EXACTLY
+        matches the key given (`None` matches only a NULL/all-habits row,
+        never "any row that happens to cover this habit" -- `habit_id IS
+        ?` is SQLite's NULL-safe equality, verified against `= ?`'s own
+        NULL-comparison pitfall). R13: `/resume <habit>` therefore deletes
+        only a HABIT-SPECIFIC row; it does not split or otherwise touch a
+        separately-scoped all-habits row that also happens to cover that
+        habit (a resume-one-habit-while-others-stay-paused request when
+        only an all-habits pause is active returns `pause_none_active`,
+        the literal reading of R13's "deletes ... rows for that habit" --
+        see IMPL-v1.9-pause.md's "Known limitations"). Returns the number
+        of rows actually deleted, so the caller can tell a real resume
+        apart from a no-op (R13's own `pause_none_active` idempotent
+        case)."""
+        cursor = self._conn.execute("DELETE FROM pauses WHERE user_id = ? AND habit_id IS ?", (user_id, habit_id))
+        self._conn.commit()
+        return cursor.rowcount
+
+    def truncate_pause(self, user_id: str, habit_id: str | None, new_end_date: str) -> int:
+        """Shrink the `end_date` of the pause row for `(user_id, habit_id)`
+        down to `new_end_date`, but only if it currently runs LATER than
+        that (`end_date > ?`) -- never extends a row, only ever pulls its
+        end date backward. Added for `core/pause.py:execute_resume`'s
+        early-resume fix (R13/R14 tension, Vera's `TEST-v1.9-pause.md`
+        finding 3): a `/resume` fired before a pause's natural `end_date`
+        must not retroactively un-protect the already-elapsed portion of
+        the window (R14's "held" promise), so `execute_resume` truncates
+        the row to end YESTERDAY (still covering every already-elapsed
+        paused day) instead of deleting it outright -- `clear_pauses`
+        stays the right call only when the row hasn't started accumulating
+        protected days yet (its own `start_date` is today or later).
+        Returns the number of rows actually shrunk (0 or 1, mirrors
+        `clear_pauses`'s own rowcount contract) -- a row already ending on
+        or before `new_end_date` (e.g. one already naturally expired) is
+        left untouched, not rewritten to the same or a later date."""
+        cursor = self._conn.execute(
+            "UPDATE pauses SET end_date = ? WHERE user_id = ? AND habit_id IS ? AND end_date > ?",
+            (new_end_date, user_id, habit_id, new_end_date),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    # -----------------------------------------------------------------
+    # habit_cadence WRITE region (SPEC-v1.9.md R18, module `cadence`, M1's
+    # own disjoint edit to this file -- the SHARED read accessor
+    # `get_cadence` above is what `streaks.py`'s engine reads; these two
+    # methods are the only writer `core/cadence.py:execute_cadence` (and,
+    # atomically, `core/habitdef.py:execute_addhabit`'s own `cadence=<N>w`
+    # pipe-key write) uses, mirroring `set_target`'s own "storage just
+    # stores, the caller already validated" split.
+    # -----------------------------------------------------------------
+
+    def set_cadence(self, user_id: str, habit_id: str, per_week: int) -> None:
+        """Upsert -- a second `/cadence <habit> <N>` for the same
+        user+habit replaces the previous value rather than erroring or
+        stacking rows. `ON CONFLICT(user_id, habit_id)` matches migration
+        012's `PRIMARY KEY(user_id, habit_id)` on `habit_cadence`."""
+        self._conn.execute(
+            "INSERT INTO habit_cadence (user_id, habit_id, per_week, created_at) "
+            "VALUES (?, ?, ?, datetime('now','localtime')) "
+            "ON CONFLICT(user_id, habit_id) DO UPDATE SET per_week = excluded.per_week",
+            (user_id, habit_id, per_week),
+        )
+        self._conn.commit()
+
+    def clear_cadence(self, user_id: str, habit_id: str) -> None:
+        """Delete the `habit_cadence` row for `(user_id, habit_id)`, if
+        any -- a no-op (not an error) when the habit has no cadence row
+        (R1/R5: `get_cadence` then reads `None`, so `compute_streak`/
+        `streak_unit` revert to the daily walk on the very next read)."""
+        self._conn.execute("DELETE FROM habit_cadence WHERE user_id = ? AND habit_id = ?", (user_id, habit_id))
+        self._conn.commit()
+
+    # -----------------------------------------------------------------
+    # grace_ledger WRITE region (SPEC-v1.9.md R8/R9, module `grace`, M2's
+    # own disjoint edit to this file -- the SHARED read accessor
+    # `grace_protected_dates` above is what `streaks.py`'s engine reads;
+    # these two methods are the only writer/lookup `core/grace.py:
+    # evaluate_grace` uses, mirroring `set_target`'s own "storage just
+    # stores, the caller already decided" split (evaluate_grace, not this
+    # layer, decides WHETHER a date should be bridged).
+    # -----------------------------------------------------------------
+
+    def record_grace(self, user_id: str, habit_id: str, protected_date: str, period_key: str) -> None:
+        """Write the one `grace_ledger` row for a bridged date (R9).
+        `INSERT OR IGNORE` (not a plain INSERT) makes this idempotent
+        against the table's own `PRIMARY KEY (user_id, habit_id,
+        protected_date)` -- a second call for a date already bridged
+        (e.g. `evaluate_grace` re-run after a restart on the same night)
+        writes nothing and raises nothing, matching R10's "sent once,
+        never repeated" guarantee at the storage layer too (the caller,
+        `evaluate_grace`, additionally short-circuits before ever
+        reaching this call for an already-bridged date via
+        `grace_protected_dates`, so this idempotency is a belt-and-
+        suspenders backstop, not the only guard)."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO grace_ledger (user_id, habit_id, protected_date, period_key) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, habit_id, protected_date, period_key),
+        )
+        self._conn.commit()
+
+    def grace_used_in_week(self, user_id: str, habit_id: str, period_key: str) -> bool:
+        """R8: has `(user_id, habit_id)` already spent its one grace for
+        this ISO week (`period_key`, e.g. `"2026-W35"`)? `evaluate_grace`
+        checks this before bridging a second miss in the same week (R11);
+        `core/grace.py:grace_status_line` also uses this (indirectly, via
+        `grace_protected_dates` over the week's own date range, since it
+        needs the actual protected date to display, not just the
+        boolean) for the `/habits` balance line."""
+        row = self._conn.execute(
+            "SELECT 1 FROM grace_ledger WHERE user_id = ? AND habit_id = ? AND period_key = ? LIMIT 1",
+            (user_id, habit_id, period_key),
+        ).fetchone()
+        return row is not None

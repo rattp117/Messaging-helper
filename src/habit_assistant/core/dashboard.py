@@ -121,7 +121,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from habit_assistant.core import audit, i18n, streaks, targets
+from habit_assistant.core import audit, cadence, i18n, pause, streaks, targets
 from habit_assistant.core.render_budget import TELEGRAM_MESSAGE_BUDGET, fit_within_budget
 
 if TYPE_CHECKING:
@@ -233,22 +233,36 @@ def render(db: "Database", config: "Config", registry: "HabitRegistry", lang: i1
 
     row_lines: list[str] = []
     for habit in registry:
-        goal = targets.effective_goal(db, habit, config, user_id)
-        streak = streaks.compute_streak(db, config, habit, today, user_id)
         label = habit.label(lang)
 
-        if goal is not None:
-            # Gap-pass fix #4 (finding #4): `is not None`, not truthiness
-            # -- an effective goal of exactly 0.0 is a legal config-time
-            # value and must render as goal-bearing, not count-only.
-            total = db.sum_value(user_id, habit.id, today_str)
-            # A zero goal is trivially always met (any total, including
-            # 0, satisfies `>= 0`) -- pct is defined as 100 rather than
-            # dividing by zero.
-            pct = round(100 * total / goal) if goal else 100
-            unit = habit.unit(lang) or ""
-            row_lines.append(
-                i18n.t(
+        # SPEC-v1.9.md AC10 (v1.9 integration pass): a cadence habit's row
+        # is entirely replaced by the "X of N this week" indicator + its
+        # own weekly-streak count -- reuses `cadence.cadence_status_line`
+        # (module `cadence`'s own pure formatter, built exactly for this
+        # reuse) rather than the ordinary goal/boolean/count line below,
+        # which is meaningless for a habit whose unit is now the ISO week.
+        # A non-cadence habit's line is completely unchanged (AC10's own
+        # "unchanged" half; AC3's byte-identical gate).
+        if db.get_cadence(user_id, habit.id) is not None:
+            line = cadence.cadence_status_line(db, config, habit, user_id, today, lang)
+            streak = streaks.compute_streak(db, config, habit, today, user_id)
+            line += i18n.t("cadence_weekly_streak_suffix", lang, streak=streak)
+        else:
+            goal = targets.effective_goal(db, habit, config, user_id)
+            streak = streaks.compute_streak(db, config, habit, today, user_id)
+
+            if goal is not None:
+                # Gap-pass fix #4 (finding #4): `is not None`, not
+                # truthiness -- an effective goal of exactly 0.0 is a
+                # legal config-time value and must render as goal-bearing,
+                # not count-only.
+                total = db.sum_value(user_id, habit.id, today_str)
+                # A zero goal is trivially always met (any total,
+                # including 0, satisfies `>= 0`) -- pct is defined as 100
+                # rather than dividing by zero.
+                pct = round(100 * total / goal) if goal else 100
+                unit = habit.unit(lang) or ""
+                line = i18n.t(
                     "dashboard_line_goal",
                     lang,
                     label=label,
@@ -259,14 +273,23 @@ def render(db: "Database", config: "Config", registry: "HabitRegistry", lang: i1
                     pct=pct,
                     streak=streak,
                 )
-            )
-        elif habit.type == "boolean":
-            done = db.count_true(user_id, habit.id, today_str) > 0
-            status = _STATUS_DONE if done else _STATUS_NOT_DONE
-            row_lines.append(i18n.t("dashboard_line_boolean", lang, label=label, status=status, streak=streak))
-        else:
-            count = db.count(user_id, habit.id, today_str)
-            row_lines.append(i18n.t("dashboard_line_count", lang, label=label, count=count, streak=streak))
+            elif habit.type == "boolean":
+                done = db.count_true(user_id, habit.id, today_str) > 0
+                status = _STATUS_DONE if done else _STATUS_NOT_DONE
+                line = i18n.t("dashboard_line_boolean", lang, label=label, status=status, streak=streak)
+            else:
+                count = db.count(user_id, habit.id, today_str)
+                line = i18n.t("dashboard_line_count", lang, label=label, count=count, streak=streak)
+
+        # SPEC-v1.9.md AC22 (v1.9 integration pass): a paused habit's row
+        # (cadence or not) gains a "⏸ paused until <date>" marker with the
+        # streak labeled held -- appended, never replacing, the row built
+        # above. A non-paused habit's row is unaffected (AC3).
+        until = pause.paused_until(db, config, user_id, habit.id, today)
+        if until is not None:
+            line += i18n.t("pause_dashboard_marker", lang, date=until)
+
+        row_lines.append(line)
 
     full = "\n".join([header, *row_lines])
     if len(full) <= TELEGRAM_MESSAGE_BUDGET or not row_lines:

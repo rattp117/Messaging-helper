@@ -38,5 +38,5 @@ class AuditEntry:
     entity: str | None  # a habit id for habit-scoped actions; None otherwise
     old_value: str | None  # previous value, already stringified by record(); None when N/A
     new_value: str | None  # new value, already stringified by record(); None when N/A
-    source: str  # one of core/audit.py:SOURCES ('command' | 'nl' | 'button' | 'admin')
+    source: str  # one of core/audit.py:SOURCES ('command' | 'nl' | 'button' | 'admin' | 'system')
     target_user_id: str | None = None  # admin actions on ANOTHER chat; None otherwise

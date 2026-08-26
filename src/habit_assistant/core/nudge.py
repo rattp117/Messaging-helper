@@ -51,11 +51,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import i18n, pause, targets
 from habit_assistant.core.checkins import effective_checkin
 from habit_assistant.core.reminders import in_dnd_now
 
@@ -105,10 +105,17 @@ def build_nudge_message(
     goal`) rather than divided, avoiding a `total / goal` float-precision
     wobble right at a boundary like exactly 80%."""
     today_str = _today_str(config, clock)
+    today_date = date.fromisoformat(today_str)
     threshold_pct = config.nudge.threshold_pct
 
     close: list[tuple[object, float, float]] = []
     for habit in registry:
+        # SPEC-v1.9.md R15 (v1.9 integration pass): mirrors `core/
+        # checkins.py:build_checkin_message`'s identical per-habit pause
+        # skip -- a paused habit never contributes its own line to this
+        # proactive, folded message; other habits still get theirs.
+        if pause.is_paused(db, config, user_id, habit.id, today_date):
+            continue
         goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None or goal <= 0:
             continue

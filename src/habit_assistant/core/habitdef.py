@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 _REQUIRED_KEYS = ("id", "type", "en")
 _HABIT_TYPES = frozenset({"numeric", "duration", "text", "boolean"})
 
+# SPEC-v1.9.md §4 R18 (module `cadence`): `/addhabit ... | cadence=<N>w`'s
+# own grammar -- a bare positive integer immediately followed by a
+# literal "w" (case-insensitive), e.g. "3w". No unit-of-time ambiguity
+# with `unit=`'s own "<en>[/<th>]" grammar -- this key is checked
+# independently, not folded into the unit/alias parsing below.
+_CADENCE_VALUE_RE = re.compile(r"^(\d+)w$", re.IGNORECASE)
+
 
 # ===========================================================================
 # validate_and_normalize -- R-V1-R-V5, pure and DB-free.
@@ -131,6 +138,7 @@ def validate_and_normalize(
     user_registry: "HabitRegistry",
     reserved: frozenset[str],
     cap: int,
+    cadence_max: int = 7,
 ) -> tuple[dict[str, object] | None, str | None, dict[str, object]]:
     """SPEC-v1.7.md §5/R-V1-R-V5: pure, DB-free validation of one
     `/addhabit` field set (as `core/commands.py:_parse_addhabit_fields`
@@ -160,7 +168,20 @@ def validate_and_normalize(
     token simply falls out of the per-user preparse lookup once the habit
     joins the registry (`core/units.py:build_unit_lookup`'s existing
     cross-habit-collision rule, unchanged, now operating over the
-    per-user registry)."""
+    per-user registry).
+
+    SPEC-v1.9.md §4 R18 (module `cadence`): the optional `cadence=<N>w`
+    key is validated last (after every R-V1-R-V4 check above already
+    passed) -- a malformed shape ("3", "w", "0w") OR an out-of-range N
+    (`N < 1` or `N > cadence_max`, the caller's own
+    `config.cadence.max_per_week`) returns `addhabit_invalid_cadence` and
+    the row is NOT built, satisfying AC8's own "created neither" for a bad
+    value (this function never writes anything itself either way -- the
+    caller, `execute_addhabit`, is what turns a successful `row["cadence"]`
+    into an ATOMIC-in-intent `db.add_user_habit` + `db.set_cadence` pair).
+    `cadence_max` defaults to `CadenceConfig.max_per_week`'s own default
+    (7) so this function's signature stays backward-compatible for any
+    caller that doesn't (yet) pass it explicitly."""
     missing = [key for key in _REQUIRED_KEYS if not fields.get(key, "").strip()]
     if missing:
         return None, "addhabit_usage", {}
@@ -232,6 +253,16 @@ def validate_and_normalize(
     if _label_exists(user_registry, label_th, "th"):
         return None, "addhabit_duplicate_label", {"label": label_th}
 
+    cadence_per_week: int | None = None
+    cadence_raw = fields.get("cadence", "").strip()
+    if cadence_raw:
+        match = _CADENCE_VALUE_RE.match(cadence_raw)
+        if match is None:
+            return None, "addhabit_invalid_cadence", {"max": cadence_max}
+        cadence_per_week = int(match.group(1))
+        if not (1 <= cadence_per_week <= cadence_max):
+            return None, "addhabit_invalid_cadence", {"max": cadence_max}
+
     row: dict[str, object] = {
         "id": norm_id,
         "type": habit_type,
@@ -241,6 +272,7 @@ def validate_and_normalize(
         "unit_th": unit_th,
         "goal": goal,
         "unit_aliases": json.dumps(aliases) if aliases else None,
+        "cadence": cadence_per_week,
     }
     return row, None, {}
 
@@ -324,7 +356,12 @@ async def execute_addhabit(
 
     user_registry = provider.for_user(user_id)
     row, msg_id, kwargs = validate_and_normalize(
-        command.fields, base_registry, user_registry, reserved_trigger_words(), config.custom_habits.max_per_user
+        command.fields,
+        base_registry,
+        user_registry,
+        reserved_trigger_words(),
+        config.custom_habits.max_per_user,
+        cadence_max=config.cadence.max_per_week,
     )
     if row is None:
         return i18n.t(msg_id, lang, **kwargs)  # type: ignore[arg-type]
@@ -350,6 +387,34 @@ async def execute_addhabit(
 
     provider.invalidate(user_id)
     audit.record(db, actor=user_id, action="habit_create", source="command", entity=row["id"], new_value=row["type"])
+
+    # SPEC-v1.9.md §4 R18/AC8: `cadence=<N>w` sets cadence ATOMICALLY at
+    # creation -- `row["cadence"]` is already fully validated (shape +
+    # 1..cadence_max range) by `validate_and_normalize` above, so this
+    # second write can only ever fail on a genuine DB error (never on a
+    # bad value -- that path already returned before any write happened,
+    # satisfying AC8's "a malformed value creates neither"). A DB-error
+    # failure here is reported the same fail-open way every other
+    # multi-write command in this codebase handles its own second write
+    # (e.g. `execute_addhabit`'s own habit_create audit row just above);
+    # the habit itself has already been created by this point, so the
+    # user is told to retry (`addhabit_save_failed`) rather than left with
+    # a silent partial write.
+    if row["cadence"] is not None:
+        try:
+            db.set_cadence(user_id, row["id"], row["cadence"])  # type: ignore[arg-type]
+        except Exception:
+            logger.exception("Failed to set cadence for new habit %r user %r", row["id"], user_id)
+            return i18n.t("addhabit_save_failed", lang)
+        audit.record(
+            db,
+            actor=user_id,
+            action="cadence_set",
+            source="command",
+            entity=row["id"],
+            old_value=None,
+            new_value=row["cadence"],
+        )
 
     return _build_addhabit_confirmation(row, lang)
 

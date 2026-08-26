@@ -1063,6 +1063,9 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
     expected = {
         "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
         "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit", "log", "routine",
+        # SPEC-v1.9.md §6/§11 integration step (modules `cadence`/`pause`/
+        # `wrapped`): joined the public menu (18 -> 22).
+        "cadence", "pause", "resume", "wrapped",
     }
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]

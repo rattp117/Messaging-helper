@@ -98,10 +98,23 @@ class Channel(ABC):
     # degrades to a plain text send of the caption instead of being forced
     # to implement this or raise NotImplementedError. A channel that CAN
     # post an image (channels/telegram.py, via sendPhoto) overrides it.
-    async def send_image(self, chat_id: str, image: bytes, caption: str) -> None:
+    async def send_image(self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False) -> None:
         """Push an image with a caption to `chat_id`. Default: send the
-        caption as text."""
-        await self.send(chat_id, caption)
+        caption as text.
+
+        SPEC-v1.9.md R26/AC28: `disable_notification` is an additive,
+        keyword-only, DEFAULTED param -- mirrors `send`'s own SPEC-v1.8.md
+        R-S1 shape. `False` (the default -- every pre-v1.9 call site)
+        calls `self.send(chat_id, caption)` with NO kwarg at all, the
+        exact pre-v1.9 call shape, so a minimal test/fake `Channel`
+        subclass that overrides only `send()` with a narrower signature
+        (predating the `disable_notification` kwarg's own v1.8 addition)
+        keeps working unmodified; only a caller that explicitly wants a
+        silent degraded image (`True`) forwards the kwarg."""
+        if disable_notification:
+            await self.send(chat_id, caption, disable_notification=True)
+        else:
+            await self.send(chat_id, caption)
 
     # SPEC-v1.1.md R-U7: concrete defaults, mirroring send_image's
     # degradation pattern above, so the many existing test fakes and

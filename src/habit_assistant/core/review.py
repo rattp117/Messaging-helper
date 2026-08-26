@@ -19,9 +19,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Literal
 
 from habit_assistant.config import Config
-from habit_assistant.core import charts, garmin, i18n, streaks, targets, trends
+from habit_assistant.core import charts, garmin, i18n, pause, streaks, targets, trends
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
@@ -61,6 +62,12 @@ class HabitStats:
     - duration: `total` (session count) + `streak`; `days`/`avg` unused.
     - text: `total` (entry count); `days`/`avg`/`streak` unused.
     - boolean: `total` (done-day count); `days`/`avg`/`streak` unused.
+
+    SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): `unit` is this habit's
+    `streak_unit` ("day" for every pre-v1.9 habit -- byte-identical output,
+    AC3 -- "week" for a cadence habit) -- consulted by `_format_stretch`/
+    `_format_generic`'s duration branch (the only place this dataclass's
+    own `streak` field is ever rendered) to pick the matching i18n variant.
     """
 
     habit: Habit
@@ -68,6 +75,7 @@ class HabitStats:
     total: float
     avg: float
     streak: int
+    unit: Literal["day", "week"] = "day"
 
 
 @dataclass(slots=True)
@@ -112,7 +120,12 @@ def _compute_habit_stats(
         # when the streak is actually longer, which the old
         # window-clamped loop under-reported.
         streak = streaks.compute_streak(db, config, habit, end_date, user_id)
-        return HabitStats(habit=habit, days=[], total=total, avg=0.0, streak=streak)
+        # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): this is the
+        # ONLY branch that ever renders `streak` (see `_format_stretch`/
+        # `_format_generic`'s duration case) -- `streak_unit` picks the
+        # matching i18n variant there.
+        unit = streaks.streak_unit(db, habit, user_id)
+        return HabitStats(habit=habit, days=[], total=total, avg=0.0, streak=streak, unit=unit)
 
     if habit.type == "text":
         total = sum(db.count(user_id, habit.id, d) for d in day_strs)
@@ -130,9 +143,20 @@ def compute_weekly_stats(
 ) -> WeeklyStats:
     """Aggregate the 7 days ending on end_date (inclusive), once per
     registered habit, in registry order, for `user_id` (SPEC-v1.2.md R-D3,
-    AC-U2/AC-U4)."""
+    AC-U2/AC-U4).
+
+    SPEC-v1.9.md R15/AC20 (v1.9 integration pass): a habit currently paused
+    for `user_id` (as of `end_date`, the review's own reference day) is
+    excluded from the review entirely -- mirrors the same per-habit pause
+    skip `core/checkins.py`/`core/nudge.py`/`core/streaks.compute_daily_
+    summary` all apply to their own proactive sends; other, non-paused
+    habits still get their usual section."""
     day_strs = _week_days(end_date)
-    habits = [_compute_habit_stats(db, config, habit, day_strs, end_date, user_id) for habit in registry]
+    habits = [
+        _compute_habit_stats(db, config, habit, day_strs, end_date, user_id)
+        for habit in registry
+        if not pause.is_paused(db, config, user_id, habit.id, end_date)
+    ]
     return WeeklyStats(end_date=end_date, habits=habits)
 
 
@@ -154,7 +178,13 @@ def _format_water(hs: HabitStats, lang: i18n.Language) -> list[str]:
 
 
 def _format_stretch(hs: HabitStats, lang: i18n.Language) -> list[str]:
-    return [i18n.t("stats_stretch_summary", lang, stretch_total=int(hs.total), stretch_streak=hs.streak)]
+    # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): `stretch` is a
+    # built-in `duration` habit, so it can carry a cadence row like any
+    # other -- `hs.unit` (set by `_compute_habit_stats`) picks the week
+    # variant; a non-cadence `stretch` (the pre-v1.9 default) always has
+    # `unit == "day"`, so this is byte-identical to v1.8.1 (AC3).
+    msg_id = "stats_stretch_summary_weeks" if hs.unit == "week" else "stats_stretch_summary"
+    return [i18n.t(msg_id, lang, stretch_total=int(hs.total), stretch_streak=hs.streak)]
 
 
 def _format_diary(hs: HabitStats, lang: i18n.Language) -> list[str]:
@@ -178,7 +208,10 @@ def _format_generic(hs: HabitStats, lang: i18n.Language) -> list[str]:
         return lines
 
     if habit.type == "duration":
-        return [i18n.t("stats_generic_duration_summary", lang, label=label, total=int(hs.total), streak=hs.streak)]
+        # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): unit-aware, same
+        # switch as `_format_stretch` above.
+        msg_id = "stats_generic_duration_summary_weeks" if hs.unit == "week" else "stats_generic_duration_summary"
+        return [i18n.t(msg_id, lang, label=label, total=int(hs.total), streak=hs.streak)]
 
     # text and boolean both render as a single entry/done-day count line.
     return [i18n.t("stats_generic_count_summary", lang, label=label, count=int(hs.total))]
@@ -266,8 +299,18 @@ async def run_weekly_review(
     # `review_block` is sync and already fail-open internally (mirrors
     # `garmin.format_garmin_section`'s identical "return '' on any
     # problem, never raise" contract) -- no try/except needed here.
+    #
+    # SPEC-v1.9.md R15/AC20 (v1.9 integration pass): this embedded trend
+    # block is part of the SAME proactive weekly-review send, so a
+    # currently-paused habit is excluded from it too -- via a filtered
+    # registry (`trends.py` itself is untouched; the on-demand `/trends`
+    # command still shows every habit, per Rule 10's own "pause mutes
+    # proactive sends only; the user can always query on demand").
+    trends_registry = HabitRegistry(
+        [h for h in registry if not pause.is_paused(db, config, user_id, h.id, end_date)]
+    )
     trends_section = trends.review_block(
-        db, config, registry, lang, user_id, clock=lambda: datetime.combine(end_date, datetime.min.time())
+        db, config, trends_registry, lang, user_id, clock=lambda: datetime.combine(end_date, datetime.min.time())
     )
     if trends_section:
         text += f"\n\n{trends_section}"
@@ -280,7 +323,10 @@ def _chart_caption(hs: HabitStats, lang: i18n.Language) -> str:
     if habit.type == "numeric":
         return i18n.t("chart_caption_numeric", lang, label=label, total=hs.total, unit=habit.unit(lang) or "", avg=hs.avg)
     if habit.type == "duration":
-        return i18n.t("chart_caption_duration", lang, label=label, total=hs.total, streak=hs.streak)
+        # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): unit-aware, same
+        # switch as `_format_stretch`/`_format_generic` above.
+        msg_id = "chart_caption_duration_weeks" if hs.unit == "week" else "chart_caption_duration"
+        return i18n.t(msg_id, lang, label=label, total=hs.total, streak=hs.streak)
     return i18n.t("chart_caption_boolean", lang, label=label, total=hs.total)  # boolean
 
 
@@ -308,6 +354,14 @@ def render_weekly_review_charts(
 
     pairs: list[tuple[bytes, str]] = []
     for habit, image in charts.render_weekly_charts(db, config, registry, end_date, lang, user_id):
-        hs = stats_by_habit_id[habit.id]
+        # SPEC-v1.9.md R15/AC20 (v1.9 integration pass): `compute_weekly_
+        # stats` above already excludes a currently-paused habit -- skip
+        # its chart too (`charts.render_weekly_charts` iterates the FULL
+        # registry independently, so a paused habit's id genuinely has no
+        # entry in `stats_by_habit_id` here; without this guard the lookup
+        # below would raise `KeyError` for exactly that habit).
+        hs = stats_by_habit_id.get(habit.id)
+        if hs is None:
+            continue
         pairs.append((image, _chart_caption(hs, lang)))
     return pairs

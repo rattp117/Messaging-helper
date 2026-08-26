@@ -365,6 +365,91 @@ def _migration_011_routines(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_012_lifecycle(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.9.md §5/§6 (shared surface, the streak-engine rework's own
+    storage): three new tables, no existing table/column/row touched at
+    all -- purely additive, like every migration except 006's own
+    sanctioned break. Each is read by `core/streaks.py`'s reworked
+    `compute_streak` (SHARED read accessors in `storage/db.py`:
+    `get_cadence`/`paused_dates`/`grace_protected_dates`) but WRITTEN only
+    by its own later, disjoint module (M1 `cadence`/M2 `grace`/M3 `pause`)
+    -- this migration only lays down the shape, mirroring migration 011's
+    own "shared surface creates the tables, the owning module(s) add the
+    CRUD" split.
+
+    `habit_cadence` (module `cadence`, R18): `PRIMARY KEY (user_id,
+    habit_id)` -- one row per user+habit that has declared a weekly
+    cadence; a habit's absence from this table is what `streak_unit`
+    treats as "daily" (R5), so a fresh/pre-v1.9 install's byte-identical
+    gate (AC3) holds by construction (zero rows -> `compute_streak` never
+    takes the weekly-walk branch for anyone).
+
+    `grace_ledger` (module `grace`, R8/R9): `PRIMARY KEY (user_id,
+    habit_id, protected_date)` -- one row per date a nightly
+    `evaluate_grace` run has already bridged; `period_key` is the ISO
+    `"<year>-W<week>"` string `grace_used_in_week` groups by (R8's "at
+    most one grace per ISO week" rule) -- stored as a plain column
+    (indexed implicitly via the PK's leading `user_id, habit_id`) rather
+    than derived at read time, so `grace_used_in_week` is a cheap indexed
+    lookup, not a per-call ISO-calendar recomputation over every row.
+
+    `pauses` (module `pause`, R12): a plain `AUTOINCREMENT` id (unlike the
+    other two tables' composite PKs) because a user can have MULTIPLE
+    overlapping/sequential pause rows over time (e.g. pause water, later
+    pause everything) and `/resume` needs to address/delete a specific
+    active set, not a single natural key. `habit_id IS NULL` means
+    "all habits" (R12's own "no habit token = pause all"). `start_date`/
+    `end_date` are inclusive 'YYYY-MM-DD' strings -- `storage/db.py:
+    paused_dates`'s own range-overlap query relies on plain lexicographic
+    string comparison staying correct across a year boundary (ISO date
+    strings sort correctly year-over-year, e.g. "2026-12-31" < "2027-01-01"),
+    same convention `logs_between`/`prune_audit` already rely on for `ts`.
+    `idx_pauses_user` serves both `paused_dates`'s own per-user+habit
+    range scan and `active_pauses`'s per-user scan.
+
+    A fresh/pre-v1.9 install starts with zero rows in all three tables, so
+    `compute_streak`'s daily walk for every existing user/habit takes
+    exactly the pre-v1.9 code path (AC2/AC3's own hard byte-identical
+    gate). Idempotent the same way every migration here is: the runner
+    only ever applies this once, guarded by `PRAGMA user_version`."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS habit_cadence (
+          user_id    TEXT NOT NULL,
+          habit_id   TEXT NOT NULL,
+          per_week   INTEGER NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          PRIMARY KEY (user_id, habit_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS grace_ledger (
+          user_id        TEXT NOT NULL,
+          habit_id       TEXT NOT NULL,
+          protected_date TEXT NOT NULL,
+          period_key     TEXT NOT NULL,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          PRIMARY KEY (user_id, habit_id, protected_date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pauses (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id    TEXT NOT NULL,
+          habit_id   TEXT NULL,
+          start_date TEXT NOT NULL,
+          end_date   TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pauses_user ON pauses(user_id, habit_id)")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -380,6 +465,7 @@ MIGRATIONS: list[Migration] = [
     _migration_009_dashboard_and_records,
     _migration_010_user_habits,
     _migration_011_routines,
+    _migration_012_lifecycle,
 ]
 
 

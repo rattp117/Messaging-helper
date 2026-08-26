@@ -82,10 +82,12 @@ def test_no_migration_was_added_for_history(tmp_path):
     (`dashboard_msg_id`/`habit_records`) -- same reasoning.
     UPDATED (v1.8.0): now also includes SPEC-v1.7.md's own migration 010
     (`user_habits`) and SPEC-v1.8.md's own migration 011 (`routines`/
-    `routine_items`) -- same reasoning."""
-    assert len(MIGRATIONS) == 11
+    `routine_items`) -- same reasoning.
+    UPDATED (v1.9.0): now also includes SPEC-v1.9.md's own migration 012
+    (`habit_cadence`/`grace_ledger`/`pauses`) -- same reasoning."""
+    assert len(MIGRATIONS) == 12
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     db.close()
 
 

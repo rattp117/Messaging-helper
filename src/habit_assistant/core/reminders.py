@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, targets, user_prefs
+from habit_assistant.core import i18n, pause, targets, user_prefs
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -307,6 +307,29 @@ async def send_reminder(
                     "Suppressing %s/%s reminder: inside a quiet-hours window (now=%s)", chat_id, habit.id, now_local
                 )
                 return
+
+    # SPEC-v1.9.md R15 (v1.9 integration pass): a paused habit's reminder is
+    # suppressed the exact same way a quiet-hours-suppressed one is -- an
+    # early return before the send, right beside that check. `db is not
+    # None` mirrors the goal-met check's own guard just below (a bare
+    # `send_reminder(channel, chat_id, habit, lang)` call with no `db`/
+    # `config`, e.g. a pre-v1.9 test or direct caller, is unaffected --
+    # byte-identical, no pause lookup happens at all). Fail-open (mirrors
+    # `_goal_already_met`'s own AC9.5 posture just below): a DB read error
+    # is logged and treated as "not paused" -- a hiccup reading the
+    # `pauses` table must never silently swallow a reminder.
+    if db is not None and config is not None:
+        try:
+            today_local = datetime.now(ZoneInfo(config.app.timezone)).date()
+            habit_is_paused = pause.is_paused(db, config, chat_id, habit.id, today_local)
+        except Exception:
+            logger.exception(
+                "Pause read failed for %s/%s; sending reminder anyway (fail-open)", chat_id, habit.id
+            )
+            habit_is_paused = False
+        if habit_is_paused:
+            logger.info("Suppressing %s/%s reminder: habit is paused", chat_id, habit.id)
+            return
 
     if db is not None and config is not None and _goal_already_met(db, habit, config, chat_id):
         return

@@ -553,7 +553,7 @@ def test_migration_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp
     # backfills them to OWNER (AC-M2).
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     db.attribute_legacy_to_owner(OWNER)
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated

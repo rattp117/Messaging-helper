@@ -35,7 +35,7 @@ import pytest
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config, GamificationConfig, I18nConfig, QuietHoursConfig
-from habit_assistant.core import i18n, streaks
+from habit_assistant.core import i18n, streaks, wrapped
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.core.review import compute_weekly_stats
 from habit_assistant.llm.ollama_client import ExtractionResult
@@ -281,7 +281,13 @@ def _water_confirmation(lang: i18n.Language, *, water_ml: int, total: int, goal:
 
 
 def _milestone_line(lang: i18n.Language, streak: int, label: str) -> str:
-    return i18n.t("milestone_reached", lang, streak=streak, label=label)
+    # SPEC-v1.9.md Rule 25/AC29 (v1.9 integration pass): `[wrapped]
+    # celebrate_burst` defaults `true`, so `main.py`'s real confirmation
+    # path now appends the bundled emoji-burst after every milestone line
+    # (Config()'s own default, used by every test in this file) -- this
+    # helper mirrors that real, correct behavior rather than the pre-v1.9
+    # byte shape.
+    return i18n.t("milestone_reached", lang, streak=streak, label=label) + "\n" + wrapped.celebration_burst(Config(), lang)
 
 
 async def test_milestone_crossing_sequence_3_then_no_repeat_then_7(db, monkeypatch):

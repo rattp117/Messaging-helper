@@ -328,7 +328,7 @@ async def test_delhabit_through_the_no_provider_fallback_path_archives_and_hard_
 # ===========================================================================
 
 
-async def test_public_menu_is_exactly_18_commands_log_routine_last_both_languages(tmp_path, monkeypatch):
+async def test_public_menu_is_exactly_22_commands_wrapped_last_both_languages(tmp_path, monkeypatch):
     # RENAMED (SPEC-v1.8.md's own integration step, mirrors this file's
     # own established "each release renames + extends this test" pattern):
     # `log`/`routine` (modules `quicklog`/`routines`, R-D2) now append
@@ -342,18 +342,23 @@ async def test_public_menu_is_exactly_18_commands_log_routine_last_both_language
 
     registered = channel.set_my_commands_calls[0]
     assert set(registered.keys()) == {"en", "th"}
-    expected_tail = ["log", "routine"]
+    # RENAMED (SPEC-v1.9.md's own integration pass, mirrors this file's
+    # established "each release renames + extends this test" convention):
+    # `cadence`/`pause`/`resume`/`wrapped` (modules `cadence`/`pause`/
+    # `wrapped`, §6/§11) now append after `log`/`routine` (18 -> 22 total).
+    expected_tail = ["log", "routine", "cadence", "pause", "resume", "wrapped"]
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 18, f"{lang}: {names}"
-        assert len(set(names)) == 18, f"{lang}: duplicate command name(s)"
+        assert len(names) == 22, f"{lang}: {names}"
+        assert len(set(names)) == 22, f"{lang}: duplicate command name(s)"
         # Established convention: each release appends its OWN new
         # commands at the end of the chain (see main.py's own
-        # command_menu comment) -- v1.8.0's log/routine must be the last
-        # two entries, in that order, after v1.7.0's addhabit/delhabit.
-        assert names[-2:] == expected_tail, f"{lang}: {names}"
-        assert names[-4:-2] == ["addhabit", "delhabit"], f"{lang}: {names}"
-        assert names[-5] == "trends", f"{lang}: {names}"
+        # command_menu comment) -- v1.9.0's cadence/pause/resume/wrapped
+        # must be the last four entries, in that order, after v1.8.0's
+        # log/routine.
+        assert names[-6:] == expected_tail, f"{lang}: {names}"
+        assert names[-8:-6] == ["addhabit", "delhabit"], f"{lang}: {names}"
+        assert names[-9] == "trends", f"{lang}: {names}"
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})
 
 

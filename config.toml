@@ -242,3 +242,39 @@ max_per_user = 20
 # sibling table to share one key.
 # [custom_habits]
 # max_per_user = 20
+
+# SPEC-v1.9.md "Life happens" -- weekly-cadence goals, grace day,
+# pause/vacation mode, recap wrapped card, celebration emoji-burst, Thai
+# font bundling. Four new sections, all defaulted -- an absent section
+# here uses config.py's own class defaults (AC5), same convention as
+# every prior config addition.
+
+# /cadence <habit> <N> sets a habit to "N times per week" (rest days stop
+# breaking its streak). max_per_week bounds N (an ISO week only has 7
+# days, so nothing above 7 is meaningful).
+[cadence]
+max_per_week = 7
+
+# Grace is fully automatic (no per-habit setup): at most once per ISO
+# week, a single missed day on a daily habit is quietly forgiven so the
+# streak survives. enabled = false turns the entire mechanism off -- no
+# bridging, no message, no ledger writes at all.
+[grace]
+enabled = true
+
+# /pause [<habit>] <Nd | until DATE> mutes proactive reminders/check-ins/
+# nudges for a habit (or all habits) and holds its streak for a planned
+# absence; /resume ends it early. max_days caps how long a single pause
+# may span.
+[pause]
+max_days = 30
+
+# /wrapped (alias /recap) sends one shareable PNG recap card combining
+# records + trends + a mini heatmap. auto_send is OFF by default (opt-in,
+# user decision 2026-08-26) -- set true to also silently send one card per
+# active user on the last day of each month. celebrate_burst appends a
+# small emoji-burst to milestone/record celebrations (no native Telegram
+# sticker -- see SPEC-v1.9.md §10).
+[wrapped]
+auto_send = false
+celebrate_burst = true

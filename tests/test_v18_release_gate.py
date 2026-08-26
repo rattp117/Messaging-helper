@@ -551,7 +551,11 @@ def test_quicklog_keyboard_for_20_custom_habits_chunks_rows_and_fits_callback_bu
 # ===========================================================================
 
 
-async def test_owner_menu_is_public_18_plus_5_admin_public_menu_is_exactly_18(tmp_path, monkeypatch):
+async def test_owner_menu_is_public_22_plus_5_admin_public_menu_is_exactly_22(tmp_path, monkeypatch):
+    # RENAMED (SPEC-v1.9.md's own integration pass, mirrors this file's
+    # established "each release renames + extends this test" convention):
+    # `cadence`/`pause`/`resume`/`wrapped` joined the public menu (18 -> 22),
+    # so the owner-scoped menu grows to 27 (22 public + 5 admin, unchanged).
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     channel = await _run(monkeypatch, config, script=[])
 
@@ -562,9 +566,9 @@ async def test_owner_menu_is_public_18_plus_5_admin_public_menu_is_exactly_18(tm
     assert owner_scope == OWNER
 
     for lang, entries in public_commands.items():
-        assert len(entries) == 18, f"public menu ({lang}) drifted from 18: {[n for n, _ in entries]}"
+        assert len(entries) == 22, f"public menu ({lang}) drifted from 22: {[n for n, _ in entries]}"
     for lang, entries in owner_commands.items():
-        assert len(entries) == 23, f"owner menu ({lang}) drifted from 23 (18 public + 5 admin)"
+        assert len(entries) == 27, f"owner menu ({lang}) drifted from 27 (22 public + 5 admin)"
 
 
 async def test_non_owner_chat_never_receives_any_scoped_menu_registration(tmp_path, monkeypatch):

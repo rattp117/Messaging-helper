@@ -96,9 +96,9 @@ class FakeChannel:
 
 
 def test_heatmap_adds_no_migration_of_its_own(tmp_path):
-    assert len(MIGRATIONS) == 11  # migration 009 is shared-surface (dashboard/records); 010/011 are habitdef/routines, not heatmap's
+    assert len(MIGRATIONS) == 12  # migration 009 is shared-surface (dashboard/records); 010/011/012 are habitdef/routines/lifecycle, not heatmap's
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     db.close()
 
 

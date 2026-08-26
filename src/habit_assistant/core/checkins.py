@@ -45,12 +45,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import audit, i18n, targets
+from habit_assistant.core import audit, i18n, pause, targets
 from habit_assistant.core.reminders import in_dnd_now
 
 if TYPE_CHECKING:
@@ -159,9 +159,20 @@ def build_checkin_message(
     rule -- a generic one-line nudge is returned instead, so such users
     still get check-ins. R-K7: every read is scoped to `user_id`."""
     today_str = _today_str(config, clock)
+    today_date = date.fromisoformat(today_str)
 
     goal_bearing: list[tuple[object, float, float]] = []
     for habit in registry:
+        # SPEC-v1.9.md R15 (v1.9 integration pass): a paused habit never
+        # contributes its own line to this proactive, folded message --
+        # mirrors the `goal is None: continue` skip immediately below, just
+        # for pause instead of "no goal configured". Other, non-paused
+        # habits still get their own check-in line as usual; only when
+        # EVERY habit ends up excluded (e.g. an all-habits pause) does the
+        # existing "nothing to report" fall-through below naturally
+        # suppress the whole send.
+        if pause.is_paused(db, config, user_id, habit.id, today_date):
+            continue
         goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None:
             continue

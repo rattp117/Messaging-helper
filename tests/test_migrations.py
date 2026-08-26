@@ -309,7 +309,7 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     after_rows = [
         tuple(r)
@@ -331,8 +331,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
@@ -361,7 +361,7 @@ def test_fresh_db_reports_schema_version_9_with_habit_targets_table(tmp_path):
     # added migration 009 (dashboard_msg_id/habit_records) -- a fresh DB
     # now lands on version 9, not 6.
     db = Database(tmp_path / "fresh_v6.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
@@ -418,7 +418,7 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
     # (checkin_window/last_announced_version), and 009 (dashboard_msg_id/
     # habit_records), so it lands on version 9, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     after_rows = [
         tuple(r)
@@ -434,8 +434,8 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
@@ -589,7 +589,7 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
     # migration 006's own effect (users/logs.user_id/habit_targets
     # rebuild/user_reminder_times) still holds.
     assert db.schema_version_before == 5
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     # logs values preserved, byte-for-byte; new user_id column present and NULL.
     after_logs = [
@@ -623,8 +623,8 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     # Re-running (reopen) applies nothing further (idempotent, AC-M1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
@@ -732,7 +732,7 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
     db = Database(db_path)
 
     assert db.schema_version_before == 6
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     # Every pre-existing table/row is untouched, byte-for-byte -- the
     # additive-only guarantee AC-A1 requires (unlike 006's own sanctioned
@@ -761,14 +761,14 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
 
     # Re-running (reopen) applies nothing further (idempotent, AC-A1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
 def test_fresh_db_has_audit_log_table_with_expected_shape(tmp_path):
     db = Database(tmp_path / "fresh_v7.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "audit_log" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
@@ -910,7 +910,7 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
     db = Database(db_path)
 
     assert db.schema_version_before == 7
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
     after_users = [
@@ -931,14 +931,14 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
 def test_fresh_db_has_checkin_and_announce_columns_all_null(tmp_path):
     db = Database(tmp_path / "fresh_v8.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     db.upsert_user("u1", role="member", status="active")
     assert db.get_checkin_window("u1") is None
     assert db.get_last_announced_version("u1") is None
@@ -1084,7 +1084,7 @@ def test_v8_shaped_db_migrates_to_v9_dashboard_and_records_touching_nothing_exis
     db = Database(db_path)
 
     assert db.schema_version_before == 8
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
     after_users = [
@@ -1112,14 +1112,14 @@ def test_v8_shaped_db_migrates_to_v9_dashboard_and_records_touching_nothing_exis
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
 def test_fresh_db_has_dashboard_and_records_shape(tmp_path):
     db = Database(tmp_path / "fresh_v9.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_records" in tables
     user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -1374,7 +1374,7 @@ def test_v9_shaped_db_migrates_to_v10_user_habits_touching_nothing_existing(tmp_
     db = Database(db_path)
 
     assert db.schema_version_before == 9
-    assert db.schema_version == 11
+    assert db.schema_version == 12
 
     # Existing rows/columns are untouched, byte-for-byte.
     after_users = [
@@ -1398,14 +1398,14 @@ def test_v9_shaped_db_migrates_to_v10_user_habits_touching_nothing_existing(tmp_
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 11
-    assert reopened.schema_version == 11
+    assert reopened.schema_version_before == 12
+    assert reopened.schema_version == 12
     reopened.close()
 
 
 def test_fresh_db_has_user_habits_shape(tmp_path):
     db = Database(tmp_path / "fresh_v10.db")
-    assert db.schema_version == 11
+    assert db.schema_version == 12
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "user_habits" in tables
     assert db.list_user_habits("u1") == []

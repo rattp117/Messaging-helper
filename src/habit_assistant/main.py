@@ -31,15 +31,18 @@ from habit_assistant.core import (
     audit,
     audit_view,
     backfill,
+    cadence,
     checkins,
     commands,
     dashboard,
     discoverability,
+    grace,
     habitdef,
     heatmap,
     history_view,
     i18n,
     nudge,
+    pause,
     preferences,
     preparse,
     query,
@@ -55,6 +58,7 @@ from habit_assistant.core import (
     trends,
     undo_ui,
     user_prefs,
+    wrapped,
 )
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
@@ -251,6 +255,28 @@ USERS_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
 AUDIT_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "View the audit log of account changes",
     "th": "ดูประวัติการเปลี่ยนแปลงบัญชี",
+}
+# SPEC-v1.9.md §6/§11 integration step (modules `cadence`/`pause`/
+# `wrapped`): `/cadence`, `/pause`, `/resume`, `/wrapped` join the public
+# menu -- same rationale as every other genuinely user-facing command
+# above (18 -> 22 public commands). `grace` (module `grace`) has no
+# command of its own (R8: "auto-only") and gets no menu entry, mirroring
+# `nudge`'s own OQ2-resolved "no command of its own" precedent.
+CADENCE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Set a weekly goal for a habit (e.g. gym 3x/week)",
+    "th": "ตั้งเป้าหมายรายสัปดาห์ให้กิจกรรม (เช่น ยิม 3 ครั้ง/สัปดาห์)",
+}
+PAUSE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Pause a habit (or everything) for a planned break",
+    "th": "พักกิจกรรม (หรือทุกอย่าง) ระหว่างที่คุณไม่สะดวก",
+}
+RESUME_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "End a pause early",
+    "th": "กลับมาก่อนกำหนด",
+}
+WRAPPED_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "Get a shareable picture recap of your recent progress",
+    "th": "รับการ์ดสรุปความคืบหน้าล่าสุดของคุณ",
 }
 
 
@@ -1000,6 +1026,69 @@ async def handle_inbound_message(
             if reply is not None:
                 await channel.send(user_id, reply)
             return
+        if command.kind == "cadence":
+            # SPEC-v1.9.md §6/§11 integration step (module `cadence`):
+            # deterministic, LLM-free, state-changing -- same "before the
+            # deferral check" placement as `target`/`checkin` above. A
+            # cadence set/clear changes the dashboard's own per-row
+            # rendering (AC10: the "X of N this week" line), so this
+            # refreshes it unconditionally after the reply, mirroring
+            # `target`'s own "a genuine state change refreshes the board"
+            # posture (an unrecognized-habit/usage reply that changed
+            # nothing simply re-renders the identical current board --
+            # cheap, fail-open, no different from any other no-op refresh
+            # in this codebase).
+            reply = await cadence.execute_cadence(
+                command, db=db, config=config, registry=registry, lang=lang, user_id=user_id
+            )
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
+            return
+        if command.kind in ("pause", "resume"):
+            # SPEC-v1.9.md §6/§11 integration step (module `pause`):
+            # deterministic, LLM-free, state-changing -- same placement/
+            # dashboard-refresh posture as `cadence` just above (AC22's
+            # "⏸ paused until <date>" marker is a dashboard/`/habits`
+            # rendering concern, so a pause/resume state change refreshes
+            # the live board the same way a target/cadence change does).
+            if command.kind == "pause":
+                reply = await pause.execute_pause(
+                    command, db=db, config=config, registry=registry, lang=lang, user_id=user_id
+                )
+            else:
+                reply = await pause.execute_resume(
+                    command, db=db, config=config, registry=registry, lang=lang, user_id=user_id
+                )
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            await dashboard.refresh(db, channel, config, registry, user_id, clock)
+            return
+        if command.kind == "wrapped":
+            # SPEC-v1.9.md §6/§11 integration step (module `wrapped`):
+            # `execute_wrapped` itself sends the PNG (via `channel.
+            # send_image`) when it succeeds, returning `""` to signal
+            # "already delivered"; a non-empty return is the text fallback
+            # for this caller to send -- mirrors `heatmap`'s identical
+            # empty-string-means-already-sent contract, including the
+            # same `--dry-run` decline (this command genuinely needs a
+            # real channel to send an image).
+            if dry_run:
+                print({"kind": "wrapped", "note": "requires a real channel; not supported in --dry-run"})
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            reply = await wrapped.execute_wrapped(
+                command, db=db, channel=channel, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock
+            )
+            if reply:
+                await channel.send(user_id, reply)
+            return
         if command.kind == "query":
             # ROADMAP.md v0.8.0: read-only (AC8.5) -- never touches health_monitor
             # deferral or the extractor below; classify_query_intent fails closed
@@ -1265,7 +1354,14 @@ async def handle_inbound_message(
     if config.gamification.enabled and backfill_date is None:
         crossed = streaks.crossed_milestone(db, config, habit, now.date(), was_qualified_before, user_id)
         if crossed is not None:
-            milestone_suffix = "\n\n" + i18n.t("milestone_reached", lang, streak=crossed, label=habit.label(lang))
+            # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): a cadence
+            # habit's milestone is a WEEK count -- `streak_unit` picks the
+            # matching wording; a non-cadence habit is always "day",
+            # byte-identical to v1.8.1 (AC3).
+            milestone_msg_id = (
+                "milestone_reached_weeks" if streaks.streak_unit(db, habit, user_id) == "week" else "milestone_reached"
+            )
+            milestone_suffix = "\n\n" + i18n.t(milestone_msg_id, lang, streak=crossed, label=habit.label(lang))
 
     # SPEC-v1.6.md R-R2 (module `insights`): recompute the affected
     # records right after the milestone check, same "read once after the
@@ -1293,9 +1389,21 @@ async def handle_inbound_message(
     else:
         broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
         if broken_records:
-            record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang)
+            record_unit = streaks.streak_unit(db, habit, user_id)
+            record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang, record_unit)
 
     confirmation_suffix = milestone_suffix + record_suffix
+    # SPEC-v1.9.md Rule 25/AC29 (v1.9 integration pass, module `wrapped`):
+    # the celebration emoji-burst is appended to an EXISTING milestone/
+    # record celebration line, never on its own -- gated on
+    # `confirmation_suffix` already being non-empty, and again on
+    # `celebration_burst` itself (which is `""` when `[wrapped]
+    # celebrate_burst=false`, so this is a no-op append -- byte-identical
+    # -- for that config or for any log that crossed neither).
+    if confirmation_suffix:
+        burst = wrapped.celebration_burst(config, lang)
+        if burst:
+            confirmation_suffix += "\n" + burst
     # SPEC-v1.8.md §3.4/R-B2: "the normal per-habit confirmation, prefixed
     # with the resolved date" -- reuses whichever confirmation formatter
     # below unchanged (no second formatter), just prepended.
@@ -1740,12 +1848,14 @@ async def async_main(args: argparse.Namespace) -> None:
     # `/checkin` + `/dashboard` + `/heatmap` + `/records` + `/trends` +
     # `/addhabit` + `/delhabit` + `/log` + `/routine` (see START_/REMIND_/
     # LANG_/QUIET_/HISTORY_/CHECKIN_/DASHBOARD_/HEATMAP_/RECORDS_/TRENDS_/
-    # ADDHABIT_/DELHABIT_/LOG_/ROUTINE_COMMAND_DESCRIPTIONS above; `/dnd` is
-    # deliberately excluded, sharing `/quiet`'s entry; the nudge has no
-    # command of its own, OQ2), English default + a Thai set. 18 public
-    # commands total. A transport error here is logged and never crashes
-    # startup (AC2) -- same belt-and-suspenders posture as the
-    # schema-conformance probe just above.
+    # ADDHABIT_/DELHABIT_/LOG_/ROUTINE_COMMAND_DESCRIPTIONS above; plus
+    # `/cadence`/`/pause`/`/resume`/`/wrapped` (SPEC-v1.9.md §6/§11,
+    # CADENCE_/PAUSE_/RESUME_/WRAPPED_COMMAND_DESCRIPTIONS); `/dnd` is
+    # deliberately excluded, sharing `/quiet`'s entry; the nudge and grace
+    # have no command of their own (OQ2, R8), English default + a Thai
+    # set. 22 public commands total. A transport error here is logged and
+    # never crashes startup (AC2) -- same belt-and-suspenders posture as
+    # the schema-conformance probe just above.
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
         lang: (
@@ -1766,6 +1876,10 @@ async def async_main(args: argparse.Namespace) -> None:
             + [("delhabit", DELHABIT_COMMAND_DESCRIPTIONS[lang])]
             + [("log", LOG_COMMAND_DESCRIPTIONS[lang])]
             + [("routine", ROUTINE_COMMAND_DESCRIPTIONS[lang])]
+            + [("cadence", CADENCE_COMMAND_DESCRIPTIONS[lang])]
+            + [("pause", PAUSE_COMMAND_DESCRIPTIONS[lang])]
+            + [("resume", RESUME_COMMAND_DESCRIPTIONS[lang])]
+            + [("wrapped", WRAPPED_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -2028,6 +2142,115 @@ async def async_main(args: argparse.Namespace) -> None:
         ),
         id="daily_summary",
         replace_existing=True,
+    )
+
+    # SPEC-v1.9.md R9 (module `grace`, integration step): the nightly
+    # 00:05 tick -- a fixed daily instant, same `CronTrigger(hour=,
+    # minute=, ...)` shape `weekly_review`/`daily_summary` already use
+    # (not a minutely tick + internal guard, since grace only ever needs
+    # to evaluate once per night) -- fans out over every active user via
+    # `db.active_user_ids()` (mirrors every other per-user proactive job
+    # in this codebase) and, for whichever habits `evaluate_grace` just
+    # bridged, sends the one kind message.
+    #
+    # ARCHI RULING (v1.9 integration pass, stated decision): the grace
+    # message is sent with `disable_notification=True` ALWAYS -- NOT
+    # gated on `config.notifications.silent_proactive` like every other
+    # proactive send in this codebase -- and deliberately bypasses
+    # quiet-hours/DND entirely (no `in_dnd_now` check here, unlike every
+    # other proactive job in this file). Rationale: grace reports a
+    # decision that has ALREADY been made (the bridging already happened,
+    # read-only from this point on) -- it never nags, and is content to
+    # sit quietly in the chat until the user next opens it in the
+    # morning, so respecting DND would only delay an already-harmless
+    # message, and `silent_proactive=false` (a user who WANTS ordinary
+    # reminders to ping) says nothing about whether they want a
+    # good-news-only message to ping too.
+    async def grace_tick() -> None:
+        today = date.today()
+        for user_id in db.active_user_ids():
+            user_registry = provider.for_user(user_id)
+            try:
+                bridged = grace.evaluate_grace(db, config, user_registry, user_id, today)
+            except Exception:
+                logger.exception("evaluate_grace failed for %s; skipping (fail-open)", user_id)
+                continue
+            if not bridged:
+                continue
+            lang = i18n.resolve_unprompted_language(config, user_pref=_stored_language_pref(db, user_id))
+            message = grace.format_grace_message(bridged, lang)
+            if not message:
+                continue
+            try:
+                await channel.send(user_id, message, disable_notification=True)
+            except Exception:
+                logger.exception("Sending the grace message failed for %s; skipping (fail-open)", user_id)
+
+    scheduler.add_job(
+        grace_tick,
+        trigger=CronTrigger(hour=0, minute=5, timezone=config.app.timezone),
+        id="grace_tick",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
+    # SPEC-v1.9.md R26/AC28 (module `wrapped`, integration step): the
+    # optional month-end auto-send, gated by `config.wrapped.auto_send`
+    # (default `false` -- with it off, this job fires and immediately
+    # no-ops every month, matching AC28's "with the default auto_send
+    # =false, no auto-send occurs"). When on: one SILENT card per active
+    # user (`disable_notification=True` on both the image and the text-
+    # fallback send, mirroring `silent_proactive`'s own established
+    # meaning for every other proactive send), pause-aware (skipped for a
+    # user whose ENTIRE registry is currently paused -- a partially-paused
+    # user still gets a card, same "only the paused habit is suppressed"
+    # posture the other 5 R15 sites take) and DND-aware (`in_dnd_now`,
+    # unlike grace's own deliberate bypass just above -- a recap image
+    # isn't a "something already happened, never delays" message the way
+    # grace's is). Fires once on the LAST day of every month (APScheduler's
+    # `day="last"` cron alias) at a fixed evening time -- SPEC-v1.9.md
+    # names no specific time-of-day, so 21:30 (after the weekly-review's
+    # default window, evening-quiet-friendly) is this integration step's
+    # own judgment call, easily revised.
+    async def wrapped_auto_job() -> None:
+        if not config.wrapped.auto_send:
+            return
+        today = date.today()
+        for user_id in db.active_user_ids():
+            try:
+                if in_dnd_now(db, config, user_id):
+                    continue
+                user_registry = provider.for_user(user_id)
+                habit_ids = [h.id for h in user_registry]
+                if not habit_ids or all(pause.is_paused(db, config, user_id, hid, today) for hid in habit_ids):
+                    continue
+                lang = i18n.resolve_unprompted_language(config, user_pref=_stored_language_pref(db, user_id))
+                auto_command = commands.Command(kind="wrapped", pref_value="month")
+                reply = await wrapped.execute_wrapped(
+                    auto_command,
+                    db=db,
+                    channel=channel,
+                    config=config,
+                    registry=user_registry,
+                    lang=lang,
+                    user_id=user_id,
+                    disable_notification=True,
+                )
+                if reply:
+                    await channel.send(user_id, reply, disable_notification=True)
+            except Exception:
+                logger.exception("Month-end wrapped auto-send failed for %s; skipping (fail-open)", user_id)
+
+    scheduler.add_job(
+        wrapped_auto_job,
+        trigger=CronTrigger(day="last", hour=21, minute=30, timezone=config.app.timezone),
+        id="wrapped_auto",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
     )
 
     scheduler.start()

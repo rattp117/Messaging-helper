@@ -31,6 +31,13 @@ try:
     matplotlib.use("Agg")  # non-interactive, offline -- no display backend needed
     import matplotlib.pyplot as plt
 
+    from habit_assistant.core.fonts import register_thai_font
+
+    # SPEC-v1.9.md Rule 23/AC6: additive Thai fallback (DejaVu Sans stays
+    # primary) -- idempotent, so this is a no-op on a second module (e.g.
+    # core/heatmap.py) importing after this one already registered it.
+    register_thai_font()
+
     MATPLOTLIB_AVAILABLE = True
 except ImportError:  # pragma: no cover -- exercised in envs without the [charts] extra
     plt = None  # type: ignore[assignment]

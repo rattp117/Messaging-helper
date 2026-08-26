@@ -858,22 +858,24 @@ async def test_undo_command_in_dry_run_does_not_write_or_require_channel(db, fix
 
 
 def test_fresh_db_migrates_to_schema_version_10(tmp_path):
-    """Pinned regression guard (not tautological): as of SPEC-v1.8.md
-    "routines / habit stacks" (migration 011: `routines`/`routine_items`,
-    purely additive) there are exactly 11 migrations, and a fresh DB must
-    land on version 11. Bump this literal deliberately the next time a
-    migration is added -- unlike a bare `== len(MIGRATIONS)` comparison,
-    this fails if a migration is silently added/removed without the test
-    being updated.
+    """Pinned regression guard (not tautological): as of SPEC-v1.9.md
+    "Life happens" (migration 012: `habit_cadence`/`grace_ledger`/
+    `pauses`, purely additive) there are exactly 12 migrations, and a
+    fresh DB must land on version 12. Bump this literal deliberately the
+    next time a migration is added -- unlike a bare `== len(MIGRATIONS)`
+    comparison, this fails if a migration is silently added/removed
+    without the test being updated.
     CHANGED (v1.7.0): was `== 9` / `test_..._schema_version_9` before
     migration 010 was added -- see IMPL-v1.7-shared.md.
     CHANGED (v1.8.0): was `== 10` before migration 011 was added -- see
-    IMPL-v1.8-routines.md."""
-    assert len(MIGRATIONS) == 11
+    IMPL-v1.8-routines.md.
+    CHANGED (v1.9.0): was `== 11` before migration 012 was added -- see
+    IMPL-v1.9-shared.md."""
+    assert len(MIGRATIONS) == 12
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 11
+    assert database.schema_version == 12
     database.close()
 
 
@@ -1019,6 +1021,43 @@ _RESERVED_WORD_EXPECTED_KIND = {
     "บันทึก": "log",
     "routine": None,
     "กิจวัตร": None,
+    # SPEC-v1.9.md §5 R18/R12-R13/R21 (shared surface): reserved ahead of
+    # the four parallel modules `cadence`/`pause`/`wrapped` that will
+    # actually add `_match_cadence`/`_match_pause`/`_match_resume`/
+    # `_match_wrapped` -- none of these words dispatch yet (same
+    # "skeleton reserves the word before the matcher exists" bucket as
+    # "log"/"routine"/"กิจวัตร" above).
+    "cadence": None,
+    "ต่อสัปดาห์": None,
+    # Pre-existing collision (flagged for module `cadence`'s own future
+    # `_match_cadence` Thai matcher, IMPL-v1.9-shared.md): this reserved
+    # stem CONTAINS "กี่" ("how many/much"), one of `_QUERY_PATTERNS`'
+    # substring anchors (line ~1708) -- so the bare word already dispatches
+    # as "query" today, not None, purely incidentally (query is a
+    # substring `.search()`, not anchored). Harmless now (no functional
+    # difference; still never misfiled as a log), but `_match_cadence`
+    # must be checked BEFORE the query check in `dispatch()`'s own
+    # ordering once it lands, exactly like every other anchored
+    # settings-style matcher already is, or this exact literal would be
+    # silently swallowed by query forever.
+    "กี่ครั้งต่อสัปดาห์": "query",
+    "pause": None,
+    "พัก": None,
+    "หยุดพัก": None,
+    "resume": None,
+    "กลับมา": None,
+    "ต่อ": None,
+    # Module `wrapped` landed its own `_match_wrapped` (core/commands.py).
+    # "wrapped"/"recap" stay `None`: SPEC-v1.9.md §5 only gives them SLASH
+    # forms ("/wrapped"/"/recap"), no bare-word English alias -- same
+    # "slash-gated" bucket as "target"/"heatmap"/"log" above. "สรุปเดือน"/
+    # "การ์ดสรุป" ARE bare-word Thai aliases (`_match_wrapped`'s own
+    # `_WRAPPED_TH_RE`, whole-message-anchored, no leading "/" needed), so
+    # they now dispatch to "wrapped" -- mirrors "บันทึก": "log" just above.
+    "wrapped": None,
+    "recap": None,
+    "สรุปเดือน": "wrapped",
+    "การ์ดสรุป": "wrapped",
 }
 
 

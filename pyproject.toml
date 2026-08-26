@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "1.8.1"
+version = "1.9.0"
 description = "Local-first Telegram habit-tracking assistant backed by a local Qwen model via Ollama"
 requires-python = ">=3.11"
 dependencies = [
@@ -32,6 +32,16 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/habit_assistant"]
+# SPEC-v1.9.md §6 (font shared surface): assets/fonts/ lives at the repo
+# root (mirrors config.toml's own placement), outside src/habit_assistant/
+# -- `packages` above only picks up the package directory, so the bundled
+# Noto Sans Thai TTF + its OFL.txt license need an explicit force-include
+# to travel with a built wheel. `core/fonts.py` itself resolves the font
+# path relative to the repo root at runtime (this project runs in-place
+# from a checkout, not as an installed-elsewhere wheel -- same assumption
+# `config.py:REPO_ROOT`/`DEFAULT_CONFIG_PATH` already make).
+[tool.hatch.build.targets.wheel.force-include]
+"assets/fonts" = "assets/fonts"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

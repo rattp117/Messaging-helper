@@ -304,6 +304,32 @@ CommandKind = Literal[
     # needs.
     "log",
     "routine",
+    # SPEC-v1.9.md §5/§6/§11 (shared surface): four bare Literal entries
+    # for the four parallel modules that build on this pass, same skeleton
+    # convention as the v1.6.0/v1.8.0 blocks above -- `dispatch()` itself
+    # does not yet recognize any of them; each module adds only its own
+    # `_match_*` matcher function + one `dispatch()` branch, disjoint from
+    # the other three. `reserved_trigger_words()` below already reserves
+    # every literal these future matchers will anchor on (SPEC-v1.9.md §5's
+    # own "reserve stems" comment), so a custom habit named after any of
+    # them is rejected today, and the reservation needs no edit once the
+    # matchers themselves land.
+    #
+    # "cadence" (module `cadence`, R18): `/cadence <habit> <N>|off`, Thai
+    # `ต่อสัปดาห์`/`กี่ครั้งต่อสัปดาห์`. Reuses `Command.category` (habit),
+    # `value_num` (N), and `pref_value` (raw "off" tail) -- no new fields.
+    "cadence",
+    # "pause"/"resume" (module `pause`, R12-R13): `/pause [<habit>]
+    # <Nd|until DATE>`, Thai `พัก`/`หยุดพัก`; `/resume [<habit>]`, Thai
+    # `กลับมา`/`ต่อ`. Reuses `Command.category` (habit, or None = all) and
+    # `pref_value` (the raw duration/until-token) -- no new fields.
+    "pause",
+    "resume",
+    # "wrapped" (module `wrapped`, R21): `/wrapped [month]`, alias
+    # `/recap [month]`, Thai `สรุปเดือน`/`การ์ดสรุป`. Reuses `Command.
+    # pref_value` (the raw "month" token, or None = default last-4-weeks
+    # window) -- no new fields.
+    "wrapped",
 ]
 
 
@@ -1369,6 +1395,58 @@ def _match_trends(stripped: str, registry: "HabitRegistry") -> "Command | None":
 
 
 # ---------------------------------------------------------------------------
+# wrapped -- SPEC-v1.9.md §4 Rule 21 / §5 (module `wrapped`). `/wrapped
+# [month]`, alias `/recap [month]` (both slash-anchored, fully permissive
+# tail -- same "an explicit '/' prefix is a near-zero false-positive
+# surface, so the view layer alone validates the tail" posture `/heatmap`/
+# `/records`/`/trends` above already established), and two disjoint Thai
+# triggers: `สรุปเดือน` ("month recap") ALWAYS means the calendar-month
+# window -- its own name already says "month", so no tail is needed or
+# read; `การ์ดสรุป` ("recap card") is the generic trigger, defaulting to
+# the bare "last 4 weeks" window unless followed by an explicit "เดือน"/
+# "month" tail token (mirrors the English `/wrapped month` shape). No
+# habit token in this grammar at all (Rule 21: always the user's WHOLE
+# registry) -- unlike `/heatmap`/`/records`/`/trends`, so neither Thai
+# trigger needs the registry-anchored habit-token construction those use;
+# both are whole-message-anchored instead (`^...$`), same discipline
+# SPEC-v1.9.md §5 calls for on every new v1.9 Thai alias.
+# ---------------------------------------------------------------------------
+
+_WRAPPED_SLASH_RE = re.compile(r"^/(?:wrapped|recap)(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_WRAPPED_TH_RE = re.compile(r"^(?P<trigger>สรุปเดือน|การ์ดสรุป)(?:\s+(?P<rest>\S.*))?$")
+_WRAPPED_MONTH_WORDS = {"month", "เดือน"}
+
+
+def _parse_wrapped_tail(rest: str | None) -> str | None:
+    """`None`/anything-not-"month" -> `None` (the default 4-week window);
+    a first token of "month" (English, case-insensitive via the caller's
+    `.lower()`) or "เดือน" (Thai) -> `"month"`. Trailing content beyond the
+    first token is ignored, mirroring `_parse_history_tail`'s own
+    documented leniency toward a tail this shape-only layer doesn't fully
+    validate."""
+    if rest is None:
+        return None
+    parts = rest.strip().split()
+    if not parts:
+        return None
+    return "month" if parts[0].lower() in _WRAPPED_MONTH_WORDS else None
+
+
+def _match_wrapped(stripped: str) -> "Command | None":
+    slash_match = _WRAPPED_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        return Command(kind="wrapped", pref_value=_parse_wrapped_tail(slash_match.group("rest")))
+
+    th_match = _WRAPPED_TH_RE.match(stripped)
+    if th_match is not None:
+        if th_match.group("trigger") == "สรุปเดือน":
+            return Command(kind="wrapped", pref_value="month")
+        return Command(kind="wrapped", pref_value=_parse_wrapped_tail(th_match.group("rest")))
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # addhabit / delhabit -- SPEC-v1.7.md §4 (module `habitdef`). `/addhabit
 # <pipe key=value grammar>` (Thai alias `เพิ่มนิสัย`) and `/delhabit <id>`
 # (Thai alias `ลบนิสัย`).
@@ -1697,6 +1775,281 @@ def _match_routine(stripped: str, registry: "HabitRegistry") -> "Command | None"
 
 
 # ---------------------------------------------------------------------------
+# cadence -- SPEC-v1.9.md §4 R18 (module `cadence`). Slash form `/cadence
+# <habit> <N>|off` stays fully permissive (mirrors `/target`'s/`/remind`'s
+# own posture -- nobody types "/cadence" by accident, so any first token
+# becomes the raw/resolved habit, any tail is offered to
+# `_parse_cadence_tail`; a malformed tail still produces a Command with
+# `value_num=None, pref_value=None` -- `core/cadence.py:execute_cadence`
+# reports the friendly `cadence_usage` reply for that shape, never a
+# dispatch failure, same recognize-shape/execute split as every settings
+# command above).
+#
+# CRITICAL (flagged by the shared-surface Luna, IMPL-v1.9-shared.md's own
+# "Known limitations"): the Thai alias trigger `กี่ครั้งต่อสัปดาห์` CONTAINS
+# `กี่` -- one of `_QUERY_PATTERNS`' own substring anchors (query intent,
+# below in this file) -- so a cadence phrase that also matches THIS
+# module's own trigger must be recognized before `_match_query` ever gets
+# a look, or it would be silently swallowed as an ordinary "how many"
+# query forever. `dispatch()`'s own call order (this matcher is wired in
+# well before the `_match_query` check at the very end of that function)
+# is what guarantees that -- see `tests/test_cadence.py`'s own adversarial
+# corpus for the two-way proof (a genuine cadence phrase routes to
+# "cadence"; an ordinary "กี่..." query with no resolvable habit+value tail
+# still routes to "query", unaffected by this matcher's addition).
+#
+# Both Thai aliases (`กี่ครั้งต่อสัปดาห์`/`ต่อสัปดาห์`) are, like `เตือน`/
+# `ย้อนหลัง`/`เป้า` before them, ordinary Thai words/compounds that can open
+# real prose ("ต่อสัปดาห์นี้ฉันยุ่งมาก" -- "this week I'm very busy") --
+# same false-positive risk class, same mitigation: the habit token is
+# built from the LIVE registry's ids/Thai labels (mirrors
+# `_build_target_th_set_pattern`/`_build_remind_th_pattern` exactly), AND
+# (stricter than `/remind`'s Thai alias, matching `/target`'s Thai
+# alias's own posture) the trailing value must ALREADY have the shape of
+# a valid cadence value (digits, or an off word) -- an unrecognized tail
+# shape falls through to `None` (ordinary prose), never a usage reply,
+# unlike the slash form's permissiveness above. Reuses `Command.category`
+# (habit), `value_num` (N), and `pref_value` (raw "off" tail) -- no new
+# fields (SPEC-v1.9.md §5's own explicit note).
+# ---------------------------------------------------------------------------
+
+_CADENCE_SLASH_RE = re.compile(r"^/cadence(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_CADENCE_OFF_WORDS = {"off", "ปิด", "ค่าเริ่มต้น"}
+
+
+def _parse_cadence_tail(tail: str) -> tuple[float | None, str | None]:
+    """`tail` -> `(value_num, pref_value)`. Only the FIRST whitespace-
+    delimited token is consulted (mirrors `/history`'s own "a token beyond
+    the first is ignored" tolerance) -- an off word (English "off", Thai
+    "ปิด"/"ค่าเริ่มต้น", the same clear-word vocabulary `_TARGET_CLEAR_WORDS`
+    already uses for `ค่าเริ่มต้น`) -> `(None, "off")`; a plain non-negative
+    digit string -> `(float(N), None)` (bounds/range validation, e.g.
+    N > 7, is `execute_cadence`'s own job, not this shape-only layer,
+    R18's "N∉[1,7] returns the friendly error"); anything else (empty,
+    non-numeric, negative) -> `(None, None)`, the shared "malformed shape"
+    sentinel both the slash form's usage-reply and the Thai alias's
+    fall-through-to-None each key off of."""
+    token = tail.strip().split(None, 1)[0] if tail.strip() else ""
+    if not token:
+        return None, None
+    if token.lower() in _CADENCE_OFF_WORDS:
+        return None, "off"
+    if token.isdigit():
+        return float(token), None
+    return None, None
+
+
+def _match_cadence_slash(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _CADENCE_SLASH_RE.match(stripped)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    if rest is None:
+        return Command(kind="cadence")  # bare "/cadence" -> execute_cadence's own usage reply
+
+    parts = rest.strip().split(None, 1)
+    habit_token = parts[0]
+    tail = parts[1].strip() if len(parts) > 1 else None
+    # `_resolve_target_category` is a generic habit-token resolver (id /
+    # en label / th label -> id, else the raw lowercased token) shared
+    # verbatim with `/target`/`/remind`/`/history` rather than duplicated.
+    category = _resolve_target_category(habit_token, registry)
+    if tail is None:
+        return Command(kind="cadence", category=category)  # habit only, no value -> usage reply
+
+    value_num, pref_value = _parse_cadence_tail(tail)
+    return Command(kind="cadence", category=category, value_num=value_num, pref_value=pref_value)
+
+
+def _build_cadence_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
+    """Thai "(กี่ครั้ง)ต่อสัปดาห์<habit><value>" -- habit token built from the
+    LIVE registry's ids/Thai labels, same false-positive mitigation as
+    `_build_target_th_set_pattern`/`_build_remind_th_pattern`/
+    `_build_history_th_pattern` (only a message naming a habit this bot
+    actually tracks for this user can ever match at all). The two trigger
+    literals don't need length-sorting against each other (unlike the
+    habit-token alternation below, which DOES sort longest-first) -- they
+    start with different characters (`ก` vs `ต`), so alternation order
+    between them can never cause one to shadow the other. Returns `None`
+    if the registry has no matchable Thai/id tokens (defensive; every
+    shipped config has at least water's "น้ำ")."""
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    if not escaped:
+        return None
+    habit_alt = "|".join(escaped)
+    return re.compile(rf"^(?:กี่ครั้งต่อสัปดาห์|ต่อสัปดาห์)\s*(?P<habit>{habit_alt})\s*(?P<value>\S+)$")
+
+
+def _match_cadence_nl(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    th_pattern = _build_cadence_th_pattern(registry)
+    if th_pattern is None:
+        return None
+    match = th_pattern.match(stripped)
+    if match is None:
+        return None
+
+    value_num, pref_value = _parse_cadence_tail(match.group("value"))
+    if value_num is None and pref_value is None:
+        # Trailing text doesn't have a valid cadence-value SHAPE -- ordinary
+        # Thai prose that merely happens to open with the trigger word and
+        # name a real habit (e.g. "ต่อสัปดาห์น้ำท่วมหนักมาก"). Fall through to
+        # `None` (unlike the slash form's permissiveness above) -- the same
+        # conservative posture `_match_remind`'s Thai alias hardening
+        # established (see this file's own v1.2.0 audit-fix docstring
+        # section) for a real Thai word that can open ordinary sentences.
+        return None
+
+    # The habit token came straight out of the registry-built alternation
+    # above, so it is always resolvable -- the `or` fallback is defensive
+    # only, never actually hit (mirrors `_match_remind`'s own precedent).
+    category = _resolve_habit_token(match.group("habit"), registry) or match.group("habit").lower()
+    return Command(kind="cadence", category=category, value_num=value_num, pref_value=pref_value)
+
+
+def _match_cadence(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_cadence_slash(stripped, registry) or _match_cadence_nl(stripped, registry)
+
+
+# ---------------------------------------------------------------------------
+# pause / resume -- SPEC-v1.9.md §4 R12/R13 (module `pause`). Slash forms
+# `/pause [<habit>] <Nd|until DATE|until WEEKDAY>` and `/resume [<habit>]`
+# stay fully permissive (mirrors `/target`'s/`/remind`'s/`/cadence`'s own
+# posture -- nobody types "/pause"/"/resume" by accident, so any tail
+# still produces a Command; `core/pause.py:execute_pause`/`execute_resume`
+# are where an unresolved habit, a malformed/past duration, or an
+# over-cap span each become a friendly reply, never a dispatch failure).
+#
+# `_split_pause_tail` below is this module's own shape-only "does the
+# first token look like the START of a duration, or a habit name?"
+# split -- R12's duration grammar always starts with either a digit
+# ("5d") or the literal word "until", a shape no habit id/label in this
+# app can ever collide with (habit tokens are alphabetic ids or labels;
+# "until" is not itself a reserved trigger word, but the grammar's own
+# fixed vocabulary makes the split unambiguous regardless). A bare
+# `/pause`/`/resume` (no tail at all) and a habit-only tail with NO
+# duration (`/pause water`) both carry `pref_value=None` -- `execute_
+# pause` treats that as "show current status" (a deliberate UX addition,
+# not an AC-mandated behavior; see IMPL-v1.9-pause.md), never an error.
+#
+# Both Thai aliases (`พัก`/`หยุดพัก` for pause, `กลับมา`/`ต่อ` for resume)
+# are, like `เตือน`/`ย้อนหลัง`/`ต่อสัปดาห์` before them, ordinary Thai
+# words that can open real prose ("ต่อ" above all -- an extremely common
+# two-character word meaning "continue/next/versus", the single riskiest
+# trigger stem in this file). Two deliberate hardening choices, STRICTER
+# than `เตือน`'s own established precedent:
+#   1. The Thai trigger's tail is MANDATORY (`\s+\S.*`, no optional
+#      group) -- a completely bare "พัก"/"หยุดพัก"/"กลับมา"/"ต่อ" NEVER
+#      dispatches at all, unlike `เช็คอิน`'s/`แดชบอร์ด`'s own "bare word
+#      = show" precedent. R13's own "no token resumes all" meaning is
+#      still fully reachable -- just via `/resume` (the English slash
+#      form, which nobody types by accident), never via the bare Thai
+#      word alone. This is a deliberate, documented narrowing of the
+#      Thai alias's reach (see IMPL-v1.9-pause.md's "Known limitations")
+#      in exchange for eliminating the false-positive risk a two-
+#      character common word carries when bare-matchable.
+#   2. When a tail IS present, any habit-shaped token in it must resolve
+#      via the LIVE registry (mirrors `_build_remind_th_pattern`'s own
+#      alternation), and any duration-shaped token must match the same
+#      `<N>d`/`until ...` SHAPE `_split_pause_tail` recognizes for the
+#      slash form (not yet full semantic validation -- that's still
+#      `execute_pause`'s job) -- so ordinary prose after any of the four
+#      trigger words ("พัก ก่อนนะ", "ต่อไปเลย", "กลับมาแล้วนะ") still
+#      falls through to `None` (verified against the adversarial corpus
+#      in tests/test_pause.py).
+# ---------------------------------------------------------------------------
+
+_PAUSE_SLASH_RE = re.compile(r"^/pause(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_RESUME_SLASH_RE = re.compile(r"^/resume(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_PAUSE_TH_RE = re.compile(r"^(?:หยุดพัก|พัก)\s+(?P<rest>\S.*)$")
+_RESUME_TH_RE = re.compile(r"^(?:กลับมา|ต่อ)\s+(?P<rest>\S.*)$")
+_PAUSE_DURATION_SHAPE_RE = re.compile(r"^(?:\d+d|until\s+\S+)$", re.IGNORECASE)
+
+
+def _split_pause_tail(rest: str) -> tuple[str | None, str | None]:
+    """`rest` (already stripped, non-empty) -> `(habit_token, duration_raw)`.
+    The first whitespace token starting with a digit or equal to "until"
+    (case-insensitive) means NO habit was given -- the whole tail is the
+    duration; otherwise the first token is the habit and everything after
+    it (joined back with single spaces) is the duration, or `None` if
+    nothing follows (habit given, no duration -> `execute_pause`'s own
+    "show status for this habit" branch)."""
+    tokens = rest.split()
+    first = tokens[0]
+    if first[0].isdigit() or first.lower() == "until":
+        return None, " ".join(tokens)
+    remainder = " ".join(tokens[1:])
+    return first, remainder or None
+
+
+def _match_pause_slash(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _PAUSE_SLASH_RE.match(stripped)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    if rest is None:
+        return Command(kind="pause", category=None, pref_value=None)
+    habit_token, duration_raw = _split_pause_tail(rest.strip())
+    category = _resolve_target_category(habit_token, registry) if habit_token is not None else None
+    return Command(kind="pause", category=category, pref_value=duration_raw)
+
+
+def _match_pause_th(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _PAUSE_TH_RE.match(stripped)
+    if match is None:
+        return None
+    habit_token, duration_raw = _split_pause_tail(match.group("rest").strip())
+    if habit_token is not None:
+        resolved = _resolve_habit_token(habit_token, registry)
+        if resolved is None:
+            return None
+        habit_token = resolved
+    if duration_raw is not None and not _PAUSE_DURATION_SHAPE_RE.match(duration_raw):
+        return None
+    return Command(kind="pause", category=habit_token, pref_value=duration_raw)
+
+
+def _match_pause(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_pause_slash(stripped, registry) or _match_pause_th(stripped, registry)
+
+
+def _match_resume_slash(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _RESUME_SLASH_RE.match(stripped)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    if rest is None:
+        return Command(kind="resume", category=None)
+    habit_token = rest.strip().split(None, 1)[0]
+    return Command(kind="resume", category=_resolve_target_category(habit_token, registry))
+
+
+def _match_resume_th(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    match = _RESUME_TH_RE.match(stripped)
+    if match is None:
+        return None
+    tail = match.group("rest").strip()
+    # Unlike pause, resume has no duration -- a valid Thai-alias argument
+    # is exactly ONE token (a habit name); anything with a second token is
+    # ordinary prose ("ต่อ ไปอีกหน่อย"), not a habit name, and falls
+    # through to None.
+    if " " in tail:
+        return None
+    resolved = _resolve_habit_token(tail, registry)
+    if resolved is None:
+        return None
+    return Command(kind="resume", category=resolved)
+
+
+def _match_resume(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    return _match_resume_slash(stripped, registry) or _match_resume_th(stripped, registry)
+
+
+# ---------------------------------------------------------------------------
 # query intent -- ROADMAP.md v0.8.0 (AC8.1-AC8.5). Anchored, conservative
 # interrogative markers only: none of these substrings/endings can occur in
 # a normal habit log (verified against the full adversarial corpus in
@@ -1910,6 +2263,15 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     if trends_command is not None:
         return trends_command
 
+    # SPEC-v1.9.md §4 Rule 21 (module `wrapped`): `/wrapped`/`/recap`/
+    # `สรุปเดือน`/`การ์ดสรุป` -- disjoint trigger text from every pattern
+    # above/below, grouped here with `/heatmap`'s/`/records`'s/`/trends`'s
+    # own view-style commands for readability (exact placement doesn't
+    # change behavior).
+    wrapped_command = _match_wrapped(stripped)
+    if wrapped_command is not None:
+        return wrapped_command
+
     # SPEC-v1.7.md §4 (module `habitdef`): `/addhabit`/`เพิ่มนิสัย` and
     # `/delhabit`/`ลบนิสัย` -- disjoint trigger text from every pattern
     # above/below, grouped here with `/history`'s/`/heatmap`'s/`/records`'s/
@@ -1940,6 +2302,34 @@ def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     routine_command = _match_routine(stripped, registry)
     if routine_command is not None:
         return routine_command
+
+    # SPEC-v1.9.md §4 R18 (module `cadence`): `/cadence`/`ต่อสัปดาห์`/
+    # `กี่ครั้งต่อสัปดาห์` -- MUST be checked before `_match_query` below
+    # (this file's own CRITICAL note, see `_match_cadence`'s own module
+    # comment block above): `กี่ครั้งต่อสัปดาห์` contains `กี่`, one of
+    # `_QUERY_PATTERNS`'s own substring anchors, so a genuine cadence
+    # phrase would otherwise be silently swallowed as a "how many" query.
+    # Grouped here with `/addhabit`'s/`/routine`'s own definition/
+    # action-style commands for readability (exact placement doesn't
+    # change behavior beyond the one hard "before query" constraint).
+    cadence_command = _match_cadence(stripped, registry)
+    if cadence_command is not None:
+        return cadence_command
+
+    # SPEC-v1.9.md §4 R12/R13 (module `pause`): `/pause`/`พัก`/`หยุดพัก`
+    # and `/resume`/`กลับมา`/`ต่อ` -- disjoint trigger text from every
+    # pattern above/below (none of the four Thai trigger words contain
+    # `กี่`/`เท่าไหร่`/`เท่าไร`/`ไหม`/`หรือยัง`, so unlike `cadence` above
+    # this pair has no ordering constraint relative to `_match_query`),
+    # grouped here with `/cadence`'s own SPEC-v1.9.md commands for
+    # readability.
+    pause_command = _match_pause(stripped, registry)
+    if pause_command is not None:
+        return pause_command
+
+    resume_command = _match_resume(stripped, registry)
+    if resume_command is not None:
+        return resume_command
 
     if _match_help(stripped):
         return Command(kind="help")
@@ -2092,5 +2482,29 @@ def reserved_trigger_words() -> frozenset[str]:
             "บันทึก",
             "routine",
             "กิจวัตร",
+            # SPEC-v1.9.md §5 (shared surface): reserved ahead of the four
+            # parallel modules that will actually add `_match_cadence`/
+            # `_match_pause`/`_match_resume`/`_match_wrapped` (module
+            # `cadence`/`pause`/`wrapped`) -- same "skeleton reserves the
+            # word before the matcher exists" posture as the `CommandKind`
+            # skeleton entries just above in this file. These are the
+            # exact literals SPEC-v1.9.md §5's own "reserve stems" comment
+            # names, so a custom habit named after any of them is rejected
+            # by `habitdef` today (mirrors the v1.8 log/routine
+            # reservation), and the reservation needs no edit once the
+            # matchers themselves land.
+            "cadence",
+            "ต่อสัปดาห์",
+            "กี่ครั้งต่อสัปดาห์",
+            "pause",
+            "พัก",
+            "หยุดพัก",
+            "resume",
+            "กลับมา",
+            "ต่อ",
+            "wrapped",
+            "recap",
+            "สรุปเดือน",
+            "การ์ดสรุป",
         }
     )

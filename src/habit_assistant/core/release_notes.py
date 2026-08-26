@@ -107,6 +107,32 @@ RELEASE_NOTES: dict[str, dict[i18n.Language, str]] = {
             "— ตั้งค่า [notifications] silent_proactive = false เพื่อกลับไปแบบเดิม"
         ),
     },
+    "1.9.0": {
+        "en": (
+            "🎉 What's new in v1.9.0\n"
+            "• Weekly-cadence goals — /cadence gym 3 means rest days no longer break your streak, "
+            "as long as you hit 3×/week\n"
+            "• A gentle grace day — miss one day and, once a week, your streak is quietly protected "
+            "with a kind note (no punishment, ever)\n"
+            "• Pause / vacation mode — /pause water until 2026-09-01 mutes reminders and holds your "
+            "streak; /resume picks up right where you left off\n"
+            "• /wrapped (or /recap) — a shareable recap card with your records, trends, and a mini "
+            "heatmap, last 4 weeks by default\n"
+            "• Thai now renders as real text in every chart and heatmap, not boxes\n"
+            "• A small emoji-burst celebrates milestones and new records"
+        ),
+        "th": (
+            "🎉 มีอะไรใหม่ใน v1.9.0\n"
+            "• เป้าหมายรายสัปดาห์ — พิมพ์ /cadence gym 3 แล้ววันพักจะไม่ทำให้สตรีคขาด ตราบใดที่ทำครบ 3 ครั้ง/สัปดาห์\n"
+            "• วันผ่อนผันแบบใจดี — พลาดไปหนึ่งวัน ระบบจะช่วยปกป้องสตรีคให้เงียบๆ สัปดาห์ละครั้ง พร้อมข้อความให้กำลังใจ "
+            "(ไม่มีการตำหนิใดๆ)\n"
+            "• โหมดพัก/ลาพัก — พิมพ์ /pause น้ำ until 2026-09-01 เพื่อหยุดการเตือนชั่วคราวและคงสตรีคไว้ "
+            "ใช้ /resume เพื่อกลับมาต่อได้ทุกเมื่อ\n"
+            "• /wrapped (หรือ /recap) — การ์ดสรุปที่แชร์ได้ รวมสถิติ แนวโน้ม และปฏิทินย่อ ค่าเริ่มต้นคือ 4 สัปดาห์ล่าสุด\n"
+            "• ภาษาไทยแสดงผลเป็นตัวอักษรจริงในกราฟและปฏิทินความสม่ำเสมอแล้ว ไม่ใช่กล่องสี่เหลี่ยมอีกต่อไป\n"
+            "• อีโมจิเฉลิมฉลองเล็กๆ เมื่อถึงไมล์สโตนหรือสถิติใหม่"
+        ),
+    },
 }
 
 

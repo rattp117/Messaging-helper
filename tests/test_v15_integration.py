@@ -1262,7 +1262,7 @@ async def test_migration_008_rehearsal_on_a_v1_4_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 11
+        assert db.schema_version == 12
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert {"checkin_window", "last_announced_version"} <= cols
         assert db.get_last_announced_version(OWNER) is None  # no backfill (migration's own contract)

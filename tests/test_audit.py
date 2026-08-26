@@ -66,7 +66,13 @@ def test_actions_matches_the_spec_vocabulary_exactly():
     SPEC-v1.8.md R-S6 (shared surface, module `routines`' own dependency):
     `routine_create`/`routine_delete`/`routine_run` extend the vocabulary
     once more -- quick-log and backfill produce ordinary `logs` rows and
-    are deliberately NOT audited (R-S6's own explicit carve-out)."""
+    are deliberately NOT audited (R-S6's own explicit carve-out).
+
+    SPEC-v1.9.md §5/§6 (shared surface, modules `cadence`/`pause`/
+    `grace`'s own dependency): `cadence_set`/`cadence_clear`,
+    `pause_set`/`pause_clear`, and `grace_consumed` extend the vocabulary
+    once more (R27) -- the five mutations Theme A's engine rework
+    introduces."""
     assert set(audit.ACTIONS) == {
         "undo", "edit", "target_set", "target_clear", "remind_set", "remind_off",
         "remind_default", "lang_set", "quiet_set", "quiet_off",
@@ -75,11 +81,15 @@ def test_actions_matches_the_spec_vocabulary_exactly():
         "user_approve", "user_block", "user_pending",
         "habit_create", "habit_archive", "habit_delete",
         "routine_create", "routine_delete", "routine_run",
+        "cadence_set", "cadence_clear", "pause_set", "pause_clear", "grace_consumed",
     }
 
 
 def test_sources_matches_the_spec_vocabulary_exactly():
-    assert set(audit.SOURCES) == {"command", "nl", "button", "admin"}
+    # SPEC-v1.9.md integration ruling (Archi): "system" added for
+    # grace_consumed, the first purely system-initiated (no actor typed/
+    # tapped/matched anything) mutation in this codebase's audit history.
+    assert set(audit.SOURCES) == {"command", "nl", "button", "admin", "system"}
 
 
 # ---------------------------------------------------------------------------

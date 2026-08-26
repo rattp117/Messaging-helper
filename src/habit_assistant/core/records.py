@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
 from habit_assistant.core import i18n, streaks
@@ -208,27 +208,47 @@ def update_on_log(
 # ===========================================================================
 
 
-def _celebration_line(record_type: str, value: float, habit: "Habit", lang: i18n.Language) -> str:
+def _celebration_line(
+    record_type: str, value: float, habit: "Habit", lang: i18n.Language, unit: Literal["day", "week"] = "day"
+) -> str:
     label = habit.label(lang)
     if record_type == "longest_streak":
+        # SPEC-v1.9.md Rule 5/AC12 (v1.9 integration pass): a cadence
+        # habit's stored `longest_streak` is a WEEK count -- `unit`
+        # (resolved by the caller via `streaks.streak_unit`) picks the
+        # matching wording; a non-cadence habit's `unit` is always "day",
+        # so this is byte-identical to v1.8.1 (AC3).
+        if unit == "week":
+            return i18n.t("record_broken_longest_streak_weeks", lang, label=label, weeks=int(value))
         return i18n.t("record_broken_longest_streak", lang, label=label, days=int(value))
     if habit.type in ("numeric", "duration"):
-        unit = habit.unit(lang) or ""
+        unit_str = habit.unit(lang) or ""
         msg_id = "record_broken_best_day" if record_type == "best_day" else "record_broken_best_week"
-        return i18n.t(msg_id, lang, label=label, value=value, unit=unit)
+        return i18n.t(msg_id, lang, label=label, value=value, unit=unit_str)
     msg_id = "record_broken_best_day_count" if record_type == "best_day" else "record_broken_best_week_count"
     return i18n.t(msg_id, lang, label=label, count=int(value))
 
 
-def format_celebration(broken: list[tuple[str, float]], habit: "Habit", lang: i18n.Language) -> str:
+def format_celebration(
+    broken: list[tuple[str, float]],
+    habit: "Habit",
+    lang: i18n.Language,
+    unit: Literal["day", "week"] = "day",
+) -> str:
     """R-R2: renders the celebration line(s) `update_on_log` just earned,
     for `main.py` to append to that log's confirmation -- mirrors `core/
     streaks.py`'s own `milestone_reached`-suffix call-site pattern
     (`"\\n\\n" + this_function(...)`) exactly, just generalized to
     possibly more than one broken record at once (a single log CAN break
     `best_day` and `best_week` and `longest_streak` all together, each
-    getting its own line). `[]` -> `""` (nothing to append)."""
-    return "\n".join(_celebration_line(record_type, value, habit, lang) for record_type, value in broken)
+    getting its own line). `[]` -> `""` (nothing to append).
+
+    SPEC-v1.9.md Rule 5/AC12 (v1.9 integration pass): `unit` (the caller's
+    already-resolved `streaks.streak_unit(db, habit, user_id)`) is passed
+    straight through to `_celebration_line` for its `longest_streak`
+    branch only -- omitted (the default `"day"`), every pre-v1.9 caller
+    keeps byte-identical output (AC3)."""
+    return "\n".join(_celebration_line(record_type, value, habit, lang, unit) for record_type, value in broken)
 
 
 # ===========================================================================
@@ -251,11 +271,16 @@ def _week_range_str(end_str: str) -> str:
     return f"{start.isoformat()}–{end.isoformat()}"
 
 
-def _record_line(habit: "Habit", record_type: str, row, lang: i18n.Language) -> str:
+def _record_line(habit: "Habit", record_type: str, row, lang: i18n.Language, unit: Literal["day", "week"] = "day") -> str:
     value = float(row["value"])
     achieved_on = row["achieved_on"]
 
     if record_type == "longest_streak":
+        # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): the stored
+        # `longest_streak` for a cadence habit is a week count -- mirrors
+        # `records.py:_celebration_line`'s identical switch.
+        if unit == "week":
+            return i18n.t("records_line_longest_streak_weeks", lang, weeks=int(value), achieved_on=achieved_on)
         return i18n.t("records_line_longest_streak", lang, days=int(value), achieved_on=achieved_on)
 
     display_date = achieved_on if record_type == "best_day" else _week_range_str(achieved_on)
@@ -272,11 +297,15 @@ def _habit_block(db: "Database", habit: "Habit", lang: i18n.Language, user_id: s
     rows_by_type = {row["record_type"]: row for row in db.get_records(user_id, habit.id)}
     if not rows_by_type:
         return header + "\n" + i18n.t("records_none_yet", lang)
+    # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): resolved once per
+    # habit (mirrors `compute_streak`'s own "resolve once, reuse" posture)
+    # -- only the `longest_streak` line consults it.
+    unit = streaks.streak_unit(db, habit, user_id)
     lines = [header]
     for record_type in RECORD_TYPES:
         row = rows_by_type.get(record_type)
         if row is not None:
-            lines.append(_record_line(habit, record_type, row, lang))
+            lines.append(_record_line(habit, record_type, row, lang, unit))
     return "\n".join(lines)
 
 

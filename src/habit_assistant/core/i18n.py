@@ -1046,6 +1046,29 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "routine run",
         "th": "รันกิจวัตร",
     },
+    # SPEC-v1.9.md §5/§6 (shared surface, core/audit.py:ACTIONS' five new
+    # values -- modules `cadence`/`pause`/`grace` are each this vocabulary's
+    # own later, disjoint writer).
+    "audit_action_cadence_set": {
+        "en": "cadence set",
+        "th": "ตั้งความถี่รายสัปดาห์",
+    },
+    "audit_action_cadence_clear": {
+        "en": "cadence cleared",
+        "th": "ยกเลิกความถี่รายสัปดาห์",
+    },
+    "audit_action_pause_set": {
+        "en": "paused",
+        "th": "พัก",
+    },
+    "audit_action_pause_clear": {
+        "en": "resumed",
+        "th": "กลับมาทำต่อ",
+    },
+    "audit_action_grace_consumed": {
+        "en": "grace used",
+        "th": "ใช้สิทธิ์ผ่อนผัน",
+    },
 
     # -----------------------------------------------------------------
     # Module `history` (/history, ย้อนหลัง -- SPEC-v1.4.md R-R1-R-R5,
@@ -1756,5 +1779,323 @@ CATALOG: dict[str, dict[Language, str]] = {
             "— ย้อนหลังได้สูงสุด {max_days} วัน"
         ),
     },
+
     # ===================================================================
+    # SPEC-v1.9.md "Life happens" (streak-engine rework) + Recap wrapped
+    # card -- shared-surface key-block skeletons (§11: "the i18n
+    # key-block skeletons are created in the shared surface first; each
+    # module then fills only its own disjoint keys", same convention as
+    # SPEC-v1.7.md's/SPEC-v1.8.md's own skeleton markers above). No key is
+    # added under any of the four markers below yet, only the section
+    # marker + the reserved key-name prefix each module must use, so a
+    # later module edit here can never collide with another parallel
+    # module's own addition. The five `audit_action_*` labels these
+    # modules depend on are already filled above (shared-surface owned,
+    # not a module concern) -- see the SPEC-v1.9.md block just after
+    # `audit_action_routine_run`.
+    #
+    # Module `cadence` (R18-R20): `/cadence <habit> <N>|off` confirmations
+    # + validation errors (§3's own sample copy: "✅ gym is now 3×/week..."),
+    # the "/habits"/dashboard "X of N this week" indicator, and
+    # `/addhabit ... | cadence=<N>w`'s own `addhabit_invalid_cadence`
+    # error. Keys must use a `cadence_*` prefix.
+    "cadence_set": {
+        "en": "✅ {label} is now {n}×/week. This week: {done} of {n} ✅",
+        "th": "✅ {label}เป็นเป้าหมาย {n} ครั้ง/สัปดาห์แล้ว สัปดาห์นี้: {done} จาก {n} ✅",
+    },
+    "cadence_cleared": {
+        "en": "↩️ {label}'s weekly cadence is off — back to a daily streak.",
+        "th": "↩️ ปิดเป้าหมายรายสัปดาห์ของ{label}แล้ว — กลับไปนับสตรีครายวันตามเดิม",
+    },
+    "cadence_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "cadence_invalid_value": {
+        "en": '🤔 A weekly cadence has to be a whole number from 1 to {max} times/week, e.g. "/cadence {habit_id} 3".',
+        "th": '🤔 เป้าหมายรายสัปดาห์ต้องเป็นจำนวนเต็มตั้งแต่ 1 ถึง {max} ครั้ง/สัปดาห์ เช่น "/cadence {habit_id} 3"',
+    },
+    "cadence_usage": {
+        "en": '🤔 Usage: "/cadence <habit> <N>" (1-7 times/week) to set, or "/cadence <habit> off" to clear it.',
+        "th": '🤔 วิธีใช้: "/cadence <กิจกรรม> <จำนวน>" (1-7 ครั้ง/สัปดาห์) เพื่อตั้ง หรือ "/cadence <กิจกรรม> off" เพื่อปิด',
+    },
+    "cadence_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "cadence_status_line": {
+        "en": "🗓 {label} — {n}×/week · this week {done} of {n}{check}",
+        "th": "🗓 {label} — {n} ครั้ง/สัปดาห์ · สัปดาห์นี้ {done} จาก {n}{check}",
+    },
+    "addhabit_invalid_cadence": {
+        "en": '🤔 cadence has to be like "3w" — a whole number from 1 to {max} times/week.',
+        "th": '🤔 cadence ต้องอยู่ในรูปแบบ "3w" — จำนวนเต็มตั้งแต่ 1 ถึง {max} ครั้ง/สัปดาห์',
+    },
+    #
+    # Module `grace` (R8-R11): the one-time kind grace-consumed message
+    # (§3's own sample: "🛟 No worries — I used your grace day..."), and the
+    # `/habits` grace-balance line ("available this week" / "used Tue").
+    # Keys must use a `grace_*` prefix.
+    "grace_message_line": {
+        "en": "🛟 No worries — I used your grace day for {label}, so your {streak}-day streak is safe. (one grace per week)",
+        "th": "🛟 ไม่ต้องห่วงนะ — ฉันใช้สิทธิ์ผ่อนผันของคุณให้{label}แล้ว สตรีค {streak} วันของคุณยังปลอดภัย (ผ่อนผันได้สัปดาห์ละครั้ง)",
+    },
+    "grace_status_available": {
+        "en": "🛟 grace: available this week",
+        "th": "🛟 สิทธิ์ผ่อนผัน: ยังใช้ได้สัปดาห์นี้",
+    },
+    "grace_status_used": {
+        "en": "🛟 grace: used {weekday} (streak protected)",
+        "th": "🛟 สิทธิ์ผ่อนผัน: ใช้ไปแล้วเมื่อ {weekday} (สตรีคได้รับการปกป้อง)",
+    },
+    #
+    # Module `pause` (R12-R17): `/pause`/`/resume` confirmations +
+    # validation errors (`pause_invalid_habit`/`pause_invalid_date`/
+    # `pause_too_long`/`pause_none_active`), and the `/dashboard`/`/habits`
+    # "⏸ paused until <date>" marker. Keys must use a `pause_*` prefix.
+    "pause_invalid_habit": {
+        "en": '🤔 "{habit_id}" isn\'t a habit I track. I track: {habit_list}.',
+        "th": '🤔 "{habit_id}" ไม่ใช่สิ่งที่ติดตามอยู่นะ ตอนนี้ติดตาม: {habit_list}',
+    },
+    "pause_invalid_date": {
+        "en": '🤔 That date has to be today or later, and look like "until 2026-09-01" or "until monday".',
+        "th": '🤔 วันที่ต้องเป็นวันนี้หรือหลังจากนี้ และมีรูปแบบ "until 2026-09-01" หรือ "until monday"',
+    },
+    "pause_too_long": {
+        "en": '🤔 A pause can be at most {max_days} days. Try a shorter duration, like "{max_days}d".',
+        "th": '🤔 พักได้สูงสุด {max_days} วัน ลองสั้นลง เช่น "{max_days}d"',
+    },
+    "pause_usage": {
+        "en": '🤔 Try "/pause [habit] 5d" or "/pause [habit] until 2026-09-01". No habit = pauses everything.',
+        "th": '🤔 ลองพิมพ์ "/pause [นิสัย] 5d" หรือ "/pause [นิสัย] until 2026-09-01" ถ้าไม่ระบุนิสัย จะพักทุกอย่าง',
+    },
+    "pause_save_failed": {
+        "en": "😥 Couldn't save that right now — please try again in a moment.",
+        "th": "😥 ตอนนี้บันทึกไม่ได้ ลองใหม่อีกครั้งนะ",
+    },
+    "pause_set_habit": {
+        "en": "⏸ Paused {label} until {date}. Reminders muted, streak held. /resume {label} to end early.",
+        "th": "⏸ พัก{label}จนถึง {date} แล้ว การแจ้งเตือนจะเงียบและสตรีคจะถูกคงไว้ พิมพ์ /resume {label} เพื่อกลับมาก่อนกำหนด",
+    },
+    "pause_set_all": {
+        "en": "⏸ Paused everything until {date}. Reminders muted, streaks held. /resume to end early.",
+        "th": "⏸ พักทุกอย่างจนถึง {date} แล้ว การแจ้งเตือนจะเงียบและสตรีคจะถูกคงไว้ พิมพ์ /resume เพื่อกลับมาก่อนกำหนด",
+    },
+    "pause_status_none": {
+        "en": "✅ Nothing is paused right now.",
+        "th": "✅ ตอนนี้ไม่มีอะไรถูกพักอยู่",
+    },
+    "pause_status_header": {
+        "en": "⏸ Active pauses:",
+        "th": "⏸ กำลังพักอยู่:",
+    },
+    "pause_status_none_habit": {
+        "en": "✅ {label} isn't paused right now.",
+        "th": "✅ {label}ไม่ได้ถูกพักอยู่ตอนนี้",
+    },
+    "pause_status_habit_header": {
+        "en": "⏸ {label} is paused:",
+        "th": "⏸ {label}กำลังพักอยู่:",
+    },
+    "pause_status_line": {
+        "en": "• {target} — until {date}",
+        "th": "• {target} — จนถึง {date}",
+    },
+    "pause_status_all_target": {
+        "en": "everything",
+        "th": "ทุกอย่าง",
+    },
+    "pause_resumed_habit": {
+        "en": "▶ Resumed {label}. Welcome back!",
+        "th": "▶ กลับมา{label}แล้ว ยินดีต้อนรับกลับมานะ!",
+    },
+    "pause_resumed_all": {
+        "en": "▶ Resumed everything. Welcome back!",
+        "th": "▶ กลับมาทุกอย่างแล้ว ยินดีต้อนรับกลับมานะ!",
+    },
+    "pause_none_active_habit": {
+        "en": "🤷 {label} isn't paused, so there's nothing to resume.",
+        "th": "🤷 {label}ไม่ได้ถูกพักอยู่ เลยไม่มีอะไรให้กลับมา",
+    },
+    # Archi ruling 2 (v1.9.0 round-2 fix, TEST-v1.9-pause.md finding 2):
+    # `/resume <habit>` against an all-habits pause finds no HABIT-scoped
+    # row to clear (R13's literal reading, unchanged), but the reply must
+    # stay truthful -- {label} is in fact still paused via the untouched
+    # all-habits row, so this key (not `pause_none_active_habit`, which
+    # keeps its own wording for the genuinely-not-paused-at-all case) is
+    # used whenever `is_paused(...)` is still true for that habit.
+    "pause_covered_by_all": {
+        "en": "🤷 {label} is covered by your pause-all until {date} — use /resume (no habit) to end it.",
+        "th": "🤷 {label}ยังถูกพักอยู่จากคำสั่งพักทั้งหมดจนถึง {date} — พิมพ์ /resume (ไม่ระบุนิสัย) เพื่อกลับมา",
+    },
+    "pause_none_active_all": {
+        "en": "🤷 Nothing is paused, so there's nothing to resume.",
+        "th": "🤷 ไม่มีอะไรถูกพักอยู่ เลยไม่มีอะไรให้กลับมา",
+    },
+    #
+    # Module `wrapped` (R21-R26, + shared-surface font mechanism): the
+    # `/wrapped`/`/recap` PNG caption, its bilingual text fallback (mirrors
+    # `heatmap_fallback_*`), and `wrapped_error_*` for a render failure.
+    # Keys must use a `wrapped_*` prefix. The celebration emoji-burst
+    # itself (R25, `celebration_burst`) is a plain string constant, not an
+    # i18n catalog entry -- no key needed for it here.
+    # ===================================================================
+    "wrapped_no_habits": {
+        "en": "🎉 No habits configured yet, so there's nothing to recap.",
+        "th": "🎉 ยังไม่มีนิสัยที่ตั้งค่าไว้ เลยยังไม่มีอะไรให้สรุป",
+    },
+    "wrapped_title": {
+        "en": "🎉 Your Recap",
+        "th": "🎉 สรุปของคุณ",
+    },
+    "wrapped_period_4w": {
+        "en": "Last 4 weeks",
+        "th": "4 สัปดาห์ที่ผ่านมา",
+    },
+    "wrapped_period_month": {
+        "en": "{month}",
+        "th": "เดือน {month}",
+    },
+    "wrapped_empty_period": {
+        "en": "📭 No logs yet this period — let's get started!",
+        "th": "📭 ยังไม่มีบันทึกในช่วงนี้ — เริ่มกันเลย!",
+    },
+    "wrapped_best_day_none": {
+        "en": "–",
+        "th": "–",
+    },
+    "wrapped_count_total": {
+        "en": "{count} entries",
+        "th": "{count} ครั้ง",
+    },
+    "wrapped_streak_days": {
+        "en": "streak {count}d",
+        "th": "ต่อเนื่อง {count} วัน",
+    },
+    "wrapped_streak_weeks": {
+        "en": "streak {count}w",
+        "th": "ต่อเนื่อง {count} สัปดาห์",
+    },
+    "wrapped_habit_line": {
+        "en": "{label}: {total} · best day {best_day} · {streak}",
+        "th": "{label}: {total} · วันที่ดีที่สุด {best_day} · {streak}",
+    },
+    "wrapped_biggest_mover_pct": {
+        "en": "📈 Biggest mover: {label} {sign}{pct}% vs last week",
+        "th": "📈 เปลี่ยนแปลงมากที่สุด: {label} {sign}{pct}% เทียบสัปดาห์ที่แล้ว",
+    },
+    "wrapped_biggest_mover_delta": {
+        "en": "📈 Biggest mover: {label} {sign}{delta:g} vs last week",
+        "th": "📈 เปลี่ยนแปลงมากที่สุด: {label} {sign}{delta:g} เทียบสัปดาห์ที่แล้ว",
+    },
+    "wrapped_caption_4w": {
+        "en": "🎉 Your last 4 weeks — {habit_list}. Nice work!",
+        "th": "🎉 4 สัปดาห์ที่ผ่านมาของคุณ — {habit_list} เก่งมาก!",
+    },
+    "wrapped_caption_month": {
+        "en": "🎉 Your {month} — {habit_list}. Nice work!",
+        "th": "🎉 {month} ของคุณ — {habit_list} เก่งมาก!",
+    },
+    "wrapped_fallback_header": {
+        "en": "🎉 Charts aren't available right now — here's your recap ({period_label}):",
+        "th": "🎉 ตอนนี้ยังแสดงกราฟไม่ได้ — สรุปแบบย่อให้แทน ({period_label}):",
+    },
+    "wrapped_fallback_line": {
+        "en": "• {label}: {total} · {streak}",
+        "th": "• {label}: {total} · {streak}",
+    },
+    # ===================================================================
+    # SPEC-v1.9.md §6/§11 integration pass: renderer wiring keys (AC9,
+    # AC10, AC17, AC22, AC30) -- the unit-aware ("week" instead of "day")
+    # sibling of an existing key, the cadence-row/pause-marker appends the
+    # dashboard/`/habits` renderers now use, and the four new `/help`
+    # lines. Every `_weeks`-suffixed key here is ONLY ever selected when
+    # `streaks.streak_unit(...) == "week"` (a cadence habit) -- a
+    # non-cadence habit always resolves through its pre-existing sibling
+    # key, unchanged (AC3's byte-identical gate).
+    # ===================================================================
+    "cadence_weekly_streak_suffix": {
+        "en": " · weekly streak {streak} week(s)",
+        "th": " · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "pause_dashboard_marker": {
+        "en": " ⏸ paused until {date} (held)",
+        "th": " ⏸ พักจนถึง {date} (หยุดชั่วคราว)",
+    },
+    "milestone_reached_weeks": {
+        "en": "🔥 {streak}-week {label} streak — nice work, keep it going!",
+        "th": "🔥 ต่อเนื่อง {streak} สัปดาห์แล้วสำหรับ{label} — เก่งมากเลยนะ!",
+    },
+    "record_broken_longest_streak_weeks": {
+        "en": "🎉 New personal best — longest {label} streak: {weeks} weeks!",
+        "th": "🎉 สถิติใหม่ — ต่อเนื่อง{label}นานที่สุด: {weeks} สัปดาห์!",
+    },
+    "records_line_longest_streak_weeks": {
+        "en": "• Longest streak: {weeks} weeks ({achieved_on})",
+        "th": "• ต่อเนื่องนานที่สุด: {weeks} สัปดาห์ ({achieved_on})",
+    },
+    "dashboard_line_goal_weeks": {
+        "en": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · streak {streak}wk",
+        "th": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "dashboard_line_boolean_weeks": {
+        "en": "• {label}: {status} · streak {streak}wk",
+        "th": "• {label}: {status} · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "dashboard_line_count_weeks": {
+        "en": "• {label}: {count:g} · streak {streak}wk",
+        "th": "• {label}: {count:g} · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "daily_summary_numeric_goal_weeks": {
+        "en": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · streak {streak}wk",
+        "th": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "daily_summary_numeric_nogoal_weeks": {
+        "en": "  {label}: {total:g} {unit} today · streak {streak}wk",
+        "th": "  {label}: {total:g} {unit} วันนี้ · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "daily_summary_duration_nogoal_weeks": {
+        "en": "  {label}: {total} session(s) today · streak {streak}wk",
+        "th": "  {label}: {total} ครั้งวันนี้ · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "daily_summary_boolean_weeks": {
+        "en": "  {label}: {status} · streak {streak}wk",
+        "th": "  {label}: {status} · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "daily_summary_text_weeks": {
+        "en": "  {label}: {total} entry(ies) today · streak {streak}wk",
+        "th": "  {label}: บันทึกแล้ว {total} ครั้งวันนี้ · ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "stats_generic_duration_summary_weeks": {
+        "en": "{label} sessions this week: {total}, current streak: {streak} week(s)",
+        "th": "{label}สัปดาห์นี้: {total} ครั้ง ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "stats_stretch_summary_weeks": {
+        "en": "Stretch sessions this week: {stretch_total}, current streak: {stretch_streak} week(s)",
+        "th": "ยืดเส้นสัปดาห์นี้: {stretch_total} ครั้ง ต่อเนื่อง {stretch_streak} สัปดาห์",
+    },
+    "chart_caption_duration_weeks": {
+        "en": "{label}: {total:g} sessions this week — {streak}-week streak",
+        "th": "{label}: {total:g} ครั้งสัปดาห์นี้ — ต่อเนื่อง {streak} สัปดาห์",
+    },
+    "help_cadence_cmd": {
+        "en": '📅 "/cadence <habit> <N>" sets a weekly goal (e.g. "gym 3x/week") so rest days don\'t break your streak; "/cadence <habit> off" clears it.',
+        "th": '📅 "/cadence <กิจกรรม> <จำนวน>" ตั้งเป้าหมายรายสัปดาห์ (เช่น ยิม 3 ครั้ง/สัปดาห์) วันพักจะไม่ทำให้สตรีคขาด · "/cadence <กิจกรรม> off" เพื่อปิด',
+    },
+    "help_grace": {
+        "en": "🛟 A single missed day is automatically forgiven once a week (a free \"grace day\") so one bad day doesn't break your streak.",
+        "th": "🛟 พลาดไป 1 วัน จะได้รับการยกเว้นให้อัตโนมัติสัปดาห์ละครั้ง (\"วันผ่อนผัน\") เพื่อไม่ให้สตรีคขาดเพราะวันแย่ๆ วันเดียว",
+    },
+    "help_pause_cmd": {
+        "en": '⏸ "/pause [habit] <5d|until DATE>" mutes reminders and holds your streak for a planned break; no habit = pauses everything.',
+        "th": '⏸ "/pause [กิจกรรม] <5d|until วันที่>" ปิดแจ้งเตือนและคงสตรีคไว้ระหว่างพัก ถ้าไม่ระบุกิจกรรม จะพักทุกอย่าง',
+    },
+    "help_resume_cmd": {
+        "en": '▶ "/resume [habit]" ends a pause early; no habit = resumes everything.',
+        "th": '▶ "/resume [กิจกรรม]" กลับมาก่อนกำหนด ถ้าไม่ระบุกิจกรรม จะกลับมาทุกอย่าง',
+    },
+    "help_wrapped_cmd": {
+        "en": '🎉 "/wrapped" (or "/recap") sends a picture recap of your last 4 weeks; "/wrapped month" recaps the current month.',
+        "th": '🎉 "/wrapped" (หรือ "/recap") ส่งการ์ดสรุปภาพของ 4 สัปดาห์ที่ผ่านมา · "/wrapped month" สรุปเดือนปัจจุบัน',
+    },
 }

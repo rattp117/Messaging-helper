@@ -368,6 +368,65 @@ class RoutinesConfig(BaseModel):
         return v
 
 
+class CadenceConfig(BaseModel):
+    """SPEC-v1.9.md §5 (module `cadence`, R18): the upper bound on a
+    weekly-cadence habit's `/cadence <habit> <N>`/`cadence=<N>w` value --
+    ISO weeks only have 7 days, so `N` above 7 can never be met (R20's own
+    "no cadence shapes other than N times per ISO week", §10)."""
+
+    max_per_week: int = 7
+
+    @field_validator("max_per_week")
+    @classmethod
+    def _in_range(cls, v: int) -> int:
+        if not (1 <= v <= 7):
+            raise ValueError("cadence.max_per_week must be between 1 and 7")
+        return v
+
+
+class GraceConfig(BaseModel):
+    """SPEC-v1.9.md §5 (module `grace`, R8): `enabled = true` (default)
+    turns on the fully-automatic, once-per-ISO-week-per-daily-habit grace
+    bridge (`core/grace.py:evaluate_grace`, the nightly tick). `false`
+    disables the ENTIRE mechanism -- no bridging, no message, no
+    `grace_ledger` writes at all (R8's own "byte-identical to a world
+    without grace"), not merely a suppressed message."""
+
+    enabled: bool = True
+
+
+class PauseConfig(BaseModel):
+    """SPEC-v1.9.md §5 (module `pause`, R12): the cap on `/pause
+    [<habit>] <duration>`'s span -- a duration (either `<N>d` or `until
+    <date>`, resolved to a day count) exceeding this is rejected with
+    `pause_too_long` (states the max), no row written."""
+
+    max_days: int = 30
+
+    @field_validator("max_days")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("pause.max_days must be a positive integer")
+        return v
+
+
+class WrappedConfig(BaseModel):
+    """SPEC-v1.9.md §5 (module `wrapped`, R21/R25/R26): `auto_send` gates
+    the optional, OFF-by-default (user decision 2026-08-26) month-end
+    silent auto-send of the recap card (R26) -- opt-in, consistent with
+    this codebase's proactive-send discipline (mirrors `[notifications]
+    silent_proactive`'s own "deliberate default, documented" posture, just
+    the opposite default direction here). `celebrate_burst` gates the
+    emoji-burst appended to a milestone/record celebration line (R25) --
+    independent of `auto_send`, same "each knob its own flag, no implicit
+    coupling" convention `[gamification] enabled`/`daily_summary`
+    established (AC10.4's "no behavioral leakage")."""
+
+    auto_send: bool = False
+    celebrate_burst: bool = True
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -508,6 +567,17 @@ class Config(BaseModel):
     reactions: ReactionsConfig = ReactionsConfig()
     backfill: BackfillConfig = BackfillConfig()
     routines: RoutinesConfig = RoutinesConfig()
+    # SPEC-v1.9.md §5/§6 (shared surface): four new sections, all
+    # defaulted -- an absent section in config.toml uses the class
+    # defaults above (AC5), same posture as every prior config addition
+    # in this file. User decisions confirmed 2026-08-26: `/wrapped` bare
+    # = last 4 weeks (a `wrapped` module concern, not a config default);
+    # `[wrapped] auto_send = false` (opt-in, baked in as the class default
+    # above).
+    cadence: CadenceConfig = CadenceConfig()
+    grace: GraceConfig = GraceConfig()
+    pause: PauseConfig = PauseConfig()
+    wrapped: WrappedConfig = WrappedConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

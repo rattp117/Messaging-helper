@@ -71,6 +71,19 @@ Action = Literal[
     "routine_create",
     "routine_delete",
     "routine_run",
+    # SPEC-v1.9.md §5/§6 (shared surface, modules `cadence`/`pause`/
+    # `grace`'s own dependency): the five new mutations Theme A's engine
+    # rework introduces -- `cadence_set`/`cadence_clear` (/cadence <habit>
+    # <N>|off), `pause_set`/`pause_clear` (/pause, /resume), and
+    # `grace_consumed` (the one write the nightly `evaluate_grace` job
+    # makes, R9). Quick-log/backfill-style READS (a plain habit log) are
+    # deliberately NOT audited here either, same "mutations only" line
+    # this vocabulary has always drawn.
+    "cadence_set",
+    "cadence_clear",
+    "pause_set",
+    "pause_clear",
+    "grace_consumed",
 ]
 ACTIONS: tuple[Action, ...] = (
     "undo",
@@ -97,10 +110,15 @@ ACTIONS: tuple[Action, ...] = (
     "routine_create",
     "routine_delete",
     "routine_run",
+    "cadence_set",
+    "cadence_clear",
+    "pause_set",
+    "pause_clear",
+    "grace_consumed",
 )
 
-Source = Literal["command", "nl", "button", "admin"]
-SOURCES: tuple[Source, ...] = ("command", "nl", "button", "admin")
+Source = Literal["command", "nl", "button", "admin", "system"]
+SOURCES: tuple[Source, ...] = ("command", "nl", "button", "admin", "system")
 
 
 def _stringify_value(value: object) -> str | None:

@@ -1112,16 +1112,17 @@ async def test_nudge_and_20_00_checkin_both_fire_independently_without_interfere
 # ---------------------------------------------------------------------------
 
 
-async def test_menu_has_exactly_18_public_commands_both_languages(tmp_path, monkeypatch):
-    # RENAMED again (Archi-directed, SPEC-v1.8.md integration pass): `/log`/
-    # `/routine` joined the public menu too (16 -> 18 total) -- the test
-    # name now matches its own updated body/count instead of documenting
-    # the stale "as of v1.7" figure. `channel.set_my_commands_calls` only
-    # ever records the DEFAULT (global, `scope_chat_id=None`) registration
-    # (see this file's own fake, above) -- the owner-scoped second menu
-    # (AC-D2) additionally listing the five admin commands is a SEPARATE
-    # call this list never captures, so the admin-hidden assertion below
-    # still holds unchanged for the public menu.
+async def test_menu_has_exactly_22_public_commands_both_languages(tmp_path, monkeypatch):
+    # RENAMED again (Archi-directed, SPEC-v1.9.md integration pass):
+    # `/cadence`/`/pause`/`/resume`/`/wrapped` joined the public menu too
+    # (18 -> 22 total) -- the test name now matches its own updated body/
+    # count instead of documenting the stale "as of v1.8" figure. `channel.
+    # set_my_commands_calls` only ever records the DEFAULT (global,
+    # `scope_chat_id=None`) registration (see this file's own fake, above)
+    # -- the owner-scoped second menu (AC-D2) additionally listing the
+    # five admin commands is a SEPARATE call this list never captures, so
+    # the admin-hidden assertion below still holds unchanged for the
+    # public menu.
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     channel = await _run(monkeypatch, config, script=[])
 
@@ -1129,10 +1130,11 @@ async def test_menu_has_exactly_18_public_commands_both_languages(tmp_path, monk
     assert set(registered.keys()) == {"en", "th"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 18, f"{lang} menu has {len(names)} commands: {names}"
-        assert len(set(names)) == 18  # no duplicates
+        assert len(names) == 22, f"{lang} menu has {len(names)} commands: {names}"
+        assert len(set(names)) == 22  # no duplicates
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})  # admin-hidden, unchanged
-        assert {"log", "routine"} <= set(names)  # SPEC-v1.8.md R-D2: the two new v1.8 public commands
+        assert {"log", "routine"} <= set(names)  # SPEC-v1.8.md R-D2: the two v1.8 public commands
+        assert {"cadence", "pause", "resume", "wrapped"} <= set(names)  # SPEC-v1.9.md §6/§11: the four new v1.9 public commands
 
 
 async def test_help_text_lists_the_four_new_v16_commands_bilingually(tmp_path, monkeypatch):
@@ -1263,7 +1265,7 @@ async def test_migration_009_rehearsal_on_a_v1_5_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 11
+        assert db.schema_version == 12
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert "dashboard_msg_id" in cols
         tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

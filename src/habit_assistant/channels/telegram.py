@@ -79,20 +79,31 @@ class TelegramChannel(Channel):
         resp.raise_for_status()
 
     def build_send_image_request(
-        self, chat_id: str, image: bytes, caption: str
+        self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
         """Exposed for testing: returns (url, data, files) without sending.
         ROADMAP.md v1.0.0 AC1.0.2: `sendPhoto` is a multipart upload (not
         JSON like `sendMessage`), so `caption`/`chat_id` are form fields
-        and the image bytes are a file part."""
+        and the image bytes are a file part.
+
+        SPEC-v1.9.md R26/AC28 (v1.9 integration pass): `disable_notification`
+        is an additive, keyword-only, DEFAULTED param -- mirrors `send`'s
+        own SPEC-v1.8.md R-S1 shape exactly -- `False` (the default)
+        produces a payload byte-identical to pre-v1.9 (every existing
+        `send_image` caller/fake is unaffected); the optional month-end
+        `/wrapped` auto-send is the one caller that ever passes `True`
+        (R26's "one SILENT card per active user")."""
+        data: dict[str, Any] = {"chat_id": chat_id, "caption": caption}
+        if disable_notification:
+            data["disable_notification"] = True
         return (
             f"{self._base_url}/sendPhoto",
-            {"chat_id": chat_id, "caption": caption},
+            data,
             {"photo": ("chart.png", image, "image/png")},
         )
 
-    async def send_image(self, chat_id: str, image: bytes, caption: str) -> None:
-        url, data, files = self.build_send_image_request(chat_id, image, caption)
+    async def send_image(self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False) -> None:
+        url, data, files = self.build_send_image_request(chat_id, image, caption, disable_notification=disable_notification)
         resp = await self._client.post(url, data=data, files=files)
         resp.raise_for_status()
 

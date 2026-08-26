@@ -86,6 +86,13 @@ _ACTION_LABEL_MSG_IDS: dict[str, str] = {
     "routine_create": "audit_action_routine_create",
     "routine_delete": "audit_action_routine_delete",
     "routine_run": "audit_action_routine_run",
+    # SPEC-v1.9.md §5/§6 (shared surface, modules `cadence`/`pause`/
+    # `grace`'s own dependency).
+    "cadence_set": "audit_action_cadence_set",
+    "cadence_clear": "audit_action_cadence_clear",
+    "pause_set": "audit_action_pause_set",
+    "pause_clear": "audit_action_pause_clear",
+    "grace_consumed": "audit_action_grace_consumed",
 }
 
 

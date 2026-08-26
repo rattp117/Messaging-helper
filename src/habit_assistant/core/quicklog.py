@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from habit_assistant.channels.base import Button, Channel
-from habit_assistant.core import dashboard, i18n, reactions, records, streaks, targets, undo_ui, user_prefs
+from habit_assistant.core import dashboard, i18n, reactions, records, streaks, targets, undo_ui, user_prefs, wrapped
 from habit_assistant.storage.models import LogEntry
 
 if TYPE_CHECKING:
@@ -383,14 +383,29 @@ async def _log_and_confirm(
     if config.gamification.enabled:
         crossed = streaks.crossed_milestone(db, config, habit, now.date(), was_qualified_before, user_id)
         if crossed is not None:
-            milestone_suffix = "\n\n" + i18n.t("milestone_reached", lang, streak=crossed, label=habit.label(lang))
+            # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): mirrors
+            # `main.py:handle_inbound_message`'s identical unit-aware
+            # switch, byte-for-byte -- see this module's own docstring's
+            # "byte-identical mirror" contract (AC-A2).
+            milestone_msg_id = (
+                "milestone_reached_weeks" if streaks.streak_unit(db, habit, user_id) == "week" else "milestone_reached"
+            )
+            milestone_suffix = "\n\n" + i18n.t(milestone_msg_id, lang, streak=crossed, label=habit.label(lang))
 
     record_suffix = ""
     broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
     if broken_records:
-        record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang)
+        record_unit = streaks.streak_unit(db, habit, user_id)
+        record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang, record_unit)
 
     confirmation_suffix = milestone_suffix + record_suffix
+    # SPEC-v1.9.md Rule 25/AC29 (v1.9 integration pass, module `wrapped`):
+    # mirrors `main.py`'s identical celebration-burst append, byte-for-byte
+    # (AC-A2's own "same confirmation" contract).
+    if confirmation_suffix:
+        burst = wrapped.celebration_burst(config, lang)
+        if burst:
+            confirmation_suffix += "\n" + burst
 
     if habit.id == "water":
         water_ml = int(value_num)

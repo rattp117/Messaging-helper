@@ -63,6 +63,13 @@ try:
     import matplotlib.pyplot as plt
     import numpy as np
 
+    from habit_assistant.core.fonts import register_thai_font
+
+    # SPEC-v1.9.md Rule 23/AC6: additive Thai fallback (DejaVu Sans stays
+    # primary) -- idempotent, so this is a no-op if core/charts.py already
+    # registered it in this process.
+    register_thai_font()
+
     MATPLOTLIB_AVAILABLE = True
 except ImportError:  # pragma: no cover -- exercised in envs without the [charts] extra
     plt = None  # type: ignore[assignment]

@@ -622,6 +622,9 @@ async def test_command_menu_public_set_excludes_the_four_admin_only_commands(tmp
         assert names == {
             "start", "undo", "target", "help", "habits", "remind", "lang", "quiet", "history", "checkin",
             "dashboard", "heatmap", "records", "trends", "addhabit", "delhabit", "log", "routine",
+            # SPEC-v1.9.md §6/§11 integration step (modules `cadence`/
+            # `pause`/`wrapped`): joined the public menu (18 -> 22).
+            "cadence", "pause", "resume", "wrapped",
         }
         assert not names & {"approve", "block", "users", "invite", "audit"}
 
@@ -1213,7 +1216,7 @@ async def test_migration_and_attribution_rehearsal_on_a_v1_1_shaped_scratch_db(t
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 11  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
+        assert db.schema_version == 12  # SPEC-v1.3.md's migration 007 (audit_log) + SPEC-v1.5.md's migration 008 + SPEC-v1.6.md's migration 009 also land now
         assert db._conn.execute("SELECT COUNT(*) AS n FROM logs WHERE user_id IS NULL").fetchone()["n"] == 0
         assert db._conn.execute("SELECT COUNT(*) AS n FROM habit_targets WHERE user_id IS NULL").fetchone()["n"] == 0
         owner_row = db.get_user(OWNER)

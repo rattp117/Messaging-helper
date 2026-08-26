@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import cadence, grace, i18n, pause, streaks, targets
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -121,6 +121,18 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     lines.append(i18n.t("help_log_cmd", lang))
     lines.append(i18n.t("help_routine_cmd", lang))
     lines.append(i18n.t("help_backfill", lang, max_days=config.backfill.max_days_back))
+    # SPEC-v1.9.md §6/§11 integration step (same "data only in each
+    # module's own catalog block, wiring is a later append" posture as
+    # every block above): `/cadence`, `/pause`, `/resume`, `/wrapped`
+    # (modules `cadence`/`pause`/`wrapped`), plus a backfill-style
+    # capability line for grace (module `grace` has no command of its own
+    # -- R8's "auto-only" -- so it gets a syntax-not-command mention here,
+    # mirroring `help_query`/`help_backfill`'s own shape).
+    lines.append(i18n.t("help_cadence_cmd", lang))
+    lines.append(i18n.t("help_grace", lang))
+    lines.append(i18n.t("help_pause_cmd", lang))
+    lines.append(i18n.t("help_resume_cmd", lang))
+    lines.append(i18n.t("help_wrapped_cmd", lang))
 
     return "\n\n".join(lines)
 
@@ -175,14 +187,27 @@ def build_habits_overview(
     correctness is the caller's responsibility via what it passes as
     `clock`, exactly as for those existing call sites. SPEC-v1.2.md R-D3:
     every read scoped to `user_id` (AC-U-ISO)."""
-    today_str = clock().date().isoformat()
+    today = clock().date()
+    today_str = today.isoformat()
     lines = [i18n.t("habits_overview_header", lang)]
     for habit in registry:
-        kind_label = i18n.t(_HABIT_KIND_MSG_IDS[habit.type], lang)
-        goal_phrase = _goal_phrase(db, config, habit, lang, user_id)
-        today_phrase = _today_phrase(db, habit, today_str, lang, user_id)
-        lines.append(
-            i18n.t(
+        is_cadence = db.get_cadence(user_id, habit.id) is not None
+
+        if is_cadence:
+            # SPEC-v1.9.md AC10 (v1.9 integration pass): same "X of N this
+            # week" + weekly-streak replacement `dashboard.render` uses,
+            # reusing `cadence.cadence_status_line` -- a cadence habit's
+            # ordinary goal/kind/today line is meaningless once its unit is
+            # the ISO week. A non-cadence habit's line (below) is unchanged
+            # (AC10/AC3).
+            line = cadence.cadence_status_line(db, config, habit, user_id, today, lang)
+            streak = streaks.compute_streak(db, config, habit, today, user_id)
+            line += i18n.t("cadence_weekly_streak_suffix", lang, streak=streak)
+        else:
+            kind_label = i18n.t(_HABIT_KIND_MSG_IDS[habit.type], lang)
+            goal_phrase = _goal_phrase(db, config, habit, lang, user_id)
+            today_phrase = _today_phrase(db, habit, today_str, lang, user_id)
+            line = i18n.t(
                 "habits_overview_line",
                 lang,
                 label=habit.label(lang),
@@ -190,5 +215,20 @@ def build_habits_overview(
                 goal_phrase=goal_phrase,
                 today_phrase=today_phrase,
             )
-        )
+            # SPEC-v1.9.md AC17 (v1.9 integration pass): grace's own
+            # per-daily-habit balance line -- `grace_status_line` already
+            # returns "" (nothing to append) both for a cadence habit
+            # (never called here) and when `[grace] enabled=false`, per
+            # its own documented falsy-means-skip contract.
+            grace_line = grace.grace_status_line(db, config, habit, user_id, today, lang)
+            if grace_line:
+                line += "\n  " + grace_line
+
+        # SPEC-v1.9.md AC22 (v1.9 integration pass): mirrors `dashboard.
+        # render`'s identical pause-marker append -- cadence or not.
+        until = pause.paused_until(db, config, user_id, habit.id, today)
+        if until is not None:
+            line += i18n.t("pause_dashboard_marker", lang, date=until)
+
+        lines.append(line)
     return "\n".join(lines)
