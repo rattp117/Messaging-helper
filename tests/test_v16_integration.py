@@ -40,6 +40,7 @@ from types import SimpleNamespace
 import pytest
 from apscheduler.triggers.cron import CronTrigger
 
+from conftest import FakeOllamaClient as _FakeOllamaClient, FakeScheduler as _FakeScheduler
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
 from habit_assistant.core import checkins, dashboard, i18n, nudge, records, target_nl
@@ -54,9 +55,12 @@ MEMBER = "2002"
 
 
 # ---------------------------------------------------------------------------
-# Small local fakes (per this codebase's own convention: each integration-
-# adjacent test file keeps its own copy rather than importing another test
-# file's fixtures).
+# Small local fakes. SPEC-REFACTOR.md Stage 4/AC12: `_FakeScheduler`/
+# `_FakeOllamaClient` (below, "Section B") now come from the shared
+# `tests/conftest.py` trio; the exotic scripted/raising fakes here
+# (`_RaisingLLM`, `_CapturingChannel`, `_ScriptedChannel`) stay per-file
+# per SPEC-REFACTOR.md §10 -- this codebase's older convention of "each
+# integration-adjacent file keeps its own copy" still applies to those.
 # ---------------------------------------------------------------------------
 
 
@@ -292,44 +296,6 @@ async def test_target_set_refreshes_the_dashboard_but_show_does_not(db, registry
 
 class _StopAfterSchedulerStart(Exception):
     pass
-
-
-class _FakeScheduler:
-    last_instance: "_FakeScheduler | None" = None
-
-    def __init__(self, *args, **kwargs):
-        self.jobs: dict[str, object] = {}
-        _FakeScheduler.last_instance = self
-
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
-        self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
-
-    def start(self):
-        pass
-
-    def shutdown(self, wait=False):
-        pass
-
-
-class _FakeOllamaClient:
-    responses: list[str] = []
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def chat_text(self, system_prompt, user_prompt):
-        return "noted"
-
-    async def chat_json(self, system_prompt, user_prompt, json_schema, valid_categories):
-        if _FakeOllamaClient.responses:
-            return _FakeOllamaClient.responses.pop(0)
-        return json.dumps({"category": "unknown", "value": None, "confidence": 0.1})
-
-    async def probe_schema_support(self, *args, **kwargs) -> dict:
-        return {}
-
-    async def aclose(self) -> None:
-        pass
 
 
 class _ScriptedChannel(Channel):

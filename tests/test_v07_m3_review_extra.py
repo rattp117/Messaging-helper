@@ -170,25 +170,22 @@ def test_duration_streak_zero_when_end_date_itself_has_no_session(tmp_path):
     db.close()
 
 
-def test_duration_streak_multiple_sessions_same_day_counts_as_one_streak_day():
+def test_duration_streak_multiple_sessions_same_day_counts_as_one_streak_day(tmp_path):
     """Two sessions logged on the same day must not double-count the
     streak (streak counts active DAYS, not session rows) -- covered via
     direct DB math since it's a one-day check."""
-    import tempfile
+    db = Database(tmp_path / "habits.db")
+    end_date = date(2026, 8, 19)
+    _seed(db, f"{end_date.isoformat()}T09:00:00", "yoga", 10.0)
+    _seed(db, f"{end_date.isoformat()}T18:00:00", "yoga", 15.0)
+    yoga = _synthetic_habit("yoga", "duration")
+    registry = HabitRegistry([yoga])
 
-    with tempfile.TemporaryDirectory() as td:
-        db = Database(f"{td}/habits.db")
-        end_date = date(2026, 8, 19)
-        _seed(db, f"{end_date.isoformat()}T09:00:00", "yoga", 10.0)
-        _seed(db, f"{end_date.isoformat()}T18:00:00", "yoga", 15.0)
-        yoga = _synthetic_habit("yoga", "duration")
-        registry = HabitRegistry([yoga])
+    stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
 
-        stats = compute_weekly_stats(db, Config(), registry, end_date, user_id="owner")
-
-        assert stats.get("yoga").streak == 1
-        assert stats.get("yoga").total == 2  # 2 sessions, but only 1 streak-day
-        db.close()
+    assert stats.get("yoga").streak == 1
+    assert stats.get("yoga").total == 2  # 2 sessions, but only 1 streak-day
+    db.close()
 
 
 # ---------------------------------------------------------------------------

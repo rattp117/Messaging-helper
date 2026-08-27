@@ -364,27 +364,23 @@ def test_render_max_weeks_produces_valid_sane_sized_png(db, config):
     assert 1_000 < len(image) < 5_000_000  # sane bounds -- not a stub, not runaway
 
 
-def test_render_user_with_zero_logs_ever_still_produces_a_valid_png():
+def test_render_user_with_zero_logs_ever_still_produces_a_valid_png(tmp_path):
     """SPEC-v1.6.md §8 doesn't carve out a special "no logs yet" state for
     `/heatmap` (unlike `heatmap_no_habits`, which fires only when the
     REGISTRY itself is empty) -- a configured-but-never-logged user gets an
     honest all-empty calendar image, the same way GitHub's own contribution
     graph shows a blank grid rather than an error. This test locks that as
     the actual (and spec-conformant) behavior, not an oversight."""
-    import tempfile
-    from pathlib import Path
+    db = Database(tmp_path / "empty.db")
+    try:
+        def clock():
+            return datetime(2026, 8, 24, 12, 0, 0)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database(Path(tmp) / "empty.db")
-        try:
-            def clock():
-                return datetime(2026, 8, 24, 12, 0, 0)
-
-            image = heatmap.render(db, Config(), DEFAULT_REGISTRY, "en", "9999", None, 4, clock)
-            assert image is not None
-            assert image[:8] == PNG_MAGIC
-        finally:
-            db.close()
+        image = heatmap.render(db, Config(), DEFAULT_REGISTRY, "en", "9999", None, 4, clock)
+        assert image is not None
+        assert image[:8] == PNG_MAGIC
+    finally:
+        db.close()
 
 
 async def test_execute_heatmap_zero_logs_ever_sends_image_not_an_error_reply(db, config):

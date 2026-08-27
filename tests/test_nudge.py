@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import inspect
 from datetime import datetime, timezone
-from typing import Awaitable, Callable
 
 import pytest
 
-from habit_assistant.channels.base import Channel
+from conftest import RecordingChannel as FakeChannel
 from habit_assistant.config import Config
 from habit_assistant.core import checkins, commands, nudge, i18n
 from habit_assistant.core.habits import Habit, HabitRegistry
@@ -27,20 +26,6 @@ OWNER = "owner-chat"
 MEMBER = "member-chat-b"
 
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
-
-
-class FakeChannel(Channel):
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
-        self.sent.append((chat_id, text))
-
-    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
-        raise NotImplementedError
-
-    def sent_to(self, chat_id: str) -> list[str]:
-        return [text for cid, text in self.sent if cid == chat_id]
 
 
 def _habit(

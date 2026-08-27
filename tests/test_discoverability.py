@@ -754,7 +754,7 @@ def test_habits_goalless_habit_with_no_override_shows_no_goal_standalone(db, fix
     assert "default" not in stretch_line
 
 
-def test_habits_day_boundary_a_log_just_before_midnight_excluded_from_the_next_days_query():
+def test_habits_day_boundary_a_log_just_before_midnight_excluded_from_the_next_days_query(tmp_path):
     """Coordinator's own phrasing: "today's totals respect the day
     boundary (entry logged before midnight vs after)". `build_habits_
     overview` derives "today" purely from `clock().date().isoformat()`
@@ -763,47 +763,40 @@ def test_habits_day_boundary_a_log_just_before_midnight_excluded_from_the_next_d
     shared by every other day-boundary consumer in this codebase) -- this
     test proves that boundary is exact to the second, not off-by-one in
     either direction."""
-    import tempfile
-    from pathlib import Path
+    db = Database(tmp_path / "boundary.db")
+    try:
+        config = Config()
+        _seed(db, "2026-08-19T23:59:59", "water", 500.0)  # last second of Aug 19
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database(Path(tmp) / "boundary.db")
-        try:
-            config = Config()
-            _seed(db, "2026-08-19T23:59:59", "water", 500.0)  # last second of Aug 19
+        # Query clock is one second later, now Aug 20 -- the Aug-19
+        # entry must NOT count toward "today" (Aug 20).
+        clock_next_day = lambda: datetime(2026, 8, 20, 0, 0, 1)
+        overview_next_day = discoverability.build_habits_overview(
+            db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
+        assert "today 0" in _line_for(overview_next_day, "water")
 
-            # Query clock is one second later, now Aug 20 -- the Aug-19
-            # entry must NOT count toward "today" (Aug 20).
-            clock_next_day = lambda: datetime(2026, 8, 20, 0, 0, 1)
-            overview_next_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
-            assert "today 0" in _line_for(overview_next_day, "water")
+        # Query clock is still Aug 19 (same second the log landed) --
+        # it MUST count.
+        clock_same_day = lambda: datetime(2026, 8, 19, 23, 59, 59)
+        overview_same_day = discoverability.build_habits_overview(
+            db, config, DEFAULT_REGISTRY, clock_same_day, "en", OWNER)
+        assert "today 500 ml" in _line_for(overview_same_day, "water")
 
-            # Query clock is still Aug 19 (same second the log landed) --
-            # it MUST count.
-            clock_same_day = lambda: datetime(2026, 8, 19, 23, 59, 59)
-            overview_same_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_same_day, "en", OWNER)
-            assert "today 500 ml" in _line_for(overview_same_day, "water")
-
-            # And a log at the FIRST second of a day must count for that
-            # same day (the symmetric edge).
-            _seed(db, "2026-08-20T00:00:01", "water", 250.0)
-            overview_new_day = discoverability.build_habits_overview(
-                db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
-            assert "today 250 ml" in _line_for(overview_new_day, "water")
-        finally:
-            db.close()
+        # And a log at the FIRST second of a day must count for that
+        # same day (the symmetric edge).
+        _seed(db, "2026-08-20T00:00:01", "water", 250.0)
+        overview_new_day = discoverability.build_habits_overview(
+            db, config, DEFAULT_REGISTRY, clock_next_day, "en", OWNER)
+        assert "today 250 ml" in _line_for(overview_new_day, "water")
+    finally:
+        db.close()
 
 
-def test_habits_all_four_aggregation_kinds_in_one_overview(fixed_clock):
+def test_habits_all_four_aggregation_kinds_in_one_overview(fixed_clock, tmp_path):
     """Each habit kind's aggregation function, exercised together in a
     single `/habits` call: numeric+duration use `sum_value`, boolean uses
     `count_true` (a falsy 0.0 entry must NOT count), text uses `count`
     (every row counts regardless of value)."""
-    import tempfile
-    from pathlib import Path
-
     config = Config.model_validate(
         {
             "habits": [
@@ -816,25 +809,24 @@ def test_habits_all_four_aggregation_kinds_in_one_overview(fixed_clock):
     )
     registry = HabitRegistry.from_config(config)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database(Path(tmp) / "kinds.db")
-        try:
-            _seed(db, "2026-08-19T08:00:00", "water", 300.0)
-            _seed(db, "2026-08-19T12:00:00", "water", 200.0)  # numeric sums: 500
-            _seed(db, "2026-08-19T09:00:00", "stretch", 5.0)
-            _seed(db, "2026-08-19T18:00:00", "stretch", 10.0)  # duration sums: 15
-            _seed(db, "2026-08-19T07:00:00", "meds", 1.0)
-            _seed(db, "2026-08-19T19:00:00", "meds", 0.0)  # boolean count_true: 1 (falsy excluded)
-            _seed(db, "2026-08-19T10:00:00", "journal", None)
-            _seed(db, "2026-08-19T20:00:00", "journal", None)  # text count: 2
+    db = Database(tmp_path / "kinds.db")
+    try:
+        _seed(db, "2026-08-19T08:00:00", "water", 300.0)
+        _seed(db, "2026-08-19T12:00:00", "water", 200.0)  # numeric sums: 500
+        _seed(db, "2026-08-19T09:00:00", "stretch", 5.0)
+        _seed(db, "2026-08-19T18:00:00", "stretch", 10.0)  # duration sums: 15
+        _seed(db, "2026-08-19T07:00:00", "meds", 1.0)
+        _seed(db, "2026-08-19T19:00:00", "meds", 0.0)  # boolean count_true: 1 (falsy excluded)
+        _seed(db, "2026-08-19T10:00:00", "journal", None)
+        _seed(db, "2026-08-19T20:00:00", "journal", None)  # text count: 2
 
-            overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en", OWNER)
-            assert "today 500 ml" in _line_for(overview, "water")
-            assert "today 15 min" in _line_for(overview, "stretch")
-            assert "today 1" in _line_for(overview, "meds")
-            assert "today 2" in _line_for(overview, "journal")
-        finally:
-            db.close()
+        overview = discoverability.build_habits_overview(db, config, registry, fixed_clock, "en", OWNER)
+        assert "today 500 ml" in _line_for(overview, "water")
+        assert "today 15 min" in _line_for(overview, "stretch")
+        assert "today 1" in _line_for(overview, "meds")
+        assert "today 2" in _line_for(overview, "journal")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -985,25 +977,21 @@ def test_habits_overview_renders_cleanly_in_both_languages_no_keyerror(db, fixed
     assert "�" not in text
 
 
-def test_en_and_th_help_and_habits_text_are_genuinely_different_not_copy_pasted():
+def test_en_and_th_help_and_habits_text_are_genuinely_different_not_copy_pasted(tmp_path):
     config = Config()
     en_help = discoverability.build_help_text(config, "en")
     th_help = discoverability.build_help_text(config, "th")
     assert en_help != th_help
 
     db_fixture_config = Config()
-    import tempfile
-    from pathlib import Path
-
-    with tempfile.TemporaryDirectory() as tmp:
-        db = Database(Path(tmp) / "lang.db")
-        try:
-            clock = lambda: datetime(2026, 8, 19, 9, 0, 0)
-            en_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "en", OWNER)
-            th_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "th", OWNER)
-            assert en_overview != th_overview
-        finally:
-            db.close()
+    db = Database(tmp_path / "lang.db")
+    try:
+        clock = lambda: datetime(2026, 8, 19, 9, 0, 0)
+        en_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "en", OWNER)
+        th_overview = discoverability.build_habits_overview(db, db_fixture_config, DEFAULT_REGISTRY, clock, "th", OWNER)
+        assert en_overview != th_overview
+    finally:
+        db.close()
 
 
 async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tmp_path, monkeypatch):

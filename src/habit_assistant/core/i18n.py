@@ -2034,18 +2034,6 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "• Longest streak: {weeks} weeks ({achieved_on})",
         "th": "• ต่อเนื่องนานที่สุด: {weeks} สัปดาห์ ({achieved_on})",
     },
-    "dashboard_line_goal_weeks": {
-        "en": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · streak {streak}wk",
-        "th": "• {label}: {total:g} / {goal:g} {unit} {bar} {pct}% · ต่อเนื่อง {streak} สัปดาห์",
-    },
-    "dashboard_line_boolean_weeks": {
-        "en": "• {label}: {status} · streak {streak}wk",
-        "th": "• {label}: {status} · ต่อเนื่อง {streak} สัปดาห์",
-    },
-    "dashboard_line_count_weeks": {
-        "en": "• {label}: {count:g} · streak {streak}wk",
-        "th": "• {label}: {count:g} · ต่อเนื่อง {streak} สัปดาห์",
-    },
     "daily_summary_numeric_goal_weeks": {
         "en": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · streak {streak}wk",
         "th": "  {label}: {total:g} / {goal:g} {unit} ({pct}%) · ต่อเนื่อง {streak} สัปดาห์",

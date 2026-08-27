@@ -21,12 +21,12 @@ new 2nd positional param (R-C1: every send is now per-recipient)."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Awaitable, Callable
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from habit_assistant.channels.base import Button, Channel
+from conftest import RecordingChannel as FakeChannel
+from habit_assistant.channels.base import Button
 from habit_assistant.config import Config
 from habit_assistant.core import i18n
 from habit_assistant.core.habits import Habit, HabitRegistry
@@ -39,17 +39,6 @@ from habit_assistant.core.reminders import (
 from habit_assistant.storage.db import Database
 
 OWNER = "owner"
-
-
-class FakeChannel(Channel):
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
-        self.sent.append((chat_id, text))
-
-    async def run(self, on_message: Callable[[str, str], Awaitable[None]], on_callback=None) -> None:
-        raise NotImplementedError
 
 
 def _habit(

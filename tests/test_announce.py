@@ -185,7 +185,7 @@ async def test_ac21_failed_send_leaves_unmarked_and_is_retried_next_call(db, con
     assert db.get_last_announced_version(OWNER) == KNOWN_VERSION
 
 
-async def test_ac21_db_read_error_on_the_gate_check_fails_open_and_still_sends(channel, config):
+async def test_ac21_db_read_error_on_the_gate_check_fails_open_and_still_sends(channel, config, tmp_path):
     """A `get_last_announced_version` read blowing up must not silently
     swallow the announcement -- it degrades to "not yet announced" and
     still attempts the send (fail-open, mirrors every other DB-read-in-a-
@@ -208,18 +208,14 @@ async def test_ac21_db_read_error_on_the_gate_check_fails_open_and_still_sends(c
         def set_last_announced_version(self, chat_id, version):
             self._real.set_last_announced_version(chat_id, version)
 
-    import tempfile
-    from pathlib import Path
+    real_db = Database(tmp_path / "habits.db")
+    real_db.attribute_legacy_to_owner(OWNER)
+    wrapped = _RaisingReadDatabase(real_db)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        real_db = Database(Path(tmp) / "habits.db")
-        real_db.attribute_legacy_to_owner(OWNER)
-        wrapped = _RaisingReadDatabase(real_db)
+    await announce.announce_release(wrapped, channel, config, KNOWN_VERSION)
 
-        await announce.announce_release(wrapped, channel, config, KNOWN_VERSION)
-
-        assert channel.sent_to(OWNER) == [release_notes.get_release_note(KNOWN_VERSION, "th")]
-        real_db.close()
+    assert channel.sent_to(OWNER) == [release_notes.get_release_note(KNOWN_VERSION, "th")]
+    real_db.close()
 
 
 async def test_isolation_two_users_each_get_exactly_their_own_message(db, channel, config):

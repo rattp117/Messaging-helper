@@ -32,11 +32,11 @@ opens `data/habits.db`, and no real Telegram/Ollama call is made."""
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
+from conftest import FakeOllamaClient as _FakeOllamaClient, FakeScheduler as _FakeScheduler
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
 from habit_assistant.storage.db import Database
@@ -47,52 +47,16 @@ MEMBER = "2002"
 
 # ---------------------------------------------------------------------------
 # Shared async_main harness -- mirrors tests/test_v16_integration.py's own
-# "Section B" copy (this codebase's own convention: each integration-
-# adjacent test file keeps its own copy rather than importing another test
-# file's fixtures).
+# "Section B" copy. SPEC-REFACTOR.md Stage 4/AC12: `_FakeScheduler`/
+# `_FakeOllamaClient` now come from the shared `tests/conftest.py` trio
+# (this codebase's older per-file convention still applies to the exotic
+# `_ScriptedChannel` below, which stays a per-file copy per SPEC-REFACTOR.md
+# §10).
 # ---------------------------------------------------------------------------
 
 
 class _StopAfterSchedulerStart(Exception):
     pass
-
-
-class _FakeScheduler:
-    last_instance: "_FakeScheduler | None" = None
-
-    def __init__(self, *args, **kwargs):
-        self.jobs: dict[str, object] = {}
-        _FakeScheduler.last_instance = self
-
-    def add_job(self, func, trigger=None, args=None, id=None, replace_existing=True, **kwargs):
-        self.jobs[id] = SimpleNamespace(func=func, trigger=trigger, args=args, id=id)
-
-    def start(self):
-        pass
-
-    def shutdown(self, wait=False):
-        pass
-
-
-class _FakeOllamaClient:
-    responses: list[str] = []
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def chat_text(self, system_prompt, user_prompt):
-        return "noted"
-
-    async def chat_json(self, system_prompt, user_prompt, json_schema, valid_categories):
-        if _FakeOllamaClient.responses:
-            return _FakeOllamaClient.responses.pop(0)
-        return json.dumps({"category": "unknown", "value": None, "confidence": 0.1})
-
-    async def probe_schema_support(self, *args, **kwargs) -> dict:
-        return {}
-
-    async def aclose(self) -> None:
-        pass
 
 
 class _ScriptedChannel(Channel):
