@@ -14,17 +14,20 @@ later, sequential integration step (SPEC-v1.8.md §11 "Integration order").
 that seam per SPEC-v1.8.md §5's exact signatures.
 
 R-Q2's "reuses the shared confirmation path -- no second confirmation
-formatter": `_log_and_confirm`/`_generic_confirmation` below MIRROR
-`main.py:handle_inbound_message`'s own water/stretch/generic confirmation
-branches (and `main.py:_generic_confirmation`'s numeric/duration/boolean
-cases) line-for-line -- the same "byte-identical copy, not an import"
-precedent `core/undo_ui.py`'s own docstring already established for this
-codebase (a new module importing a PRIVATE main.py function would risk a
-circular import once main.py's integration step later imports THIS module
-too; a public, independently-tested mirror is the established pattern
-instead). `tests/test_quicklog.py`'s own byte-identical assertions (mirrors
-`tests/test_undo_ui.py`'s AC11 suite) are what guarantee the two never
-silently drift apart.
+formatter": `_log_and_confirm` below calls `core/confirmation.py`'s
+`confirmation_text`/`suffix` -- the SAME cycle-free leaf
+`core/routing.py:handle_inbound_message` calls for its own typed-log
+confirmation (SPEC-REFACTOR.md Stage 2 rule 11/AC8). This module used to
+carry a byte-identical MIRROR of `main.py`'s own water/stretch/generic
+confirmation branches instead of importing them, specifically to avoid a
+`main.py -> quicklog.py -> main.py` import cycle (main.py's integration
+step imports this module) -- now that the shared formatting logic lives in
+`core/confirmation.py`, a leaf neither this module nor `main.py`/
+`core/routing.py` themselves define, both can import it directly with no
+cycle at all. `tests/test_quicklog.py`'s own byte-identical assertions
+(mirrors `tests/test_undo_ui.py`'s AC11 suite) now guard that this module
+and `core/routing.py` keep calling the SAME shared functions, rather than
+guarding two independent copies against drifting apart.
 
 No channel import beyond the `Channel` ABC (SPEC.md §8's seam) -- mirrors
 `core/undo_ui.py`'s/`core/reminders.py`'s own import shape.
@@ -38,7 +41,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from habit_assistant.channels.base import Button, Channel
-from habit_assistant.core import dashboard, i18n, reactions, records, streaks, targets, undo_ui, user_prefs, wrapped
+from habit_assistant.core import confirmation, dashboard, i18n, reactions, streaks, targets, undo_ui, user_prefs
 from habit_assistant.storage.models import LogEntry
 
 if TYPE_CHECKING:
@@ -53,16 +56,6 @@ logger = logging.getLogger(__name__)
 # Small pure helpers (no DB/channel access) shared by the keyboard builder
 # and the confirmation formatter below.
 # ---------------------------------------------------------------------------
-
-
-def _ordinal(n: int) -> str:
-    """Byte-identical copy of `main.py:ordinal` (see this module's own
-    docstring for why a copy, not an import) -- "1st"/"2nd"/"3rd"/"Nth"."""
-    if 10 <= n % 100 <= 20:
-        suffix = "th"
-    else:
-        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
 
 
 def _format_amount(value: float) -> str:
@@ -300,46 +293,12 @@ async def handle_log_callback(
 
 # ---------------------------------------------------------------------------
 # R-Q2: the shared "write the log + send the exact typed-path confirmation"
-# implementation. See this module's own docstring for why this MIRRORS
-# `main.py:handle_inbound_message`'s water/stretch/generic branches rather
-# than importing them.
+# implementation -- calls `core/confirmation.py`'s leaf functions, the SAME
+# ones `core/routing.py:handle_inbound_message` calls for its own
+# water/stretch/generic confirmation branches (SPEC-REFACTOR.md Stage 2
+# rule 11/AC8: this used to be a byte-identical MIRROR of those branches;
+# now both call the same shared leaf).
 # ---------------------------------------------------------------------------
-
-
-def _generic_confirmation(db: "Database", habit: "Habit", value: float, today_str: str, lang: i18n.Language, config: "Config", user_id: str) -> str:
-    """Mirrors `main.py:_generic_confirmation`'s numeric/duration/boolean
-    branches exactly (its `text` branch is unreachable from quick-log --
-    R-Q1 omits text habits, and `handle_log_callback` above rejects a
-    text-habit payload before this is ever called, so R-Q6's "no Ollama
-    call anywhere in this path" holds by construction, not by omission)."""
-    if habit.type == "numeric":
-        total = db.sum_value(user_id, habit.id, today_str)
-        unit = habit.unit(lang) or ""
-        goal = targets.effective_goal(db, habit, config, user_id)
-        if goal:
-            pct = round(100 * total / goal) if goal else 0
-            return i18n.t(
-                "confirm_numeric_goal",
-                lang,
-                label=habit.label(lang),
-                value=value,
-                unit=unit,
-                total=total,
-                goal=goal,
-                pct=pct,
-            )
-        return i18n.t("confirm_numeric_nogoal", lang, label=habit.label(lang), value=value, unit=unit)
-
-    if habit.type == "duration":
-        count = db.count(user_id, habit.id, today_str)
-        unit = habit.unit(lang) or ""
-        return i18n.t(
-            "confirm_duration", lang, label=habit.label(lang), value=value, unit=unit, ordinal=_ordinal(count), count=count
-        )
-
-    # boolean (the only remaining reachable type -- see the docstring above)
-    status = i18n.t("bool_status_done" if value else "bool_status_not_done", lang)
-    return i18n.t("confirm_boolean", lang, label=habit.label(lang), status=status)
 
 
 async def _log_and_confirm(
@@ -379,59 +338,25 @@ async def _log_and_confirm(
     row_id = db.insert_log(entry)
     undo_buttons = undo_ui.undo_button(row_id, lang)
 
-    milestone_suffix = ""
-    if config.gamification.enabled:
-        crossed = streaks.crossed_milestone(db, config, habit, now.date(), was_qualified_before, user_id)
-        if crossed is not None:
-            # SPEC-v1.9.md Rule 5/AC9 (v1.9 integration pass): mirrors
-            # `main.py:handle_inbound_message`'s identical unit-aware
-            # switch, byte-for-byte -- see this module's own docstring's
-            # "byte-identical mirror" contract (AC-A2).
-            milestone_msg_id = (
-                "milestone_reached_weeks" if streaks.streak_unit(db, habit, user_id) == "week" else "milestone_reached"
-            )
-            milestone_suffix = "\n\n" + i18n.t(milestone_msg_id, lang, streak=crossed, label=habit.label(lang))
-
-    record_suffix = ""
-    broken_records = records.update_on_log(db, config, registry, habit, user_id, clock=clock)
-    if broken_records:
-        record_unit = streaks.streak_unit(db, habit, user_id)
-        record_suffix = "\n\n" + records.format_celebration(broken_records, habit, lang, record_unit)
-
-    confirmation_suffix = milestone_suffix + record_suffix
-    # SPEC-v1.9.md Rule 25/AC29 (v1.9 integration pass, module `wrapped`):
-    # mirrors `main.py`'s identical celebration-burst append, byte-for-byte
-    # (AC-A2's own "same confirmation" contract).
-    if confirmation_suffix:
-        burst = wrapped.celebration_burst(config, lang)
-        if burst:
-            confirmation_suffix += "\n" + burst
-
-    if habit.id == "water":
-        water_ml = int(value_num)
-        total = db.water_total_ml(user_id, today_str)
-        goal = targets.effective_goal(db, habit, config, user_id)
-        pct = round(100 * total / goal) if goal else 0
-        await channel.send_actionable(
-            user_id,
-            i18n.t("water_confirmation", lang, water_ml=water_ml, total=int(total), goal=goal, pct=pct)
-            + confirmation_suffix,
-            undo_buttons,
-        )
-    elif habit.id == "stretch":
-        stretch_min = int(value_num)
-        count = db.stretch_count(user_id, today_str)
-        await channel.send_actionable(
-            user_id,
-            i18n.t("stretch_confirmation", lang, stretch_min=stretch_min, ordinal=_ordinal(count), count=count)
-            + confirmation_suffix,
-            undo_buttons,
-        )
-    else:
-        message = _generic_confirmation(db, habit, value_num, today_str, lang, config, user_id)
-        await channel.send_actionable(user_id, message + confirmation_suffix, undo_buttons)
+    confirmation_suffix = confirmation.suffix(
+        db,
+        config,
+        registry,
+        habit,
+        user_id,
+        lang,
+        now_date=now.date(),
+        was_qualified_before=was_qualified_before,
+        record_clock=clock,
+        apply=True,
+    )
+    # `llm=None` -- quick-log can never carry a "text"-type habit (R-Q1
+    # omits them, and `handle_log_callback` above rejects one before this
+    # is ever called), so `confirmation_text`'s only LLM-calling branch is
+    # unreachable here by construction, not by omission (R-Q6).
+    message = await confirmation.confirmation_text(db, None, habit, value_num, today_str, lang, config, user_id)
+    await channel.send_actionable(user_id, message + confirmation_suffix, undo_buttons)
 
     # SPEC-v1.6.md R-D5 (module `dashboard`): refresh AFTER the
-    # confirmation is sent, never before -- mirrors `main.py`'s own
-    # placement exactly.
+    # confirmation is sent, never before.
     await dashboard.refresh(db, channel, config, registry, user_id, clock)

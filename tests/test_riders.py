@@ -116,15 +116,18 @@ def test_exactly_five_call_sites_pass_disable_notification_ticks_plus_v19_jobs()
     # RENAMED (SPEC-v1.9.md's own integration pass, mirrors this codebase's
     # established "each release renames + extends this test" convention,
     # e.g. the public-menu-count tests): SPEC-v1.9.md R9/R26 add two more
-    # deliberately-silent proactive sends in `main.py` -- the nightly grace
-    # message (ARCHI RULING: sent `disable_notification=True` ALWAYS,
-    # independent of `config.notifications.silent_proactive`) and the
-    # optional month-end `/wrapped` auto-send (R26's own "one SILENT card").
-    # `main.py`'s count is 2: `grace_tick`'s one `channel.send(...)` call +
-    # `wrapped_auto_job`'s own text-fallback `channel.send(...)` call (its
-    # `channel.send_image(...)` call also passes the keyword but this
-    # regex is deliberately scoped to `channel.send(` only, not
-    # `send_image` -- see the docstring below).
+    # deliberately-silent proactive sends -- the nightly grace message
+    # (ARCHI RULING: sent `disable_notification=True` ALWAYS, independent of
+    # `config.notifications.silent_proactive`) and the optional month-end
+    # `/wrapped` auto-send (R26's own "one SILENT card"). SPEC-REFACTOR.md
+    # Stage 2 (rule 9) moved both jobs' bodies out of `main.py` into
+    # `core/jobs.py` (`grace_tick`/`wrapped_auto_job`) -- an internal
+    # structure move, not a behavior change, so this test's expected
+    # location moves with it (AC-G1). `core/jobs.py`'s count is 2:
+    # `grace_tick`'s one `channel.send(...)` call + `wrapped_auto_job`'s own
+    # text-fallback `channel.send(...)` call (its `channel.send_image(...)`
+    # call also passes the keyword but this regex is deliberately scoped to
+    # `channel.send(` only, not `send_image` -- see the docstring below).
     #
     # Scoped to the actual `channel.send(...)` CALL EXPRESSION passing the
     # keyword (a real code call site), not any docstring/comment prose that
@@ -135,7 +138,7 @@ def test_exactly_five_call_sites_pass_disable_notification_ticks_plus_v19_jobs()
         SRC_ROOT / "core" / "reminders.py": 1,
         SRC_ROOT / "core" / "checkins.py": 1,
         SRC_ROOT / "core" / "nudge.py": 1,
-        SRC_ROOT / "main.py": 2,
+        SRC_ROOT / "core" / "jobs.py": 2,
     }
     # channels/base.py + channels/telegram.py + channels/line.py DEFINE the
     # parameter (function signatures / docstrings) but never themselves
