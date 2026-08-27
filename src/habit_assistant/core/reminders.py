@@ -70,7 +70,7 @@ from zoneinfo import ZoneInfo
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, pause, targets, user_prefs
+from habit_assistant.core import i18n, pause, targets, timeutil, user_prefs
 from habit_assistant.core.habits import BUILTIN_IDS, Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -136,20 +136,6 @@ def _today_str(config: Config) -> str:
     return datetime.now(ZoneInfo(config.app.timezone)).date().isoformat()
 
 
-def _now_hhmm(clock, tz_name: str) -> str:
-    """SPEC-v1.2.md R-S1: the current wall-clock `HH:MM` in `tz_name`.
-    Mirrors `core/query.py:_today_in_timezone`'s own convention -- a naive
-    `clock()` (this app's usual injectable-clock shape, e.g. `datetime.now`
-    or a test's fixed callable) is treated as already being in `tz_name`;
-    an aware one is converted to it."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.strftime("%H:%M")
-
-
 def effective_quiet_windows(db: Database | None, config: Config, chat_id: str) -> list[tuple[str, str]]:
     """SPEC-v1.2.md R-P2: `chat_id`'s effective quiet-hours windows --
     `users.quiet_hours_json` if set (an explicit, possibly EMPTY, list --
@@ -192,9 +178,10 @@ def in_dnd_now(db: Database, config: Config, chat_id: str, clock=datetime.now) -
     `is_quiet_hours_now` call sites used to.
 
     `clock` is the same injectable-clock shape every other testable
-    "what time is it" call site in this module already uses (`_now_hhmm`
-    above) -- a naive result is treated as already being in
-    `config.app.timezone`; an aware one is converted to it. Fail-open by
+    "what time is it" call site in this module already uses
+    (`core/timeutil.now_hhmm`, called below) -- a naive result is treated
+    as already being in `config.app.timezone`; an aware one is converted to
+    it. Fail-open by
     construction: `effective_quiet_windows` itself already falls back to
     the global config default on ANY DB read error (its own documented
     posture, a few lines up) -- a DB hiccup here simply resolves to
@@ -458,7 +445,7 @@ async def run_due_reminders(
     now resolved lazily, only for a habit that is actually about to send
     (`send_reminder` is the only consumer of `language`), so an idle tick
     with nothing due never reads `get_user` at all."""
-    current_hhmm = _now_hhmm(clock, config.app.timezone)
+    current_hhmm = timeutil.now_hhmm(clock, config.app.timezone)
     overrides = _bulk_reminder_time_overrides(db)
     user_ids = active_user_ids if active_user_ids is not None else db.active_user_ids()
     for user_id in user_ids:

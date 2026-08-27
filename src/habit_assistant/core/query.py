@@ -59,9 +59,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, timeutil
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import build_query_intent_system_prompt, build_query_intent_user_prompt
 
@@ -158,21 +157,6 @@ async def classify_query_intent(text: str, llm: OllamaClient, registry: "HabitRe
         return None
 
 
-def _today_in_timezone(clock, tz_name: str) -> date:
-    """AC8.3: timezone-aware regardless of the host's own local timezone --
-    a naive `clock()` (the app's existing convention, e.g. `datetime.now`
-    and every test's `fixed_clock` fixture) is treated as already being in
-    `tz_name`; an aware one is converted to it. Only the resulting calendar
-    *date* is used from here on, matching `core/review.py`'s day-string
-    aggregation."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.date()
-
-
 def date_range_for_timeframe(timeframe: str, today: date) -> list[str]:
     """AC8.3: map a validated timeframe id to its 'YYYY-MM-DD' day strings.
     "this_week"/"last_7_days" are intentionally identical -- see the module
@@ -254,7 +238,7 @@ async def answer_question(
         if habit is None:  # defensive; _validate_intent already checked registry.ids()
             return i18n.t("query_cant_answer", lang)
 
-        today = _today_in_timezone(clock, config.app.timezone)
+        today = timeutil.today_in_timezone(clock, config.app.timezone)
         day_strs = date_range_for_timeframe(intent.timeframe, today)
         total, count = _aggregate(db, habit, day_strs, user_id)
         timeframe_label = i18n.t(_TIMEFRAME_LABEL_MSG_ID[intent.timeframe], lang)

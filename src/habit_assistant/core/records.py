@@ -43,9 +43,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n, streaks
+from habit_assistant.core import i18n, streaks, timeutil
 from habit_assistant.core.render_budget import TELEGRAM_MESSAGE_BUDGET, fit_within_budget
 
 if TYPE_CHECKING:
@@ -68,31 +67,13 @@ RECORD_TYPES: tuple[str, ...] = ("best_day", "best_week", "longest_streak")
 # streaks.py:compute_streak` rather than reimplementing streak math a
 # second time -- the two modules' aggregates must never diverge, since a
 # user comparing `/records`' `best_week` against `/trends`' weekly totals
-# for the same data should always see numbers that agree). `_today` itself
-# stays private and is duplicated in `trends.py`, per this codebase's own
-# established convention for this specific "resolve today's date from an
-# injectable clock + config timezone" shim (see `core/checkins.py`/`core/
-# nudge.py`'s own near-identical, each independently duplicated,
-# `_today_str`/`_now_hhmm` helpers) -- it's a trivial, module-local
-# mechanical detail, not a business rule that must never diverge.
+# for the same data should always see numbers that agree). "Today" and
+# "the 7 ISO day strings ending at a date" both resolve via
+# `core/timeutil.py` (SPEC-REFACTOR.md Stage 3 rule 12(b)/(e)) -- previously
+# each independently duplicated per-module (this module, `trends.py`,
+# `core/checkins.py`/`core/nudge.py`'s own near-identical `_today_str`/
+# `_now_hhmm`), now one canonical implementation.
 # ===========================================================================
-
-
-def _today(config: "Config", clock) -> date:
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
-    else:
-        now = now.astimezone(ZoneInfo(config.app.timezone))
-    return now.date()
-
-
-def week_day_strs(end_date: date) -> list[str]:
-    """The 7 ISO day strings ending at (and including) `end_date` --
-    identical convention to `core/review.py:_week_days` (the SAME "week"
-    definition SPEC-v1.6.md R-T1 requires `core/trends.py` to share with
-    the review)."""
-    return [(end_date - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
 
 
 def period_total(db: "Database", habit: "Habit", user_id: str, day_strs: list[str]) -> float:
@@ -174,9 +155,9 @@ def update_on_log(
     propagate to the caller."""
     del registry
     try:
-        today = _today(config, clock)
+        today = timeutil.today_in_timezone(clock, config.app.timezone)
         today_str = today.isoformat()
-        week_days = week_day_strs(today)
+        week_days = timeutil.week_days(today)
 
         broken: list[tuple[str, float]] = []
 

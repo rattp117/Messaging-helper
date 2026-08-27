@@ -43,9 +43,8 @@ import io
 import logging
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n, streaks, targets
+from habit_assistant.core import i18n, streaks, targets, timeutil
 
 if TYPE_CHECKING:
     from habit_assistant.channels.base import Channel
@@ -96,16 +95,15 @@ def _warn_missing_once() -> None:
 
 
 def _today_in_timezone(clock, tz_name: str) -> date:
-    """Mirrors `core/query.py:_today_in_timezone` / `core/reminders.py:
-    _today_str`'s own identical convention (each module keeps its own
-    private copy rather than sharing one) -- a naive `clock()` is treated
-    as already being in `tz_name`; an aware one is converted to it."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.date()
+    """SPEC-REFACTOR.md Stage 3 rule 12(b): thin alias for
+    `core/timeutil.today_in_timezone` (Archi-approved consolidation of what
+    used to be 8 independent per-module copies of this exact shim). Kept as
+    a same-named wrapper here (rather than rewriting every call site,
+    including this module's own directly-tested one, `tests/
+    test_heatmap_gaps.py`) -- mirrors `core/reminders.py:
+    _user_language_pref`'s own established precedent for this exact
+    situation. Behavior is unchanged."""
+    return timeutil.today_in_timezone(clock, tz_name)
 
 
 def _effective_weeks(weeks: int | None) -> int:

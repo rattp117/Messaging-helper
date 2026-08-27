@@ -65,9 +65,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
-from zoneinfo import ZoneInfo
-
-from habit_assistant.core import i18n, streaks, trends
+from habit_assistant.core import i18n, streaks, timeutil, trends
 from habit_assistant.core.records import period_entry_count, period_total
 
 if TYPE_CHECKING:
@@ -131,19 +129,6 @@ def _warn_missing_once() -> None:
             'instead. Install with: pip install -e ".[charts]"'
         )
         _warned_missing = True
-
-
-def _today_in_timezone(clock, tz_name: str) -> date:
-    """Mirrors `core/heatmap.py:_today_in_timezone`'s own identical
-    convention (each module keeps its own private copy rather than sharing
-    one, this codebase's established pattern) -- a naive `clock()` is
-    treated as already being in `tz_name`; an aware one is converted to it."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.date()
 
 
 def _window_days(today: date, period: Period) -> list[str]:
@@ -376,7 +361,7 @@ def render(
     if len(registry) == 0:
         return None
 
-    today = _today_in_timezone(clock, config.app.timezone)
+    today = timeutil.today_in_timezone(clock, config.app.timezone)
     day_strs = _window_days(today, period)
 
     try:
@@ -476,7 +461,7 @@ async def execute_wrapped(
         return i18n.t("wrapped_no_habits", lang)
 
     period: Period = "month" if command.pref_value == "month" else "4w"
-    today = _today_in_timezone(clock, config.app.timezone)
+    today = timeutil.today_in_timezone(clock, config.app.timezone)
 
     try:
         image = render(db, config, registry, lang, user_id, period, clock)

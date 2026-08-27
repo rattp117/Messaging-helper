@@ -212,6 +212,8 @@ from typing import TYPE_CHECKING, Literal
 from habit_assistant.core import units
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from habit_assistant.core.habits import HabitRegistry
 
 # SPEC-v1.2.md §5/§11: the eight new kinds below are a SKELETON only --
@@ -534,6 +536,24 @@ def _resolve_target_category(habit_token: str, registry: "HabitRegistry") -> str
     return resolved if resolved is not None else habit_token.strip().lower()
 
 
+# SPEC-REFACTOR.md Stage 3 rule 12(d): the token-collection step common to
+# every registry-anchored Thai-alias trigger builder in this file (target/
+# remind/history/heatmap/records+trends/delhabit/cadence, 7 definitions
+# below) -- every habit id + Thai label in `registry`, `re.escape`d and
+# sorted longest-first (so a longer token can never be shadowed by a
+# shorter alternation branch matching first). Extracted verbatim from what
+# was previously 7 byte-identical inline copies; each builder's own
+# trailing regex construction (trigger literal(s), group shape, whether a
+# `None` registry falls through or is checked explicitly) is untouched.
+def _registry_th_tokens(registry: "HabitRegistry") -> list[str]:
+    tokens: set[str] = set()
+    for habit in registry:
+        tokens.add(habit.id)
+        if habit.label_th:
+            tokens.add(habit.label_th)
+    return sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+
+
 def _build_target_th_set_pattern(registry: "HabitRegistry") -> re.Pattern[str] | None:
     """Thai "ตั้งเป้า<habit><value>" / "เป้า<habit><value>" (R-T7b), habit
     token built from the LIVE registry's ids/Thai labels rather than a
@@ -547,12 +567,7 @@ def _build_target_th_set_pattern(registry: "HabitRegistry") -> re.Pattern[str] |
     doesn't track can't accidentally look like this trigger). Returns None
     if the registry has no matchable Thai/id tokens (defensive; every
     shipped config has at least `water`'s "น้ำ")."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     if not escaped:
         return None
     habit_alt = "|".join(escaped)
@@ -747,12 +762,7 @@ def _build_remind_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | Non
     (only a message naming a habit this bot actually tracks can ever
     match at all). Returns None if the registry has no matchable Thai/id
     tokens (defensive; every shipped config has at least water's "น้ำ")."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     if not escaped:
         return None
     habit_alt = "|".join(escaped)
@@ -961,12 +971,7 @@ def _build_history_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | No
     matchable Thai/id tokens (defensive; every shipped config has at
     least water's "น้ำ") -- in that case only the bare form or a
     purely-numeric tail can match."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
     return re.compile(rf"^ย้อนหลัง{habit_group}(?:\s+(?P<n>\d+))?$")
 
@@ -1027,12 +1032,7 @@ def _build_heatmap_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | No
     if the registry has no matchable Thai/id tokens (defensive; every
     shipped config has at least water's "น้ำ") -- in that case only the
     bare form or a purely-numeric tail can match."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
     return re.compile(rf"^ปฏิทิน{habit_group}(?:\s+(?P<n>\d+))?$")
 
@@ -1353,12 +1353,7 @@ def _build_insights_th_pattern(trigger: str, registry: "HabitRegistry") -> re.Pa
     """Registry-anchored Thai-alias builder shared by `_match_records`/
     `_match_trends` -- see the comment block above for the false-positive
     rationale (mirrors `_build_history_th_pattern`'s own construction)."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     habit_group = rf"(?:\s+(?P<habit>{'|'.join(escaped)}))?" if escaped else ""
     return re.compile(rf"^{trigger}{habit_group}(?:\s+(?P<n>\d+))?$")
 
@@ -1549,12 +1544,7 @@ def _build_delhabit_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | N
     time this dispatches -- can ever match at all). Returns `None` if the
     registry has no matchable Thai/id tokens (defensive; every shipped
     config has at least water's "น้ำ")."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     if not escaped:
         return None
     habit_alt = "|".join(escaped)
@@ -1873,12 +1863,7 @@ def _build_cadence_th_pattern(registry: "HabitRegistry") -> re.Pattern[str] | No
     between them can never cause one to shadow the other. Returns `None`
     if the registry has no matchable Thai/id tokens (defensive; every
     shipped config has at least water's "น้ำ")."""
-    tokens: set[str] = set()
-    for habit in registry:
-        tokens.add(habit.id)
-        if habit.label_th:
-            tokens.add(habit.label_th)
-    escaped = sorted((re.escape(t) for t in tokens if t.strip()), key=len, reverse=True)
+    escaped = _registry_th_tokens(registry)
     if not escaped:
         return None
     habit_alt = "|".join(escaped)
@@ -2126,219 +2111,175 @@ def _parse_edit_value(value_str: str, registry: "HabitRegistry") -> tuple[str, f
     return habit_id, num * multiplier
 
 
+def _edit_triggered(stripped: str) -> bool:
+    return _EDIT_TRIGGER.match(stripped) is not None
+
+
+def _resolve_edit(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    """`edit`'s full resolution -- called only once `_edit_triggered` has
+    already confirmed the trigger shape matched (rule 14 invariant (ii)).
+    `None` here is a TERMINAL rejection (SPEC-v0.7.md §4 R14's own "garbled
+    tail -> None" contract): the caller (`dispatch`) returns it immediately
+    rather than treating it as "no match, keep walking the table"."""
+    trigger_match = _EDIT_TRIGGER.match(stripped)
+    if trigger_match is None:
+        return None
+    parsed = _parse_edit_value(trigger_match.group("value"), registry)
+    if parsed is None:
+        return None
+    category, value_num = parsed
+    return Command(kind="edit", category=category, value_num=value_num)
+
+
+def _resolve_snooze(stripped: str, registry: "HabitRegistry") -> "Command | None":
+    del registry
+    snoozed, minutes = _match_snooze(stripped)
+    return Command(kind="snooze", minutes=minutes) if snoozed else None
+
+
+def _ignore_registry(
+    match: "Callable[[str], Command | None]",
+) -> "Callable[[str, HabitRegistry], Command | None]":
+    """Adapts a `_match_*` function that only takes `stripped` (no
+    `registry`) to the uniform `(stripped, registry) -> Command | None`
+    row shape `_MATCHERS` needs -- these matchers have no registry
+    dependency of their own; `registry` is threaded through unused."""
+
+    def _adapted(stripped: str, registry: "HabitRegistry") -> "Command | None":
+        del registry
+        return match(stripped)
+
+    return _adapted
+
+
+def _bool_matcher(
+    match: "Callable[[str], bool]", kind: CommandKind
+) -> "Callable[[str, HabitRegistry], Command | None]":
+    """Adapts a bare `bool` `_match_*` predicate (undo/help/habits/query --
+    none of the four carry any payload) to the uniform row shape, producing
+    the payload-less `Command(kind=...)` on a hit."""
+
+    def _adapted(stripped: str, registry: "HabitRegistry") -> "Command | None":
+        del registry
+        return Command(kind=kind) if match(stripped) else None
+
+    return _adapted
+
+
+@dataclass(frozen=True, slots=True)
+class _MatcherEntry:
+    """One row of the dispatch table (SPEC-REFACTOR.md Stage 3, rule 14).
+    `match(stripped, registry)` returns the `Command` this row recognizes,
+    or `None`. For an ordinary row (`triggered=None`), `None` means "this
+    row doesn't recognize `stripped` -- keep walking the table" -- every
+    matcher here is pure fall-through (rule 14's own "disjoint-trigger"
+    property, documented per-matcher above). `edit` is the sole exception
+    (rule 14 invariant (ii)): once `triggered(stripped)` is True, this row
+    COMMITS -- `match`'s return value (a `Command`, or a terminal `None`)
+    is what `dispatch` returns, without offering `stripped` to any later
+    row."""
+
+    kind: str
+    match: "Callable[[str, HabitRegistry], Command | None]"
+    triggered: "Callable[[str], bool] | None" = None
+
+
+# The table itself: SAME 27 rows, SAME order as the if-chain it replaces
+# (ROADMAP.md v0.9.0 -> SPEC-v1.9.md's own accreted routing brief, each
+# insertion point documented per-matcher above) -- undo -> edit -> snooze ->
+# target -> remind -> access -> audit -> lang -> quiet -> checkin -> dnd ->
+# dashboard -> history -> heatmap -> records -> trends -> wrapped ->
+# addhabit -> delhabit -> log -> routine -> cadence -> pause -> resume ->
+# help -> habits -> query. `_assert_dispatch_invariants` below proves the
+# three rule-14 invariants hold structurally; `tests/test_refactor_s3.py`'s
+# golden precedence corpus proves this table reproduces the pre-conversion
+# if-chain's exact output.
+_MATCHERS: list[_MatcherEntry] = [
+    _MatcherEntry("undo", _bool_matcher(_match_undo, "undo")),
+    _MatcherEntry("edit", _resolve_edit, triggered=_edit_triggered),
+    _MatcherEntry("snooze", _resolve_snooze),
+    _MatcherEntry("target", _match_target),
+    _MatcherEntry("remind", _match_remind),
+    _MatcherEntry("access", _ignore_registry(_match_access)),
+    _MatcherEntry("audit", _ignore_registry(_match_audit)),
+    _MatcherEntry("lang", _ignore_registry(_match_lang)),
+    _MatcherEntry("quiet", _ignore_registry(_match_quiet)),
+    _MatcherEntry("checkin", _ignore_registry(_match_checkin)),
+    _MatcherEntry("dnd", _ignore_registry(_match_dnd)),
+    _MatcherEntry("dashboard", _ignore_registry(_match_dashboard)),
+    _MatcherEntry("history", _match_history),
+    _MatcherEntry("heatmap", _match_heatmap),
+    _MatcherEntry("records", _match_records),
+    _MatcherEntry("trends", _match_trends),
+    _MatcherEntry("wrapped", _ignore_registry(_match_wrapped)),
+    _MatcherEntry("addhabit", _ignore_registry(_match_addhabit)),
+    _MatcherEntry("delhabit", _match_delhabit),
+    _MatcherEntry("log", _ignore_registry(_match_log)),
+    _MatcherEntry("routine", _match_routine),
+    _MatcherEntry("cadence", _match_cadence),
+    _MatcherEntry("pause", _match_pause),
+    _MatcherEntry("resume", _match_resume),
+    _MatcherEntry("help", _bool_matcher(_match_help, "help")),
+    _MatcherEntry("habits", _bool_matcher(_match_habits, "habits")),
+    _MatcherEntry("query", _bool_matcher(_match_query, "query")),
+]
+
+
+def _assert_dispatch_invariants(matchers: "list[_MatcherEntry]") -> None:
+    """SPEC-REFACTOR.md Stage 3 rule 14: a runtime, import-time structural
+    guard proving `_MATCHERS` still encodes the three precedence invariants
+    a future table edit could otherwise silently break. Runs once, at
+    import time, right below -- `tests/test_refactor_s3.py` covers the same
+    three invariants behaviorally on top of this."""
+    kinds = [m.kind for m in matchers]
+    assert len(kinds) == len(set(kinds)), "duplicate matcher kind in _MATCHERS"
+    assert kinds[-1] == "query", (
+        "'query' must be the LAST row -- it is the only substring/.search matcher (rule 14 invariant iii)"
+    )
+    assert kinds.index("cadence") < kinds.index("query"), (
+        "'cadence' must precede 'query' -- กี่ครั้งต่อสัปดาห์ contains the query anchor กี่ (rule 14 invariant i)"
+    )
+    commit_rows = [m.kind for m in matchers if m.triggered is not None]
+    assert commit_rows == ["edit"], f"'edit' must be the sole commit-on-trigger row, got {commit_rows!r} (invariant ii)"
+
+
+_assert_dispatch_invariants(_MATCHERS)
+
+
 def dispatch(text: str, registry: "HabitRegistry") -> Command | None:
     """Classify `text` as an explicit command, or return None to fall
     through to the LLM parser (AC5.5: normal habit messages like "500ml"
     or "ดื่มน้ำ 2 แก้ว" must route unchanged -- zero false positives).
 
-    SPEC-v0.7.md §4 R14 / AC12: edit values resolve to a habit id via
-    `registry` (its configured `unit`/`unit_aliases`), not a hardcoded
-    water/stretch check.
-
-    ROADMAP.md v0.9.0 / SPEC-v1.1.md §4 R-T7/R-D1: checked in order undo ->
-    edit -> snooze -> target -> help -> habits -> query -> (fall through to
-    the parser), matching this version's own required routing ("undo/edit ->
-    snooze -> target -> help/habits -> query -> extractor"). SPEC-v1.2.md §4
-    R-S5 (module `schedules`) inserts one more anchored, LLM-free check --
-    `remind` -- right after `target` and before `help`/`habits`: both are
-    deterministic "settings"-style slash commands with disjoint trigger
-    text (`/remind`/`เตือน` never overlaps `/target`'s own triggers or any
-    help/habits/query anchor), so exact placement relative to them doesn't
-    change behavior -- it's grouped with `target` for readability. SPEC-v1.2.md
-    §4 R-P1/R-P2 (module `preferences`) likewise inserts `lang`/`quiet`
-    (`/lang`/`ภาษา`, `/quiet`/`เงียบ`) right after `access`'s admin block and
-    before `help`/`habits` -- same disjoint-trigger reasoning, so exact
-    placement doesn't change behavior either. SPEC-v1.3.md §4 R-V1 (module
-    `audit-view`) inserts one more, `audit` (`/audit`/`ประวัติ`), right
-    after `access`'s admin block too -- same disjoint-trigger reasoning.
-    An edit-trigger
-    phrase whose tail doesn't parse as NUMBER [+ UNIT] returns None
-    immediately (pre-v0.8 behavior, unchanged) rather than also being
-    offered to the snooze/target/help/habits/query matchers -- it already
-    committed to "edit" shape, not any of those."""
+    SPEC-REFACTOR.md Stage 3: walks `_MATCHERS`, the table-driven form of
+    what was (through v1.9.2) an ordered if-chain -- same 27 rows, same
+    order, same three precedence invariants (rule 14; `_assert_dispatch_
+    invariants` above proves them structurally, `tests/test_refactor_s3.py`
+    proves the table reproduces the pre-conversion if-chain's exact output
+    over a golden corpus). An ordinary row's `None` means "doesn't
+    recognize `stripped`, keep walking"; `edit` is the sole exception
+    (`triggered`, invariant (ii)) -- once its trigger SHAPE matches, this
+    function returns whatever `edit`'s own resolution gives (a `Command`,
+    or a TERMINAL `None`) without offering `stripped` to any later row,
+    exactly reproducing the pre-v0.8 "a garbled edit tail falls through to
+    the extractor, not to snooze/target/.../query" contract. `query` stays
+    the final row because `_match_query` is the only substring/`.search`
+    matcher here (invariant (iii)) -- every other row is anchored to the
+    whole stripped message with its own disjoint trigger text (documented
+    per-matcher above), so its exact position among the rest is
+    behavior-preserving by construction."""
     stripped = text.strip()
     if not stripped:
         return None
 
-    if _match_undo(stripped):
-        return Command(kind="undo")
-
-    trigger_match = _EDIT_TRIGGER.match(stripped)
-    if trigger_match is not None:
-        parsed = _parse_edit_value(trigger_match.group("value"), registry)
-        if parsed is None:
-            return None
-        category, value_num = parsed
-        return Command(kind="edit", category=category, value_num=value_num)
-
-    snoozed, minutes = _match_snooze(stripped)
-    if snoozed:
-        return Command(kind="snooze", minutes=minutes)
-
-    target_command = _match_target(stripped, registry)
-    if target_command is not None:
-        return target_command
-
-    remind_command = _match_remind(stripped, registry)
-    if remind_command is not None:
-        return remind_command
-
-    # SPEC-v1.2.md §4 R-A1-R-A5 (module `access`): `/start`/`/approve`/
-    # `/block`/`/users`/`/invite` -- disjoint literal trigger words from
-    # every pattern above/below, so exact placement doesn't change
-    # behavior; grouped here with the other v1.2 settings-style slash
-    # commands for readability.
-    access_command = _match_access(stripped)
-    if access_command is not None:
-        return access_command
-
-    # SPEC-v1.3.md §4 R-V1 (module `audit-view`): `/audit`/`ประวัติ` --
-    # disjoint trigger text from every pattern above/below, grouped here
-    # with `access`'s other owner-only admin commands for readability
-    # (same rationale as `remind`/`access`/`lang`/`quiet` above).
-    audit_command = _match_audit(stripped)
-    if audit_command is not None:
-        return audit_command
-
-    # SPEC-v1.2.md §4 R-P1/R-P2 (module `preferences`): `/lang`/`ภาษา` and
-    # `/quiet`/`เงียบ` -- disjoint trigger text from every pattern above/
-    # below, grouped here with the other v1.2 settings-style slash commands
-    # for readability (same rationale as `remind`/`access` above).
-    lang_command = _match_lang(stripped)
-    if lang_command is not None:
-        return lang_command
-
-    quiet_command = _match_quiet(stripped)
-    if quiet_command is not None:
-        return quiet_command
-
-    # SPEC-v1.5.md §4 R-K8/R-D5 (module `checkins`): `/checkin`/`เช็คอิน`
-    # and `/dnd`/`งดรบกวน` (a pure "quiet"-kind alias) -- disjoint trigger
-    # text from every pattern above/below, grouped here with the other
-    # settings-style slash commands for readability (same rationale as
-    # `remind`/`access`/`lang`/`quiet` above).
-    checkin_command = _match_checkin(stripped)
-    if checkin_command is not None:
-        return checkin_command
-
-    dnd_command = _match_dnd(stripped)
-    if dnd_command is not None:
-        return dnd_command
-
-    # SPEC-v1.6.md §4 Feature 1 R-D1 (module `dashboard`): `/dashboard`/
-    # `แดชบอร์ด` -- disjoint trigger text from every pattern above/below,
-    # grouped here with the other settings-style slash commands for
-    # readability (same rationale as `remind`/`access`/`lang`/`quiet`/
-    # `checkin` above).
-    dashboard_command = _match_dashboard(stripped)
-    if dashboard_command is not None:
-        return dashboard_command
-
-    # SPEC-v1.4.md §4 R-D2 (module `history`): `/history`/`ย้อนหลัง` --
-    # disjoint trigger text from every pattern above/below (and explicitly
-    # does NOT collide with `/audit`'s own `ประวัติ`, AC-5), grouped here
-    # with the other settings/view-style slash commands for readability.
-    history_command = _match_history(stripped, registry)
-    if history_command is not None:
-        return history_command
-
-    # SPEC-v1.6.md §4 R-H1 (module `heatmap`): `/heatmap`/`ปฏิทิน` --
-    # disjoint trigger text from every pattern above/below, grouped here
-    # with `history`'s own tail-grammar precedent for readability (exact
-    # placement doesn't change behavior).
-    heatmap_command = _match_heatmap(stripped, registry)
-    if heatmap_command is not None:
-        return heatmap_command
-
-    # SPEC-v1.6.md §4 Feature 3/4 (module `insights`): `/records`/`สถิติ`
-    # and `/trends`/`แนวโน้ม` -- disjoint trigger text from every pattern
-    # above/below, grouped here with `/history`'s/`/heatmap`'s own
-    # view-style commands for readability (exact placement doesn't change
-    # behavior).
-    records_command = _match_records(stripped, registry)
-    if records_command is not None:
-        return records_command
-
-    trends_command = _match_trends(stripped, registry)
-    if trends_command is not None:
-        return trends_command
-
-    # SPEC-v1.9.md §4 Rule 21 (module `wrapped`): `/wrapped`/`/recap`/
-    # `สรุปเดือน`/`การ์ดสรุป` -- disjoint trigger text from every pattern
-    # above/below, grouped here with `/heatmap`'s/`/records`'s/`/trends`'s
-    # own view-style commands for readability (exact placement doesn't
-    # change behavior).
-    wrapped_command = _match_wrapped(stripped)
-    if wrapped_command is not None:
-        return wrapped_command
-
-    # SPEC-v1.7.md §4 (module `habitdef`): `/addhabit`/`เพิ่มนิสัย` and
-    # `/delhabit`/`ลบนิสัย` -- disjoint trigger text from every pattern
-    # above/below, grouped here with `/history`'s/`/heatmap`'s/`/records`'s/
-    # `/trends`'s own view/definition-style commands for readability (exact
-    # placement doesn't change behavior).
-    addhabit_command = _match_addhabit(stripped)
-    if addhabit_command is not None:
-        return addhabit_command
-
-    delhabit_command = _match_delhabit(stripped, registry)
-    if delhabit_command is not None:
-        return delhabit_command
-
-    # SPEC-v1.8.md §4 R-Q1 (module `quicklog`): `/log`/`บันทึก` -- disjoint
-    # trigger text from every pattern above/below (see `_match_log`'s own
-    # comment block for the `บันทึก`-vs-diary-prose false-positive
-    # analysis), grouped here with `/addhabit`'s/`/delhabit`'s own
-    # definition/action-style commands for readability (exact placement
-    # doesn't change behavior).
-    log_command = _match_log(stripped)
-    if log_command is not None:
-        return log_command
-
-    # SPEC-v1.8.md §4 R-R1-R-R5 (module `routines`): `/routine`/`กิจวัตร` --
-    # disjoint trigger text from every pattern above/below, grouped here
-    # with `/addhabit`'s/`/delhabit`'s own definition-style commands for
-    # readability (exact placement doesn't change behavior).
-    routine_command = _match_routine(stripped, registry)
-    if routine_command is not None:
-        return routine_command
-
-    # SPEC-v1.9.md §4 R18 (module `cadence`): `/cadence`/`ต่อสัปดาห์`/
-    # `กี่ครั้งต่อสัปดาห์` -- MUST be checked before `_match_query` below
-    # (this file's own CRITICAL note, see `_match_cadence`'s own module
-    # comment block above): `กี่ครั้งต่อสัปดาห์` contains `กี่`, one of
-    # `_QUERY_PATTERNS`'s own substring anchors, so a genuine cadence
-    # phrase would otherwise be silently swallowed as a "how many" query.
-    # Grouped here with `/addhabit`'s/`/routine`'s own definition/
-    # action-style commands for readability (exact placement doesn't
-    # change behavior beyond the one hard "before query" constraint).
-    cadence_command = _match_cadence(stripped, registry)
-    if cadence_command is not None:
-        return cadence_command
-
-    # SPEC-v1.9.md §4 R12/R13 (module `pause`): `/pause`/`พัก`/`หยุดพัก`
-    # and `/resume`/`กลับมา`/`ต่อ` -- disjoint trigger text from every
-    # pattern above/below (none of the four Thai trigger words contain
-    # `กี่`/`เท่าไหร่`/`เท่าไร`/`ไหม`/`หรือยัง`, so unlike `cadence` above
-    # this pair has no ordering constraint relative to `_match_query`),
-    # grouped here with `/cadence`'s own SPEC-v1.9.md commands for
-    # readability.
-    pause_command = _match_pause(stripped, registry)
-    if pause_command is not None:
-        return pause_command
-
-    resume_command = _match_resume(stripped, registry)
-    if resume_command is not None:
-        return resume_command
-
-    if _match_help(stripped):
-        return Command(kind="help")
-
-    if _match_habits(stripped):
-        return Command(kind="habits")
-
-    if _match_query(stripped):
-        return Command(kind="query")
+    for entry in _MATCHERS:
+        if entry.triggered is not None:
+            if not entry.triggered(stripped):
+                continue
+            return entry.match(stripped, registry)
+        result = entry.match(stripped, registry)
+        if result is not None:
+            return result
 
     return None
 

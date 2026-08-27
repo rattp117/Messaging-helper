@@ -18,12 +18,13 @@ view pair in this codebase already uses (`core/review.py:
 compute_weekly_stats` -> `format_stats_summary`/`render_weekly_review_
 charts`).
 
-Reuses `core/records.py`'s own `week_day_strs`/`period_total` (the SAME
-`insights` module, so this is intra-module reuse -- see that module's own
-docstring for why this is imported rather than reimplemented: the two
-modules' aggregates must never diverge, since a user comparing `/records`'
-`best_week` against `/trends`' weekly totals for the same data should
-always see numbers that agree)."""
+Reuses `core/records.py`'s own `period_total` (the SAME `insights` module,
+so this is intra-module reuse -- see that module's own docstring for why
+this is imported rather than reimplemented: the two modules' aggregates
+must never diverge, since a user comparing `/records`' `best_week` against
+`/trends`' weekly totals for the same data should always see numbers that
+agree). "Today" and "the 7 ISO day strings ending at a date" both resolve
+via `core/timeutil.py` (SPEC-REFACTOR.md Stage 3 rule 12(b)/(e))."""
 
 from __future__ import annotations
 
@@ -31,10 +32,9 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n
-from habit_assistant.core.records import period_total, week_day_strs
+from habit_assistant.core import i18n, timeutil
+from habit_assistant.core.records import period_total
 from habit_assistant.core.render_budget import TELEGRAM_MESSAGE_BUDGET, fit_within_budget
 
 if TYPE_CHECKING:
@@ -50,15 +50,6 @@ logger = logging.getLogger(__name__)
 # walk at 2 years, plenty for any realistic "N weeks rising" callout while
 # keeping a single `/trends` call's worst-case DB cost bounded).
 _MAX_LOOKBACK_WEEKS = 104
-
-
-def _today(config: "Config", clock) -> date:
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
-    else:
-        now = now.astimezone(ZoneInfo(config.app.timezone))
-    return now.date()
 
 
 @dataclass(slots=True)
@@ -89,7 +80,7 @@ def _weekly_totals_backward(
     totals: list[float] = []
     day = end_date
     for i in range(max_weeks):
-        days = week_day_strs(day)
+        days = timeutil.week_days(day)
         if i > 0 and sum(db.count(user_id, habit.id, d) for d in days) == 0:
             break
         totals.append(period_total(db, habit, user_id, days))
@@ -151,11 +142,11 @@ def compute(
     db: "Database", config: "Config", registry: "HabitRegistry", user_id: str, clock=datetime.now
 ) -> list[HabitTrend]:
     """R-T1: this-week-vs-last-week totals (two rolling 7-day windows,
-    the SAME "week" convention `core/review.py:_week_days` uses), per
+    the SAME "week" convention `core/timeutil.week_days` uses), per
     configured habit, in registry order (R-X1). Pure, deterministic,
     read-only aggregation over `db.sum_value`/`count`/`count_true` --
     zero LLM calls anywhere in this module."""
-    today = _today(config, clock)
+    today = timeutil.today_in_timezone(clock, config.app.timezone)
     return [_compute_one(db, habit, user_id, today) for habit in registry]
 
 
@@ -230,7 +221,7 @@ def render(
                 return i18n.t(
                     "trends_invalid_habit", lang, habit_id=habit_id, habit_list=", ".join(registry.ids())
                 )
-            today = _today(config, clock)
+            today = timeutil.today_in_timezone(clock, config.app.timezone)
             return _format_trend_line(_compute_one(db, habit, user_id, today), lang)
 
         trend_list = compute(db, config, registry, user_id, clock)

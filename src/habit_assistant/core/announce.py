@@ -20,7 +20,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from habit_assistant.channels.base import Channel
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, user_prefs
 from habit_assistant.core.release_notes import RELEASE_NOTES, get_release_note
 
 if TYPE_CHECKING:
@@ -28,22 +28,6 @@ if TYPE_CHECKING:
     from habit_assistant.storage.db import Database
 
 logger = logging.getLogger(__name__)
-
-
-def _user_language_pref(db: "Database", chat_id: str) -> str:
-    """Mirrors `core/reminders.py:_user_language_pref`'s own fail-open
-    shape: an unprompted send (R-N6) resolves the recipient's OWN stored
-    `users.language_pref`, defaulting to `"auto"` on a missing row or a DB
-    read error -- a preference-lookup hiccup for one user must never block
-    the announcement fan-out for every other active user."""
-    try:
-        user = db.get_user(chat_id)
-    except Exception:
-        logger.exception(
-            "Reading language preference failed for %s while announcing; defaulting to auto (fail-open)", chat_id
-        )
-        return "auto"
-    return user["language_pref"] if user is not None else "auto"
 
 
 async def announce_release(db: "Database", channel: Channel, config: "Config", version: str) -> None:
@@ -79,7 +63,7 @@ async def announce_release(db: "Database", channel: Channel, config: "Config", v
         if already_announced:
             continue
 
-        lang = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+        lang = i18n.resolve_unprompted_language(config, user_pref=user_prefs.stored_language_pref(db, user_id))
         note = get_release_note(version, lang)
         if note is None:
             # Defensive only (R-N1's own authoring convention guarantees

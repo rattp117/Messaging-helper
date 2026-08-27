@@ -16,10 +16,10 @@ from __future__ import annotations
 import csv
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 from habit_assistant.config import Config
-from habit_assistant.core import i18n
+from habit_assistant.core import i18n, timeutil
 from habit_assistant.storage.db import Database
 
 logger = logging.getLogger(__name__)
@@ -45,10 +45,6 @@ class GarminReport:
     available: bool
     comparisons: list[GarminDayComparison]
     threshold_ml: float
-
-
-def _week_days(end_date: date) -> list[str]:
-    return [(end_date - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
 
 
 def _normalize_date(raw: str) -> str:
@@ -107,7 +103,7 @@ def build_garmin_report(db: Database, config: Config, end_date: date, user_id: s
 
     comparisons = [
         GarminDayComparison(day=d, self_reported_ml=db.water_total_ml(user_id, d), garmin_ml=garmin_by_day.get(d, 0.0))
-        for d in _week_days(end_date)
+        for d in timeutil.week_days(end_date)
     ]
     return GarminReport(available=True, comparisons=comparisons, threshold_ml=config.garmin.discrepancy_threshold_ml)
 

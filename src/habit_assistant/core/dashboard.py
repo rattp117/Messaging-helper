@@ -117,11 +117,10 @@ as informational, no code change):**
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import audit, cadence, i18n, pause, streaks, targets
+from habit_assistant.core import audit, cadence, i18n, pause, streaks, targets, timeutil, user_prefs
 from habit_assistant.core.render_budget import TELEGRAM_MESSAGE_BUDGET, fit_within_budget
 
 if TYPE_CHECKING:
@@ -158,38 +157,6 @@ def _bar(pct: float) -> str:
     return _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 
 
-def _today_date(config: "Config", clock) -> date:
-    """Mirrors `core/checkins.py:_today_str`'s own convention exactly (a
-    naive `clock()` result is treated as already being in
-    `config.app.timezone`; an aware one is converted to it) -- duplicated
-    here rather than imported since, per that module's own documented
-    precedent, this is a private, module-local "what's today, in the
-    configured timezone" helper every call site in this codebase re-derives
-    on its own, not a shared surface. R-D5's own day-rollover requirement
-    ("the board shows TODAY per config tz") falls out of this for free: any
-    `refresh` call after local midnight sees a new `.date()` here, so the
-    render naturally reflects the new day with zero persisted rollover
-    state of its own."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
-    else:
-        now = now.astimezone(ZoneInfo(config.app.timezone))
-    return now.date()
-
-
-def _user_language_pref(db: "Database", chat_id: str) -> str:
-    """Mirrors `core/checkins.py:_user_language_pref`'s own fail-open
-    convention exactly -- duplicated per that module's documented
-    precedent, not shared."""
-    try:
-        user = db.get_user(chat_id)
-    except Exception:
-        logger.exception("Reading language preference failed for %s; defaulting to auto (fail-open)", chat_id)
-        return "auto"
-    return user["language_pref"] if user is not None else "auto"
-
-
 def _board_language(db: "Database", config: "Config", user_id: str) -> i18n.Language:
     """Gap-pass fix #2 (TEST-v1.6-dashboard.md finding #2): the ONE
     resolution the pinned BOARD CONTENT uses everywhere it's rendered --
@@ -204,7 +171,7 @@ def _board_language(db: "Database", config: "Config", user_id: str) -> i18n.Lang
     `lang` (a genuine reply to that inbound command, `resolve_reply_
     language`'s job upstream in `main.py`), mirroring every other
     execute_* function's contract."""
-    return i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+    return i18n.resolve_unprompted_language(config, user_pref=user_prefs.stored_language_pref(db, user_id))
 
 
 # ===========================================================================
@@ -214,10 +181,14 @@ def _board_language(db: "Database", config: "Config", user_id: str) -> i18n.Lang
 
 def render(db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language, user_id: str, clock) -> str:
     """R-D2/R-X1: one line per configured habit, in registry order, for
-    `user_id`'s TODAY (per `config.app.timezone`, via `_today_date`). See
-    this module's own docstring above for the full three-way rule and the
-    streak-suffix rationale. R-X2: every DB read below is scoped to
-    `user_id` (AC-X3).
+    `user_id`'s TODAY (per `config.app.timezone`, via `core/timeutil.py:
+    today_in_timezone`). See this module's own docstring above for the full
+    three-way rule and the streak-suffix rationale. R-X2: every DB read
+    below is scoped to `user_id` (AC-X3). R-D5's own day-rollover
+    requirement ("the board shows TODAY per config tz") falls out of this
+    for free: any `refresh` call after local midnight resolves a new date
+    here, so the render naturally reflects the new day with zero persisted
+    rollover state of its own.
 
     Gap-pass fix #5 (finding #5): the fully-rendered message is checked
     against `render_budget.TELEGRAM_MESSAGE_BUDGET`; an overflow (a large
@@ -227,7 +198,7 @@ def render(db: "Database", config: "Config", registry: "HabitRegistry", lang: i1
     guarantee `core/audit_view.py:render_recent`/`core/history_view.py:
     render_history` already have, reusing the SAME shared helper rather
     than a third copy of the same fix."""
-    today = _today_date(config, clock)
+    today = timeutil.today_in_timezone(clock, config.app.timezone)
     today_str = today.isoformat()
     header = i18n.t("dashboard_header", lang, date=today.strftime("%a %d %b"))
 

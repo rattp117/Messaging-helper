@@ -59,10 +59,9 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import audit, i18n, targets
+from habit_assistant.core import audit, i18n, targets, timeutil, user_prefs
 from habit_assistant.core.reminders import in_dnd_now
 
 if TYPE_CHECKING:
@@ -147,15 +146,6 @@ def effective_checkin(db: "Database", config: "Config", user_id: str) -> tuple[b
 # ===========================================================================
 
 
-def _today_str(config: "Config", clock) -> str:
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
-    else:
-        now = now.astimezone(ZoneInfo(config.app.timezone))
-    return now.date().isoformat()
-
-
 def _is_paused_in(pause_rows: list, habit_id: str, when_str: str) -> bool:
     """Mirrors `core/pause.py:is_paused`'s exact coverage rule (a
     habit-scoped row, OR an all-habits row where `row["habit_id"] is
@@ -186,7 +176,7 @@ def build_checkin_message(
     user with no numeric/duration goals at all), this is NOT the skip
     rule -- a generic one-line nudge is returned instead, so such users
     still get check-ins. R-K7: every read is scoped to `user_id`."""
-    today_str = _today_str(config, clock)
+    today_str = timeutil.today_in_timezone(clock, config.app.timezone).isoformat()
     # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
     # every habit below via `_is_paused_in`, instead of `pause.is_paused`
     # re-reading the whole set once per habit.
@@ -235,33 +225,6 @@ def build_checkin_message(
 # ===========================================================================
 
 
-def _now_hhmm(clock, tz_name: str) -> str:
-    """Mirrors `core/reminders.py:_now_hhmm`'s own convention exactly (a
-    naive `clock()` result is treated as already being in `tz_name`; an
-    aware one is converted to it) -- duplicated here rather than imported
-    since that helper is a private, module-local convention every "what's
-    the current local HH:MM" call site in this codebase re-derives on its
-    own (`core/reminders.py`, `core/query.py`), not a shared surface."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.strftime("%H:%M")
-
-
-def _user_language_pref(db: "Database", chat_id: str) -> str:
-    """Mirrors `core/reminders.py:_user_language_pref`'s own fail-open
-    convention exactly -- a preference lookup must never block or crash
-    the minutely tick for every OTHER user in the same fan-out."""
-    try:
-        user = db.get_user(chat_id)
-    except Exception:
-        logger.exception("Reading language preference failed for %s; defaulting to auto (fail-open)", chat_id)
-        return "auto"
-    return user["language_pref"] if user is not None else "auto"
-
-
 async def run_due_checkins(
     channel: "Channel",
     config: "Config",
@@ -304,7 +267,7 @@ async def run_due_checkins(
     below returns early -- so on a non-hour minute, `active_user_ids` is
     never even consulted, matching this function's pre-Stage-1 0-query
     idle-minute behavior."""
-    hhmm = _now_hhmm(clock, config.app.timezone)
+    hhmm = timeutil.now_hhmm(clock, config.app.timezone)
     if not hhmm.endswith(":00"):
         return
 
@@ -319,7 +282,7 @@ async def run_due_checkins(
             logger.info("Suppressing check-in for %s: inside their own DND window", user_id)
             continue
 
-        lang = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+        lang = i18n.resolve_unprompted_language(config, user_pref=user_prefs.stored_language_pref(db, user_id))
         user_registry = registry_for(user_id) if registry_for is not None else registry
         message = build_checkin_message(db, config, user_registry, lang, user_id, clock)
         if message is None:

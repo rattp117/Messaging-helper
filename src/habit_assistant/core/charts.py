@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 from habit_assistant.config import Config
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import i18n, targets, timeutil
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.storage.db import Database
 
@@ -56,10 +56,6 @@ def _warn_missing_once() -> None:
         _warned_missing = True
 
 
-def _week_days(end_date: date) -> list[str]:
-    return [(end_date - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
-
-
 def _day_labels(day_strs: list[str]) -> list[str]:
     return [date.fromisoformat(d).strftime("%a") for d in day_strs]
 
@@ -79,7 +75,7 @@ def render_habit_chart(
     if habit.type == "text":
         return None
 
-    day_strs = _week_days(end_date)
+    day_strs = timeutil.week_days(end_date)
     labels = _day_labels(day_strs)
 
     try:

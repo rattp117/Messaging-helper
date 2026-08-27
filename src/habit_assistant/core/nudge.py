@@ -71,9 +71,8 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n, targets
+from habit_assistant.core import i18n, targets, timeutil, user_prefs
 from habit_assistant.core.checkins import effective_checkin
 from habit_assistant.core.reminders import in_dnd_now
 
@@ -90,15 +89,6 @@ logger = logging.getLogger(__name__)
 # build_nudge_message -- R-N1/R-N3: the deterministic bilingual body,
 # folding every "close" habit into one message.
 # ===========================================================================
-
-
-def _today_str(config: "Config", clock) -> str:
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(config.app.timezone))
-    else:
-        now = now.astimezone(ZoneInfo(config.app.timezone))
-    return now.date().isoformat()
 
 
 def _is_paused_in(pause_rows: list, habit_id: str, when_str: str) -> bool:
@@ -138,7 +128,7 @@ def build_nudge_message(
     Threshold math is cross-multiplied (`total * 100 >= threshold_pct *
     goal`) rather than divided, avoiding a `total / goal` float-precision
     wobble right at a boundary like exactly 80%."""
-    today_str = _today_str(config, clock)
+    today_str = timeutil.today_in_timezone(clock, config.app.timezone).isoformat()
     threshold_pct = config.nudge.threshold_pct
     # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
     # every habit below via `_is_paused_in`, instead of `pause.is_paused`
@@ -178,31 +168,6 @@ def build_nudge_message(
 # run_due_nudges -- R-N1: fires exactly once/day, at `[nudge] time`, on the
 # same minutely job as run_due_reminders/run_due_checkins.
 # ===========================================================================
-
-
-def _now_hhmm(clock, tz_name: str) -> str:
-    """Mirrors `core/reminders.py:_now_hhmm`/`core/checkins.py:_now_hhmm`'s
-    own convention exactly -- duplicated here rather than imported since
-    that helper is a private, module-local convention every "what's the
-    current local HH:MM" call site in this codebase re-derives on its own."""
-    now = clock()
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tz_name))
-    else:
-        now = now.astimezone(ZoneInfo(tz_name))
-    return now.strftime("%H:%M")
-
-
-def _user_language_pref(db: "Database", chat_id: str) -> str:
-    """Mirrors `core/reminders.py`/`core/checkins.py`'s own identical
-    fail-open convention -- a preference lookup must never block or crash
-    the minutely tick for every OTHER user in the same fan-out."""
-    try:
-        user = db.get_user(chat_id)
-    except Exception:
-        logger.exception("Reading language preference failed for %s; defaulting to auto (fail-open)", chat_id)
-        return "auto"
-    return user["language_pref"] if user is not None else "auto"
 
 
 async def run_due_nudges(
@@ -257,7 +222,7 @@ async def run_due_nudges(
     below returns early -- so on a non-`[nudge] time` minute,
     `active_user_ids` is never even consulted, matching this function's
     pre-Stage-1 0-query idle-minute behavior."""
-    hhmm = _now_hhmm(clock, config.app.timezone)
+    hhmm = timeutil.now_hhmm(clock, config.app.timezone)
     if hhmm != config.nudge.time:
         return
 
@@ -270,7 +235,7 @@ async def run_due_nudges(
                 logger.info("Suppressing end-of-day nudge for %s: inside their own DND window", user_id)
                 continue
 
-            lang = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+            lang = i18n.resolve_unprompted_language(config, user_pref=user_prefs.stored_language_pref(db, user_id))
             user_registry = registry_for(user_id) if registry_for is not None else registry
             message = build_nudge_message(db, config, user_registry, lang, user_id, clock)
         except Exception:

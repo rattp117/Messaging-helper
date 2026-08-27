@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Literal
 
 from habit_assistant.config import Config
-from habit_assistant.core import charts, garmin, i18n, pause, streaks, targets, trends
+from habit_assistant.core import charts, garmin, i18n, pause, streaks, targets, timeutil, trends
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
@@ -87,10 +87,6 @@ class WeeklyStats:
         return next((hs for hs in self.habits if hs.habit.id == habit_id), None)
 
 
-def _week_days(end_date: date) -> list[str]:
-    return [(end_date - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
-
-
 def _compute_habit_stats(
     db: Database, config: Config, habit: Habit, day_strs: list[str], end_date: date, user_id: str
 ) -> HabitStats:
@@ -151,7 +147,7 @@ def compute_weekly_stats(
     skip `core/checkins.py`/`core/nudge.py`/`core/streaks.compute_daily_
     summary` all apply to their own proactive sends; other, non-paused
     habits still get their usual section."""
-    day_strs = _week_days(end_date)
+    day_strs = timeutil.week_days(end_date)
     habits = [
         _compute_habit_stats(db, config, habit, day_strs, end_date, user_id)
         for habit in registry
