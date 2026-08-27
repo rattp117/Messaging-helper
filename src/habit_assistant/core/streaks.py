@@ -358,11 +358,18 @@ def compute_daily_summary(
     for `user_id` contributes no line at all to this proactive recap --
     mirrors `core/checkins.py:build_checkin_message`'s/`core/nudge.py:
     build_nudge_message`'s identical per-habit pause skip; other,
-    non-paused habits still get their own line as usual."""
+    non-paused habits still get their own line as usual.
+
+    SPEC-v1.10.md §4 R18 (module `riders`): the per-habit check is
+    `pause.is_paused_safe`, not `pause.is_paused` -- a pauses-read
+    failure for this user is logged and treated as "not paused" (the
+    habit still gets its line) rather than raising out of this loop and
+    aborting `daily_summary_job`'s own fan-out for the users after this
+    one (AC16)."""
     today_str = today.isoformat()
     lines: list[DailySummaryLine] = []
     for habit in registry:
-        if pause.is_paused(db, config, user_id, habit.id, today):
+        if pause.is_paused_safe(db, config, user_id, habit.id, today):
             continue
         goal = targets.effective_goal(db, habit, config, user_id)
         if goal or habit.type == "numeric":

@@ -72,7 +72,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from habit_assistant.core import i18n, targets, timeutil, user_prefs
+from habit_assistant.core import i18n, pause, targets, timeutil, user_prefs
 from habit_assistant.core.checkins import effective_checkin
 from habit_assistant.core.reminders import in_dnd_now
 
@@ -133,7 +133,15 @@ def build_nudge_message(
     # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
     # every habit below via `_is_paused_in`, instead of `pause.is_paused`
     # re-reading the whole set once per habit.
-    pause_rows = db.active_pauses(user_id)
+    # SPEC-v1.10.md §4 R18 (module `riders`): routed through `pause.
+    # active_pauses_safe` instead of the raw `db.active_pauses` -- a
+    # pauses-read failure for this user is logged and treated as "no
+    # active pauses", so the affected habit is simply treated as
+    # not-paused (still eligible as a "close" candidate) rather than the
+    # exception propagating up through `run_due_nudges`' own per-user
+    # try/except and dropping this user's ENTIRE nudge, even for habits
+    # the failed read had nothing to do with (AC16).
+    pause_rows = pause.active_pauses_safe(db, user_id)
 
     close: list[tuple[object, float, float]] = []
     for habit in registry:

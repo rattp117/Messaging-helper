@@ -21,6 +21,18 @@ class LogEntry:
     # self-describing even if the habit is later removed from config.
     # NULL for rows whose category has no known type (e.g. 'unparsed').
     habit_type: str | None = None
+    # SPEC-v1.10.md §5 R-SS4 (shared surface, migration 013): the unparsed-
+    # state machine's own lifecycle marker -- only meaningful for
+    # `category='unparsed'` rows. `None` (the default, written as SQL NULL)
+    # covers two cases that are deliberately indistinguishable at the model
+    # level: a genuinely non-unparsed row (this field is simply unused), and
+    # a fresh/legacy deferral row that `db.pending_unparsed()`/the CAS
+    # methods (R-SS2/R-SS3) treat as `'awaiting_llm'`. Every existing
+    # caller/construction site is byte-identical (still writes NULL, since
+    # this is a trailing, defaulted field) -- the deferral insert in
+    # particular is UNCHANGED (SPEC-v1.10.md's own "NULL = awaiting_llm,
+    # no data-migration UPDATE" design, R-SS1).
+    unparsed_state: str | None = None
 
 
 @dataclass(slots=True)

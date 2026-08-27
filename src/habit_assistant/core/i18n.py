@@ -292,12 +292,21 @@ CATALOG: dict[str, dict[Language, str]] = {
     # re-derivation (SPEC-v0.7.md §9 risk 2). These render any *other*
     # configured habit, parameterized by its `label`/`unit`/type.
     # -----------------------------------------------------------------
+    # SPEC-v1.10.md §4 "ARCHI-SANCTIONED EXTRAS" (b): the EN variant used to
+    # omit {label} while TH always named the habit -- logging a custom
+    # habit (e.g. "sleep") in English rendered "7 h logged", never saying
+    # WHICH habit. Fixed to match confirm_duration's own EN word order
+    # (value, unit, label, "logged"), which already included {label} and
+    # is therefore the established in-app precedent for this sentence
+    # shape, not a new invention. water/stretch/diary have their own
+    # dedicated keys (water_confirmation/stretch_confirmation/
+    # diary_confirmation) and are untouched by this fix.
     "confirm_numeric_goal": {
-        "en": "✅ {value:g} {unit} logged — today {total:g} / {goal:g} {unit} ({pct}%)",
+        "en": "✅ {value:g} {unit} {label} logged — today {total:g} / {goal:g} {unit} ({pct}%)",
         "th": "✅ บันทึก{label} {value:g} {unit} แล้ว — วันนี้ {total:g} / {goal:g} {unit} ({pct}%)",
     },
     "confirm_numeric_nogoal": {
-        "en": "✅ {value:g} {unit} logged today",
+        "en": "✅ {value:g} {unit} {label} logged today",
         "th": "✅ บันทึก{label} {value:g} {unit} แล้ว วันนี้",
     },
     "confirm_duration": {
@@ -2085,5 +2094,145 @@ CATALOG: dict[str, dict[Language, str]] = {
     "help_wrapped_cmd": {
         "en": '🎉 "/wrapped" (or "/recap") sends a picture recap of your last 4 weeks; "/wrapped month" recaps the current month.',
         "th": '🎉 "/wrapped" (หรือ "/recap") ส่งการ์ดสรุปภาพของ 4 สัปดาห์ที่ผ่านมา · "/wrapped month" สรุปเดือนปัจจุบัน',
+    },
+    # SPEC-v1.10.md "Never lose a log" -- ARCHI-SANCTIONED EXTRA (a): `/edit`
+    # (`core/commands.py:_EDIT_TRIGGER`) is a real, working correction
+    # command that has apparently never had its own `/help` line -- same
+    # "gap-fix, no dedicated module, plain append" shape as the v1.8.1
+    # `help_log_cmd`/`help_routine_cmd` precedent above. NL-triggered only
+    # (no `/edit` menu entry of its own beyond the slash form itself, and
+    # no Telegram command-menu registration -- SPEC-v1.10.md's dispatch
+    # explicitly says "NL-triggered, no slash command -- help line only"),
+    # so this is a `/help` addition only, not a `set_my_commands` one.
+    # Phrases quoted below are verified verbatim against `_EDIT_TRIGGER`'s
+    # real alternatives (`core/commands.py`): EN "make that <value>" /
+    # "change it to <value>" / "edit it to <value>" (also "edit that to"/
+    # "edit last to", not all shown -- two representative examples per the
+    # established help-line brevity convention); Thai "แก้เป็น <value>" /
+    # "แก้ไขเป็น <value>" (also "...ล่าสุดเป็น" variants, likewise not all
+    # shown); the slash form `/edit <value>` works in both languages.
+    "help_edit_cmd": {
+        "en": (
+            '✏️ Correct your last entry: say "make that 500ml" or "change it to 500ml" '
+            '(or /edit 500ml; Thai: "แก้เป็น 500 มล.").'
+        ),
+        "th": (
+            '✏️ แก้ไขรายการล่าสุด: พิมพ์ "แก้เป็น 500 มล." หรือ "แก้ไขเป็น 500 มล." '
+            '(หรือ /edit 500ml; English: "make that 500ml")'
+        ),
+    },
+
+    # ===================================================================
+    # SPEC-v1.10.md "Never lose a log" -- shared-surface key-block
+    # skeletons (§11: "the i18n key-block skeletons are created in the
+    # shared surface first; each module then fills only its own disjoint
+    # keys", same convention as SPEC-v1.7.md's/SPEC-v1.8.md's/SPEC-v1.9.md's
+    # own skeleton markers above). No key is added under either marker
+    # below yet, only the section marker + the reserved key-name prefix
+    # each module must use, so a later module edit here can never collide
+    # with the other parallel module's own addition. Module `riders`
+    # (pause fail-open unification + pytest-xdist) owns no new user-facing
+    # copy at all -- no marker needed for it.
+    #
+    # Module `clarify` (M1, functionals 1+2 -- R1-R12): the unparsed-
+    # closure notification (§3.1), the tap-to-fix guess offer (§3.2), and
+    # the generic clarifying-question-plus-keyboard fallback (R10). Keys
+    # must use a `closure_*`/`clarify_*` prefix.
+    "closure_notification": {
+        "en": (
+            '🧠 I couldn\'t make sense of "{text}" — my language brain was offline when you sent it, and I '
+            'still can\'t place it. Nothing was logged. If you\'d like to log it, tap a habit below, or type '
+            'it like "500 ml".'
+        ),
+        "th": (
+            '🧠 ฉันยังไม่เข้าใจ "{text}" — ตอนที่คุณส่งมาระบบภาษาออฟไลน์อยู่ และตอนนี้ก็ยังจับใจความไม่ได้ '
+            'ยังไม่มีการบันทึกใดๆ ถ้าต้องการบันทึก แตะกิจกรรมด้านล่าง หรือพิมพ์แบบ "500 ml"'
+        ),
+    },
+    "clarify_offer": {
+        "en": '🤔 I couldn\'t parse "{text}". Did you mean one of these? (Or type it like "500 ml".)',
+        "th": '🤔 ฉันแยกแยะ "{text}" ไม่ได้ หมายถึงอันไหนนี้ไหม (หรือพิมพ์แบบ "500 ml")',
+    },
+    "clarify_already_handled": {
+        "en": "🤷 That one's already been taken care of.",
+        "th": "🤷 รายการนี้จัดการเรียบร้อยไปแล้วนะ",
+    },
+    #
+    # Module `reply_attribution`/`discoverability` (M2, functionals 3+4+5
+    # -- R13-R17): the outage-honesty reply (§3.4) and the /guide card
+    # (§3.6). Keys must use an `outage_*`/`guide_*` prefix.
+    # ===================================================================
+
+    # -----------------------------------------------------------------
+    # Module M2 -- outage honesty (SPEC-v1.10.md §3.4/R15, core/routing.py's
+    # integration-owned deferral branch). {text} is the exact raw message
+    # that was just saved (quoted verbatim, same "quote the user's own
+    # words" posture as `closure_*` (M1) will use for the terminal-failure
+    # notification) -- callers pass the same `text` that goes into the
+    # `LogEntry.raw_message` write right beside this send. Config-gated by
+    # `config.outage.honest_reply`; `false` keeps sending the pre-1.10
+    # `deferred_ack` above byte-for-byte instead of this key (R15's own
+    # "false restores the pre-1.10 deferred_ack byte-for-byte").
+    # -----------------------------------------------------------------
+    "outage_honest_reply": {
+        "en": (
+            '🧠 My language brain is offline right now, so I saved "{text}" and will sort '
+            'it out when it\'s back. These still work instantly: a number+unit like "500 ml", '
+            "the /log buttons below, or a /routine."
+        ),
+        "th": (
+            '🧠 ตอนนี้ระบบภาษาออฟไลน์อยู่ ฉันเลยเก็บ "{text}" ไว้ และจะจัดการให้เมื่อกลับมา '
+            'สิ่งที่ยังใช้ได้ทันที: ตัวเลข+หน่วยแบบ "500 ml", ปุ่ม /log ด้านล่าง หรือ /routine'
+        ),
+    },
+
+    # -----------------------------------------------------------------
+    # Module M2 -- `/guide` card (SPEC-v1.10.md §3.6/R16, core/
+    # discoverability.py:build_guide_text). Five short lines, joined
+    # "\n\n" exactly like `build_help_text`'s own lines above -- a
+    # deliberately SHORT companion to the ever-growing `/help`, not a
+    # replacement for it (`guide_footer` points there). Fixed size, no
+    # config-driven values, no per-habit content -- so it never needs
+    # render-budget capping (R16's own "not budget-capped, fixed size").
+    # -----------------------------------------------------------------
+    "guide_header": {
+        "en": "🧭 Quick start — here's the 20-second version:",
+        "th": "🧭 เริ่มต้นใช้งานฉบับย่อ (20 วินาทีก็เข้าใจ):",
+    },
+    "guide_how_to_log": {
+        "en": (
+            "📝 Log anything: type freely (e.g. \"drank 500ml\", \"ยืดเส้น 10 นาที\"), a plain "
+            'number+unit like "500ml" or "10 min" (works even if I\'m offline), or tap /log '
+            "for one-tap buttons."
+        ),
+        "th": (
+            '📝 บันทึกได้หลายแบบ: พิมพ์ธรรมชาติ (เช่น "น้ำ 500 มล.", "10 min stretch") '
+            'ตัวเลข+หน่วยตรงๆ เช่น "500ml" หรือ "10 นาที" (ใช้ได้แม้ระบบภาษาออฟไลน์) '
+            "หรือพิมพ์ /log เพื่อกดปุ่มลัด"
+        ),
+    },
+    "guide_key_commands": {
+        "en": (
+            "⚡ Key commands: /log (quick buttons), /undo (remove your last entry), "
+            "/target (set a goal), /habits (today's progress), /help (the full list)."
+        ),
+        "th": (
+            "⚡ คำสั่งสำคัญ: /log (ปุ่มลัด), /undo (ลบรายการล่าสุด), /target (ตั้งเป้าหมาย), "
+            "/habits (ความคืบหน้าวันนี้), /help (รายการทั้งหมด)"
+        ),
+    },
+    "guide_message_syntax": {
+        "en": (
+            '💬 Message syntax: reply to one of my reminders with just a number (e.g. "500") '
+            "to log it against that habit — no typing needed."
+        ),
+        "th": (
+            '💬 รูปแบบข้อความ: ตอบกลับข้อความแจ้งเตือนด้วยตัวเลขอย่างเดียว (เช่น "500") '
+            "เพื่อบันทึกกิจกรรมนั้นได้เลย ไม่ต้องพิมพ์อะไรเพิ่ม"
+        ),
+    },
+    "guide_footer": {
+        "en": "🤖 Type /help anytime for the complete guide.",
+        "th": "🤖 พิมพ์ /help เมื่อไหร่ก็ได้เพื่อดูคู่มือฉบับเต็ม",
     },
 }

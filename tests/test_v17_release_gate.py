@@ -307,7 +307,10 @@ async def test_delhabit_through_the_no_provider_fallback_path_archives_and_hard_
             dry_run=False, user_id=OWNER, registry=live_registry,
         )
         log_reply = log_channel.sent_to(OWNER)[0]
-        assert "20 pages logged" in log_reply
+        # SPEC-v1.10.md's sanctioned EN {label} fix: confirm_numeric_goal now
+        # names the habit in English too -- here label==unit=="pages", hence
+        # the doubled word ("20 pages pages logged").
+        assert "20 pages pages logged" in log_reply
         assert db.count_logs_for(OWNER, "pages") == 1
 
         capsys.readouterr()
@@ -346,19 +349,21 @@ async def test_public_menu_is_exactly_22_commands_wrapped_last_both_languages(tm
     # established "each release renames + extends this test" convention):
     # `cadence`/`pause`/`resume`/`wrapped` (modules `cadence`/`pause`/
     # `wrapped`, §6/§11) now append after `log`/`routine` (18 -> 22 total).
-    expected_tail = ["log", "routine", "cadence", "pause", "resume", "wrapped"]
+    # RENAMED again (SPEC-v1.10.md §4 R17, integration pass): `/guide`
+    # appends after `wrapped` (22 -> 23 total).
+    expected_tail = ["log", "routine", "cadence", "pause", "resume", "wrapped", "guide"]
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 22, f"{lang}: {names}"
-        assert len(set(names)) == 22, f"{lang}: duplicate command name(s)"
+        assert len(names) == 23, f"{lang}: {names}"
+        assert len(set(names)) == 23, f"{lang}: duplicate command name(s)"
         # Established convention: each release appends its OWN new
         # commands at the end of the chain (see main.py's own
         # command_menu comment) -- v1.9.0's cadence/pause/resume/wrapped
         # must be the last four entries, in that order, after v1.8.0's
-        # log/routine.
-        assert names[-6:] == expected_tail, f"{lang}: {names}"
-        assert names[-8:-6] == ["addhabit", "delhabit"], f"{lang}: {names}"
-        assert names[-9] == "trends", f"{lang}: {names}"
+        # log/routine, and v1.10.0's guide must be the very last one.
+        assert names[-7:] == expected_tail, f"{lang}: {names}"
+        assert names[-9:-7] == ["addhabit", "delhabit"], f"{lang}: {names}"
+        assert names[-10] == "trends", f"{lang}: {names}"
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})
 
 
@@ -435,7 +440,10 @@ async def test_full_custom_habit_lifecycle_through_real_dispatch(tmp_path, monke
     assert 'Added "pages"' in addhabit_reply
 
     log_reply = sent[3]
-    assert "20 pages logged" in log_reply
+    # SPEC-v1.10.md's sanctioned EN {label} fix: confirm_numeric_goal now
+    # names the habit in English too -- here label==unit=="pages", hence
+    # the doubled word ("20 pages pages logged").
+    assert "20 pages pages logged" in log_reply
     assert "clarifying" not in log_reply.lower()
 
     target_reply = sent[4]

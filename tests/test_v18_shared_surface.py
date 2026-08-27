@@ -280,7 +280,11 @@ async def test_run_passes_the_inbound_message_id_to_on_message():
     calls: list[tuple[str, str, str | None, str | None]] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         calls.append((chat_id, text, display_name, message_id))
 
@@ -311,7 +315,11 @@ async def test_run_passes_none_when_the_update_has_no_message_id():
     calls: list[str | None] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         calls.append(message_id)
 
@@ -333,7 +341,13 @@ async def test_on_message_4_arg_default_fakes_still_work_unmodified():
     on_message call, proven by test_run_on_message_exception_does_not_
     crash_the_loop in tests/test_channels.py, swallows that too, so the
     inbound loop is resilient to a caller bug either way; this test
-    instead proves the SUPPORTED shape works end to end.)"""
+    instead proves the SUPPORTED shape works end to end.)
+
+    UPDATED at SPEC-v1.10.md R-SS7: `run` now supplies a 5th positional
+    arg (`reply_to_message_id`) -- this fake's own signature is widened to
+    default it too (`reply_to_message_id=None`), same "keeps working only
+    if its own signature defaults the new trailing param" contract this
+    test has always documented, one param further along."""
     responses = [
         {"ok": True, "result": [{"update_id": 1, "message": {"text": "500ml", "message_id": 5}}]},
     ]
@@ -352,7 +366,7 @@ async def test_on_message_4_arg_default_fakes_still_work_unmodified():
 
     calls: list[str] = []
 
-    async def defaulted_on_message(chat_id: str, text: str, display_name=None, message_id=None) -> None:
+    async def defaulted_on_message(chat_id: str, text: str, display_name=None, message_id=None, reply_to_message_id=None) -> None:
         calls.append(text)
 
     with pytest.raises(StopPolling):

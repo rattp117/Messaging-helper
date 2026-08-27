@@ -27,6 +27,7 @@ from habit_assistant.core import i18n, records, streaks, targets, wrapped
 from habit_assistant.llm.prompts import DIARY_REFLECTION_SYSTEM_PROMPT, DIARY_REFLECTION_USER_TEMPLATE
 
 if TYPE_CHECKING:
+    from habit_assistant.channels.base import Button, Channel
     from habit_assistant.config import Config
     from habit_assistant.core.habits import Habit, HabitRegistry
     from habit_assistant.llm.ollama_client import OllamaClient
@@ -145,6 +146,48 @@ async def confirmation_text(
         return i18n.t("diary_confirmation", lang, reflection=reflection)
 
     return await generic_confirmation(db, llm, habit, value, today_str, lang, config, user_id)
+
+
+async def send_recovered_confirmation(
+    channel: "Channel", chat_id: str, habit: "Habit", value, lang: i18n.Language, buttons: "list[Button]"
+) -> None:
+    """SPEC-v1.10.md §5 R9 / integration-pass consolidation: the ONE
+    recovered-* confirmation sender both `core/routing.py:reparse_pending_
+    unparsed` (an ordinary sweep recovery, R3) and `core/clarify.py:
+    handle_clarify_callback` (a tap-to-fix reclassify, R9) call. Both used
+    to carry an independent, byte-identical mirror of this exact branching
+    (`routing.py`'s own inline water/stretch/diary special-cases +
+    `_send_recovered_generic`, and `clarify.py`'s own `_send_recovered_
+    confirmation`) -- built that way because `core/clarify.py` cannot
+    import `core/routing.py` (the reverse import, `routing.py` -> `clarify.
+    py`, is what the integration pass adds) without a cycle. Consolidated
+    here at integration per Archi's ruling, mirroring this module's own
+    SPEC-REFACTOR.md Stage 2 rule-11 rationale for `confirmation_text`/
+    `generic_confirmation` above: a leaf neither caller itself defines, so
+    both can import it directly with no cycle at all -- one implementation
+    to keep in sync, not two."""
+    if habit.id == "water":
+        await channel.send_actionable(chat_id, i18n.t("recovered_water", lang, water_ml=int(value)), buttons)
+    elif habit.id == "stretch":
+        await channel.send_actionable(chat_id, i18n.t("recovered_stretch", lang, stretch_min=int(value)), buttons)
+    elif habit.id == "diary":
+        await channel.send_actionable(chat_id, i18n.t("recovered_diary", lang), buttons)
+    elif habit.type == "numeric":
+        await channel.send_actionable(
+            chat_id,
+            i18n.t("recovered_numeric", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
+            buttons,
+        )
+    elif habit.type == "duration":
+        await channel.send_actionable(
+            chat_id,
+            i18n.t("recovered_duration", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
+            buttons,
+        )
+    elif habit.type == "boolean":
+        await channel.send_actionable(chat_id, i18n.t("recovered_boolean", lang, label=habit.label(lang)), buttons)
+    else:  # text
+        await channel.send_actionable(chat_id, i18n.t("recovered_text", lang, label=habit.label(lang)), buttons)
 
 
 def suffix(

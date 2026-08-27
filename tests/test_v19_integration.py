@@ -284,14 +284,17 @@ def test_ac30_help_text_mentions_all_four_new_commands_and_grace():
 
 
 async def test_ac30_public_menu_has_22_commands_including_the_four_new_ones(tmp_path, monkeypatch):
+    """SPEC-v1.10.md §4 R17 (integration pass): 22 -> 23, `/guide` added --
+    test name kept for history (this file's own v1.9 AC30 numbering)."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}, "i18n": {"language": "en"}})
     channel = await _run(monkeypatch, config, script=[])
     public, scope = channel.set_my_commands_calls[0]
     assert scope is None
     for lang, entries in public.items():
         names = [n for n, _d in entries]
-        assert len(names) == 22, f"{lang}: {names}"
+        assert len(names) == 23, f"{lang}: {names}"
         assert {"cadence", "pause", "resume", "wrapped"} <= set(names)
+        assert "guide" in names
 
 
 # ===========================================================================

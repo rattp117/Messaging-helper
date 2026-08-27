@@ -44,6 +44,7 @@ def test_logs_table_created_with_expected_columns(tmp_path):
         "deleted_at",  # ROADMAP.md v0.5.0 migration 003: soft-delete for undo
         "habit_type",  # ROADMAP.md v0.7.0 migration 004: multi-habit extensibility (AC3)
         "user_id",  # SPEC-v1.2.md migration 006: multi-user support
+        "unparsed_state",  # SPEC-v1.10.md migration 013: unparsed-state machine (R-SS1)
     }
     db.close()
 

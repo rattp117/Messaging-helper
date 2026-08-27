@@ -792,9 +792,18 @@ async def test_normal_message_while_llm_down_is_still_deferred_not_intercepted(d
     deferred` test right below). This test now uses "not feeling great
     today" (never a "NUMBER UNIT" shape) so its own original point --
     non-preparseable messages still defer while Ollama is down -- stays
-    meaningful."""
+    meaningful.
+
+    SPEC-v1.10.md §4 R15 (integration pass): `config.outage.honest_reply`
+    defaults `true`, so the real production deferral ack is now the
+    bilingual outage-honesty message (`core/i18n.py:outage_honest_reply`,
+    owned by `tests/test_outage_honesty.py`), not the old bare
+    `DEFERRED_ACK_MESSAGE` -- `honest_reply=False` here restores the exact
+    pre-1.10 ack byte-for-byte (R15's own documented gate), keeping this
+    test's own point (deferral, not interception) unaffected by that
+    unrelated feature."""
     channel = FakeChannel()
-    config = Config()
+    config = Config.model_validate({"outage": {"honest_reply": False}})
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
 
     await handle_inbound_message(
@@ -871,11 +880,11 @@ def test_fresh_db_migrates_to_schema_version_10(tmp_path):
     IMPL-v1.8-routines.md.
     CHANGED (v1.9.0): was `== 11` before migration 012 was added -- see
     IMPL-v1.9-shared.md."""
-    assert len(MIGRATIONS) == 12
+    assert len(MIGRATIONS) == 13
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 12
+    assert database.schema_version == 13
     database.close()
 
 
@@ -1058,6 +1067,13 @@ _RESERVED_WORD_EXPECTED_KIND = {
     "recap": None,
     "สรุปเดือน": "wrapped",
     "การ์ดสรุป": "wrapped",
+    # SPEC-v1.10.md §4 R-SS8 (shared surface): "/guide" only gives an
+    # English SLASH form -- same "slash-gated" bucket as "target"/
+    # "heatmap"/"wrapped" above, so bare "guide" stays `None`. "คู่มือ" IS a
+    # bare-word Thai alias (`_GUIDE_RE`, whole-message-anchored, no leading
+    # "/" needed), so it now dispatches to "guide".
+    "guide": None,
+    "คู่มือ": "guide",
 }
 
 

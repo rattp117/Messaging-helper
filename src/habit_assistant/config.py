@@ -427,6 +427,83 @@ class WrappedConfig(BaseModel):
     celebrate_burst: bool = True
 
 
+class OutageConfig(BaseModel):
+    """SPEC-v1.10.md §4 R15 (module `outage`/functional 4): `honest_reply =
+    true` (default) replaces the pre-1.10 bare `deferred_ack` with the
+    bilingual outage-honesty message (§3.4) whenever Ollama is DOWN and the
+    deterministic pre-parser also misses -- names the paths that still work
+    instantly (number+unit, `/log`, `/routine`) instead of a bare "saved,
+    will get back to you" ack. `false` restores the pre-1.10 `deferred_ack`
+    byte-for-byte -- the deferral row itself and the recovery machinery are
+    UNCHANGED either way, this flag only gates which acknowledgement text
+    is sent."""
+
+    honest_reply: bool = True
+
+
+class ClarifyConfig(BaseModel):
+    """SPEC-v1.10.md §4 R5-R10 (module `clarify`/functional 2): conservative
+    tap-to-fix guess buttons, deterministic (tier-1) only. `enabled = true`
+    (default) offers guess buttons when at least one tier-1 guess exists;
+    `false` always falls back to the generic bilingual clarifying question
+    (no guesses, no `awaiting_clarify` row -- byte-identical to pre-1.10's
+    plain clarifying question, plus the `/log` keyboard). `max_guesses`
+    caps how many buttons one offer may show. `plausibility_lower`/
+    `plausibility_upper` bound the bare-number unit-plausibility guess
+    window (§2.3): a numeric/duration habit's effective goal `G` yields a
+    guess for a bare number `N` only when `G*plausibility_lower <= N <=
+    G*plausibility_upper`."""
+
+    enabled: bool = True
+    max_guesses: int = 4
+    plausibility_lower: float = 0.05
+    plausibility_upper: float = 5.0
+
+    @field_validator("max_guesses")
+    @classmethod
+    def _max_guesses_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("clarify.max_guesses must be a positive integer")
+        return v
+
+    @field_validator("plausibility_upper")
+    @classmethod
+    def _upper_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("clarify.plausibility_upper must be positive")
+        return v
+
+    @field_validator("plausibility_lower")
+    @classmethod
+    def _lower_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("clarify.plausibility_lower must be positive")
+        return v
+
+
+class ReplyToReminderConfig(BaseModel):
+    """SPEC-v1.10.md §4 R13/R14/R-SS6 (module `reply_attribution`/functional
+    3): `enabled = true` (default) attributes a bare-value reply to a
+    per-habit reminder message to that reminder's habit, zero-LLM, working
+    even while Ollama is DOWN. `context_cap` bounds `ReminderState.
+    reminder_context`'s own per-chat map (R-SS6) -- the oldest entry is
+    evicted once a chat's map would exceed this size. `false` disables the
+    attribution entirely; the reminder->habit map is still built and kept
+    (harmless, in-memory only), but `handle_inbound_message` never
+    consults it, so every reply falls through to the normal path exactly
+    as it did pre-1.10."""
+
+    enabled: bool = True
+    context_cap: int = 32
+
+    @field_validator("context_cap")
+    @classmethod
+    def _context_cap_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("reply_to_reminder.context_cap must be a positive integer")
+        return v
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -578,6 +655,16 @@ class Config(BaseModel):
     grace: GraceConfig = GraceConfig()
     pause: PauseConfig = PauseConfig()
     wrapped: WrappedConfig = WrappedConfig()
+    # SPEC-v1.10.md §5/§6 (shared surface): three new sections, all
+    # defaulted -- an absent section in config.toml uses the class
+    # defaults above (AC-1), same posture as every prior config addition
+    # in this file. `outage.honest_reply`/`clarify.enabled`/`reply_to_
+    # reminder.enabled` all default to a safe ON (the release's own new
+    # behavior); nothing here changes what an unconfigured install already
+    # did BEFORE any of these features are actually wired at integration.
+    outage: OutageConfig = OutageConfig()
+    clarify: ClarifyConfig = ClarifyConfig()
+    reply_to_reminder: ReplyToReminderConfig = ReplyToReminderConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")

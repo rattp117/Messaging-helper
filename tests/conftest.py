@@ -52,13 +52,28 @@ class RecordingChannel(Channel):
     records every `send()` call as a `(chat_id, text)` pair. `run()` is
     never exercised by these tests (no fake here ever drives the inbound
     loop), so it raises `NotImplementedError` if ever called -- matching
-    every one of those files' own copy exactly."""
+    every one of those files' own copy exactly.
+
+    SPEC-v1.10.md §4 R-SS5/R-SS6 (shared surface, "never lose a log"
+    reply-to-reminder attribution): `send()` now returns a synthetic,
+    per-instance INCREMENTING string id ("1", "2", ...) -- mirroring
+    `TelegramChannel.send`'s own real `str | None` contract closely enough
+    that a reply-attribution test can map a recorded send back to a habit
+    (`core/reminders.py:ReminderState.remember_reminder`) the same way a
+    real Telegram send id would be used. This is additive/observable-only:
+    every existing test that ignores the return value (the overwhelming
+    majority) is unaffected -- only `.sent`'s own shape/append behavior
+    matters to them, unchanged."""
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self._next_message_id = 1
 
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
         self.sent.append((chat_id, text))
+        message_id = str(self._next_message_id)
+        self._next_message_id += 1
+        return message_id
 
     async def run(
         self,

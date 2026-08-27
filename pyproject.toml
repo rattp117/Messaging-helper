@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "1.9.4"
+version = "1.10.0"
 description = "Local-first Telegram habit-tracking assistant backed by a local Qwen model via Ollama"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # SPEC-v1.10.md §4 R19 (module `riders`): parallel test execution.
+    # Documented, NOT forced via [tool.pytest.ini_options] addopts (a
+    # single-worker debug run needs no override; CI opts in explicitly) --
+    # run with: pytest -n auto
+    "pytest-xdist>=3.5",
 ]
 # ROADMAP.md v1.0.0 "Insights: Charts-as-Images": the one new dependency in
 # the whole roadmap, optional and gated behind [charts] enabled in

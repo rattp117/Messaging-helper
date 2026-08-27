@@ -133,6 +133,31 @@ RELEASE_NOTES: dict[str, dict[i18n.Language, str]] = {
             "• อีโมจิเฉลิมฉลองเล็กๆ เมื่อถึงไมล์สโตนหรือสถิติใหม่"
         ),
     },
+    "1.10.0": {
+        "en": (
+            "🎉 What's new in v1.10.0\n"
+            "• Never lose a log — a message the assistant still can't place after an outage now gets a "
+            "kind heads-up (quoting what you sent) instead of being silently dropped forever\n"
+            "• Tap-to-fix — when a message is unclear, you'll often get one-tap buttons guessing what "
+            "you meant, built from your own habits\n"
+            "• Reply to a reminder — just reply to a reminder message with a number to log it against "
+            "that habit, no typing the habit name, works even if the assistant is briefly offline\n"
+            "• Outage honesty — if the language brain is briefly offline, you're told right away and "
+            "shown what still works instantly (number+unit, /log, /routine)\n"
+            "• /guide — a quick, shareable getting-started card for anyone new to the bot"
+        ),
+        "th": (
+            "🎉 มีอะไรใหม่ใน v1.10.0\n"
+            "• ไม่มีบันทึกใดหายไปอีกต่อไป — ข้อความที่ระบบยังจับใจความไม่ได้หลังระบบขัดข้อง จะได้รับการแจ้งเตือนอย่างสุภาพ "
+            "(พร้อมยกข้อความที่คุณส่งมา) แทนที่จะถูกทิ้งไปเงียบๆ ตลอดกาล\n"
+            "• แตะเพื่อแก้ไข — เมื่อข้อความไม่ชัดเจน คุณอาจได้รับปุ่มให้แตะเลือกสิ่งที่คุณหมายถึง สร้างจากนิสัยของคุณเอง\n"
+            "• ตอบกลับการเตือนเพื่อบันทึก — แค่ตอบกลับข้อความเตือนด้วยตัวเลข ก็บันทึกให้กิจกรรมนั้นได้เลย "
+            "ไม่ต้องพิมพ์ชื่อกิจกรรม ใช้ได้แม้ระบบผู้ช่วยจะขัดข้องชั่วคราว\n"
+            "• ความซื่อตรงยามระบบขัดข้อง — ถ้าระบบภาษาออฟไลน์ชั่วคราว คุณจะได้รับแจ้งทันทีพร้อมบอกว่าอะไรยังใช้ได้ "
+            "(ตัวเลข+หน่วย, /log, /routine)\n"
+            "• /guide — การ์ดแนะนำเริ่มต้นใช้งานแบบย่อ แชร์ต่อได้ เหมาะสำหรับผู้ใช้ใหม่"
+        ),
+    },
 }
 
 

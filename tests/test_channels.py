@@ -125,7 +125,11 @@ async def test_run_calls_on_message_for_each_inbound_text_and_advances_offset():
     channel = TelegramChannel("token", "chat", client=client)
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         calls.append(text)
 
@@ -156,7 +160,11 @@ async def test_run_skips_updates_without_message_text():
     calls: list[str] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         calls.append(text)
 
@@ -189,7 +197,11 @@ async def test_run_on_message_exception_does_not_crash_the_loop():
     calls: list[str] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         calls.append(text)
         if text == "boom":
@@ -294,7 +306,11 @@ async def test_line_channel_run_stub_accepts_on_callback_kwarg():
     instance = object.__new__(LineChannel)
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -450,7 +466,11 @@ async def test_run_routes_callback_query_to_on_callback_and_answers_it():
         callback_calls.append((chat_id, data, source_text, cb_id))
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         raise AssertionError("on_message must not be called for a callback_query update")
 
@@ -499,7 +519,11 @@ async def test_run_answers_callback_query_even_when_on_callback_raises():
         raise RuntimeError("boom")
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -536,7 +560,11 @@ async def test_run_answers_callback_query_even_when_on_callback_is_none():
     channel = TelegramChannel("token", "chat", client=client)
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -574,7 +602,11 @@ async def test_run_offset_advances_past_a_mix_of_messages_and_callbacks():
     messages: list[str] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         messages.append(text)
 

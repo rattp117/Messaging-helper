@@ -153,6 +153,13 @@ WRAPPED_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
     "en": "Get a shareable picture recap of your recent progress",
     "th": "รับการ์ดสรุปความคืบหน้าล่าสุดของคุณ",
 }
+# SPEC-v1.10.md §4 R17 (integration pass): public menu 22 -> 23, owner menu
+# (a strict superset) 27 -> 28. Inserted after `wrapped` per R17's own
+# placement rule.
+GUIDE_COMMAND_DESCRIPTIONS: dict[i18n.Language, str] = {
+    "en": "A 20-second orientation to get you started",
+    "th": "คู่มือเริ่มต้นใช้งานฉบับ 20 วินาที",
+}
 
 
 def seed_fake_data(db: Database, config, user_id: str) -> None:
@@ -372,7 +379,8 @@ async def async_main(
     # already returned by this point).
     await announce.announce_release(db, channel, config, version)
 
-    # Register the bot command menu once at startup -- 22 public commands.
+    # Register the bot command menu once at startup -- 23 public commands
+    # (SPEC-v1.10.md §4 R17: 22 -> 23, `/guide` appended after `/wrapped`).
     undo_command_menu = undo_ui.command_menu_entries()
     command_menu = {
         lang: (
@@ -397,6 +405,7 @@ async def async_main(
             + [("pause", PAUSE_COMMAND_DESCRIPTIONS[lang])]
             + [("resume", RESUME_COMMAND_DESCRIPTIONS[lang])]
             + [("wrapped", WRAPPED_COMMAND_DESCRIPTIONS[lang])]
+            + [("guide", GUIDE_COMMAND_DESCRIPTIONS[lang])]
         )
         for lang, desc in TARGET_COMMAND_DESCRIPTIONS.items()
     }
@@ -537,13 +546,18 @@ async def async_main(
     logger.info("Scheduler started; entering Telegram long-poll loop")
 
     async def _on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         await routing.on_message(
             chat_id,
             text,
             display_name,
             message_id,
+            reply_to_message_id,
             db=db,
             llm=llm,
             channel=channel,

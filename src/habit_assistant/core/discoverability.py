@@ -133,7 +133,48 @@ def build_help_text(config: "Config", lang: i18n.Language) -> str:
     lines.append(i18n.t("help_pause_cmd", lang))
     lines.append(i18n.t("help_resume_cmd", lang))
     lines.append(i18n.t("help_wrapped_cmd", lang))
+    # SPEC-v1.10.md "Never lose a log", ARCHI-SANCTIONED EXTRA (a): `/edit`
+    # (NL-triggered only -- "make that X"/"change it to X"/Thai "แก้เป็น X",
+    # `core/commands.py:_EDIT_TRIGGER`) has never had its own `/help` line;
+    # added here as a pure append after the v1.9.0 block above, same
+    # "gap-fix" shape as the v1.8.1 help_log_cmd/help_routine_cmd append.
+    # No menu entry -- see `help_edit_cmd`'s own catalog comment.
+    lines.append(i18n.t("help_edit_cmd", lang))
 
+    return "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# SPEC-v1.10.md §3.6/R16 (module M2): `/guide` -- a compact, fixed-size
+# getting-started card, built the exact same way `build_help_text` is
+# (a list of `i18n.t("guide_*", lang)` lines joined "\n\n"), just much
+# shorter -- five lines, not the ~30 `/help` has accumulated release over
+# release. Unlike `build_help_text`, nothing here reads a live `config`
+# value (there is no per-config guide content to show, R16's own scope:
+# how to log / key commands / message syntax) -- `config` is still
+# accepted, matching this module's other `build_*` signatures and SPEC-
+# v1.10.md §5's own interface, so a future config-driven guide line can
+# be added without a signature change.
+# ---------------------------------------------------------------------------
+
+
+def build_guide_text(config: "Config", lang: i18n.Language) -> str:
+    """A compact bilingual "20-second orientation" card (R16): how to log
+    (free text / number+unit / `/log`), the key commands, and the
+    message syntax (including the v1.10.0 reply-to-reminder shortcut) --
+    a companion to Patty's full manual, not a replacement for `/help`
+    (`guide_footer` points there). Deterministic and LLM-free, same
+    posture as `build_help_text`/`build_habits_overview` above. Fixed
+    size (five short lines) -- never needs `core/render_budget.py`
+    capping, unlike a per-habit or per-row listing."""
+    del config  # unused today; kept for signature parity, see module note above
+    lines = [
+        i18n.t("guide_header", lang),
+        i18n.t("guide_how_to_log", lang),
+        i18n.t("guide_key_commands", lang),
+        i18n.t("guide_message_syntax", lang),
+        i18n.t("guide_footer", lang),
+    ]
     return "\n\n".join(lines)
 
 

@@ -450,6 +450,35 @@ def _migration_012_lifecycle(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pauses_user ON pauses(user_id, habit_id)")
 
 
+def _migration_013_unparsed_state(conn: sqlite3.Connection) -> None:
+    """SPEC-v1.10.md §4 R-SS1 (shared surface, the "never lose a log"
+    unparsed-state machine's own storage): one new nullable column, no
+    existing table/column/row touched at all -- purely additive, like every
+    migration except 006's own sanctioned break. `logs.unparsed_state`
+    gives every `category='unparsed'` row a lifecycle (`NULL`/`'awaiting_
+    llm'` -> `'awaiting_clarify'` -> `'closed'`, or reclassified away from
+    `'unparsed'` entirely) instead of the pre-1.10 world where a row that
+    the LLM could never place had no terminal state and was silently
+    re-parsed (2 LLM calls) on every future DOWN->UP recovery sweep,
+    forever, with the user never told (§1's own "id=13"/"id=14" production
+    zombies).
+
+    Deliberately **no data-migration UPDATE** here (unlike migration 004's
+    `habit_type` backfill) -- every existing `'unparsed'` row (including
+    those two zombies) simply keeps `NULL`, which `Database.pending_
+    unparsed()`'s new predicate (R-SS2) and both CAS methods' `from_states`
+    predicate (R-SS3) treat as `'awaiting_llm'` by construction: a legacy
+    row is automatically eligible for the very next recovery sweep, and --
+    if that sweep still can't place it -- gets closed (R1) exactly like a
+    fresh post-1.10 deferral would. This is what lets those two production
+    rows enter the new machinery and finally terminate on the first
+    post-1.10 recovery, with no separate backfill pass required.
+
+    Idempotent the same way every migration here is: the runner only ever
+    applies this once, guarded by `PRAGMA user_version` (AC1)."""
+    conn.execute("ALTER TABLE logs ADD COLUMN unparsed_state TEXT")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -466,6 +495,7 @@ MIGRATIONS: list[Migration] = [
     _migration_010_user_habits,
     _migration_011_routines,
     _migration_012_lifecycle,
+    _migration_013_unparsed_state,
 ]
 
 

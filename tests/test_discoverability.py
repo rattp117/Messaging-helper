@@ -1054,6 +1054,9 @@ async def test_command_menu_registers_exactly_the_expected_commands_no_extras(tm
         # SPEC-v1.9.md §6/§11 integration step (modules `cadence`/`pause`/
         # `wrapped`): joined the public menu (18 -> 22).
         "cadence", "pause", "resume", "wrapped",
+        # SPEC-v1.10.md §4 R17 integration step (module `discoverability`):
+        # `/guide` joined the public menu too (22 -> 23).
+        "guide",
     }
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]

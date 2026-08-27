@@ -235,7 +235,7 @@ async def test_sleep_confirmation_english_matches_spec_example(db, fixed_clock):
         "slept 7 hours", db=db, llm=llm, channel=channel, config=CONFIG, clock=fixed_clock, registry=REGISTRY, user_id=OWNER
     )
 
-    assert channel.sent == ["✅ 7 h logged — today 7 / 8 h (88%)"]
+    assert channel.sent == ["✅ 7 h sleep logged — today 7 / 8 h (88%)"]
 
 
 async def test_sleep_confirmation_thai_matches_spec_example(db, fixed_clock):
@@ -553,7 +553,7 @@ def test_migration_backfilled_legacy_rows_aggregate_alongside_new_habit_rows(tmp
     # backfills them to OWNER (AC-M2).
     db = Database(db_path)
     assert db.schema_version_before == 3
-    assert db.schema_version == 12
+    assert db.schema_version == 13
     db.attribute_legacy_to_owner(OWNER)
 
     # Now log new-habit rows (sleep, meds) through the same, now-migrated

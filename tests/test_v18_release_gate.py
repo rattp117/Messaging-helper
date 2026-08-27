@@ -468,8 +468,15 @@ async def test_typed_log_defers_while_ollama_is_down_but_quicklog_tap_in_the_sam
     down -- a typed, non-deterministic message defers (pre-v1.8 behavior,
     unaffected), while a quick-log tap for the exact same habit still logs
     immediately, proving quick-log's zero-LLM independence is real, not
-    incidental to it being the only inbound event."""
-    config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
+    incidental to it being the only inbound event.
+
+    SPEC-v1.10.md §4 R15 (integration pass): `outage.honest_reply=False`
+    keeps the `deferred_ack` assertion below byte-for-byte accurate --
+    this test is about quick-log's zero-LLM independence, not the
+    outage-honesty copy (`tests/test_outage_honesty.py`'s own scope)."""
+    config = Config.model_validate(
+        {"app": {"db_path": str(tmp_path / "habits.db")}, "outage": {"honest_reply": False}}
+    )
     script = [
         ("message", OWNER, "I feel great today", None, "m1"),  # no deterministic hit -> defers
         ("callback", OWNER, "log:water:250", "prompt", "cb1"),
@@ -565,10 +572,11 @@ async def test_owner_menu_is_public_22_plus_5_admin_public_menu_is_exactly_22(tm
     assert public_scope is None
     assert owner_scope == OWNER
 
+    # SPEC-v1.10.md §4 R17 (integration pass): 22 -> 23 / 27 -> 28, `/guide` added.
     for lang, entries in public_commands.items():
-        assert len(entries) == 22, f"public menu ({lang}) drifted from 22: {[n for n, _ in entries]}"
+        assert len(entries) == 23, f"public menu ({lang}) drifted from 23: {[n for n, _ in entries]}"
     for lang, entries in owner_commands.items():
-        assert len(entries) == 27, f"owner menu ({lang}) drifted from 27 (22 public + 5 admin)"
+        assert len(entries) == 28, f"owner menu ({lang}) drifted from 28 (23 public + 5 admin)"
 
 
 async def test_non_owner_chat_never_receives_any_scoped_menu_registration(tmp_path, monkeypatch):

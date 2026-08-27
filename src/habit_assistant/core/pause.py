@@ -101,6 +101,52 @@ def is_paused(db: "Database", config: "Config", user_id: str, habit_id: str, whe
 
 
 # ---------------------------------------------------------------------------
+# is_paused_safe / active_pauses_safe -- SPEC-v1.10.md §4 R-SS9 (shared
+# surface, module `riders`' own R18 dependency): fail-open wrappers around
+# `is_paused`/`db.active_pauses`, so the "a pauses-read failure means NOT
+# paused" decision lives in exactly one place instead of being reimplemented
+# per call site. `reminders.send_reminder` already had its own inline
+# fail-open try/except for this (SPEC-v1.9.md's own integration pass) --
+# R18 adopts THIS helper there too (byte-identical outcome, same log
+# message shape) so all 5 proactive sites (reminders/check-ins/nudge/daily
+# summary/weekly review) share one implementation. `active_pauses_safe` is
+# the sibling for the 2 sites (`checkins.build_checkin_message`, `nudge.
+# build_nudge_message`) that read the raw `db.active_pauses(user_id)` list
+# directly rather than a single point-in-time `is_paused` check.
+# ---------------------------------------------------------------------------
+
+
+def is_paused_safe(db: "Database", config: "Config", user_id: str, habit_id: str, when: date) -> bool:
+    """`is_paused`, except any exception reading the `pauses` table is
+    logged and treated as "not paused" -- a DB hiccup for one user must
+    never suppress that user's send incorrectly, and (since this returns a
+    plain bool rather than raising) must never abort a fan-out loop that's
+    also serving other users (R18's own "never aborts the run for users B,
+    C..." requirement -- enforced by each CALL SITE's own per-user loop
+    structure continuing past this call, not by anything in this function
+    itself)."""
+    try:
+        return is_paused(db, config, user_id, habit_id, when)
+    except Exception:
+        logger.exception(
+            "Pause read failed for %s/%s; treating as not-paused (fail-open)", user_id, habit_id
+        )
+        return False
+
+
+def active_pauses_safe(db: "Database", user_id: str) -> list:
+    """`db.active_pauses(user_id)`, except any exception is logged and
+    treated as "no active pauses" (an empty list) -- same fail-open
+    posture as `is_paused_safe` above, for the two call sites that need
+    the raw row list rather than a single habit's coverage."""
+    try:
+        return db.active_pauses(user_id)
+    except Exception:
+        logger.exception("Active-pauses read failed for %s; treating as none (fail-open)", user_id)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Duration parsing -- R12's `<N>d | until DATE | until WEEKDAY` grammar.
 # `commands.py` only recognizes the SHAPE (does the tail start with a
 # digit or the literal "until"?), never validates it -- everything below

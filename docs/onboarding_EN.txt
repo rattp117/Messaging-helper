@@ -1,0 +1,19 @@
+👋 You're invited to Habit Assistant!
+
+A private Telegram bot for logging little daily habits — water, stretching, a diary entry, or anything else — and gently keeping each other on track. It understands plain English or Thai. No app to install.
+
+⏱ Getting started (20 seconds)
+1️⃣ Open this chat and send /start
+2️⃣ Wait for approval — you'll get a message the moment you're in, usually quick
+3️⃣ You're set! Every log, streak, and reminder from here is yours alone
+
+✨ Try these 3 things
+💧 Log something — just type "500ml" or "10 min stretch"
+❓ Send /help to see everything the bot can do
+📋 Send /habits to see what's tracked and how today's going
+
+Made a mistake? Every confirmation has its own ↩️ Undo button — no harm done.
+
+That's it — see you in the chat! 🎉
+
+— Habit Assistant v1.9.4

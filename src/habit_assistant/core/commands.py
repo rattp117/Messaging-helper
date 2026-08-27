@@ -332,6 +332,13 @@ CommandKind = Literal[
     # pref_value` (the raw "month" token, or None = default last-4-weeks
     # window) -- no new fields.
     "wrapped",
+    # SPEC-v1.10.md §4 R-SS8 (shared surface, functional 5 "/guide"): a
+    # compact getting-started card, bilingual, no parsed payload of its own
+    # (`Command(kind="guide")` is the whole of it, same shape as "help"/
+    # "habits" above) -- `core/discoverability.py:build_guide_text` (module
+    # `M2`) is where the actual card content lives, dispatched by
+    # `core/routing.py`'s later integration pass.
+    "guide",
 ]
 
 
@@ -814,6 +821,21 @@ def _match_help(stripped: str) -> bool:
 
 def _match_habits(stripped: str) -> bool:
     return _HABITS_RE.match(stripped) is not None
+
+
+# ---------------------------------------------------------------------------
+# guide -- SPEC-v1.10.md §4 R-SS8 (shared surface, functional 5). Anchored
+# to the WHOLE stripped message, exactly the two literal strings R-SS8
+# names (`/guide`/`คู่มือ`) -- same zero-false-positive conservatism as
+# `_HELP_RE`/`_HABITS_RE` just above, so this can never fire on a real
+# habit log or on ordinary Thai prose.
+# ---------------------------------------------------------------------------
+
+_GUIDE_RE = re.compile(r"^(?:/guide|คู่มือ)$", re.IGNORECASE)
+
+
+def _match_guide(stripped: str) -> bool:
+    return _GUIDE_RE.match(stripped) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -2184,16 +2206,22 @@ class _MatcherEntry:
     triggered: "Callable[[str], bool] | None" = None
 
 
-# The table itself: SAME 27 rows, SAME order as the if-chain it replaces
-# (ROADMAP.md v0.9.0 -> SPEC-v1.9.md's own accreted routing brief, each
-# insertion point documented per-matcher above) -- undo -> edit -> snooze ->
-# target -> remind -> access -> audit -> lang -> quiet -> checkin -> dnd ->
-# dashboard -> history -> heatmap -> records -> trends -> wrapped ->
-# addhabit -> delhabit -> log -> routine -> cadence -> pause -> resume ->
-# help -> habits -> query. `_assert_dispatch_invariants` below proves the
-# three rule-14 invariants hold structurally; `tests/test_refactor_s3.py`'s
-# golden precedence corpus proves this table reproduces the pre-conversion
-# if-chain's exact output.
+# The table itself: SAME 27 rows PLUS `guide` (SPEC-v1.10.md §4 R-SS8),
+# SAME order as the if-chain the original 27 replaced (ROADMAP.md v0.9.0 ->
+# SPEC-v1.9.md's own accreted routing brief, each insertion point documented
+# per-matcher above) -- undo -> edit -> snooze -> target -> remind -> access
+# -> audit -> lang -> quiet -> checkin -> dnd -> dashboard -> history ->
+# heatmap -> records -> trends -> wrapped -> addhabit -> delhabit -> log ->
+# routine -> cadence -> pause -> resume -> help -> habits -> guide -> query.
+# `guide` is placed immediately before `query` (R-SS8's own stated
+# placement) -- it has no substring/interrogative-anchor overlap with any
+# query pattern, so its exact position among the rest (other than staying
+# ahead of the final `query` row) doesn't change behavior; grouped next to
+# `help`/`habits` for readability, same disjoint-trigger-text reasoning.
+# `_assert_dispatch_invariants` below proves the three rule-14 invariants
+# hold structurally; `tests/test_refactor_s3.py`'s golden precedence corpus
+# proves the pre-v1.10 27-row table reproduces the pre-conversion if-chain's
+# exact output (unaffected by this additive 28th row).
 _MATCHERS: list[_MatcherEntry] = [
     _MatcherEntry("undo", _bool_matcher(_match_undo, "undo")),
     _MatcherEntry("edit", _resolve_edit, triggered=_edit_triggered),
@@ -2221,6 +2249,7 @@ _MATCHERS: list[_MatcherEntry] = [
     _MatcherEntry("resume", _match_resume),
     _MatcherEntry("help", _bool_matcher(_match_help, "help")),
     _MatcherEntry("habits", _bool_matcher(_match_habits, "habits")),
+    _MatcherEntry("guide", _bool_matcher(_match_guide, "guide")),
     _MatcherEntry("query", _bool_matcher(_match_query, "query")),
 ]
 
@@ -2447,5 +2476,9 @@ def reserved_trigger_words() -> frozenset[str]:
             "recap",
             "สรุปเดือน",
             "การ์ดสรุป",
+            # SPEC-v1.10.md §4 R-SS8 (shared surface, functional 5 "/guide"):
+            # `_GUIDE_RE`, line ~831 above.
+            "guide",
+            "คู่มือ",
         }
     )

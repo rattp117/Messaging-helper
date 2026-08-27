@@ -61,7 +61,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import audit, i18n, targets, timeutil, user_prefs
+from habit_assistant.core import audit, i18n, pause, targets, timeutil, user_prefs
 from habit_assistant.core.reminders import in_dnd_now
 
 if TYPE_CHECKING:
@@ -180,7 +180,14 @@ def build_checkin_message(
     # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
     # every habit below via `_is_paused_in`, instead of `pause.is_paused`
     # re-reading the whole set once per habit.
-    pause_rows = db.active_pauses(user_id)
+    # SPEC-v1.10.md §4 R18 (module `riders`): routed through `pause.
+    # active_pauses_safe` instead of the raw `db.active_pauses` -- a
+    # pauses-read failure for this user is logged and treated as "no
+    # active pauses" (no suppression, the check-in still gets built and
+    # sent) rather than raising out of `build_checkin_message` and
+    # aborting `run_due_checkins`' fan-out loop for the users after this
+    # one (AC16).
+    pause_rows = pause.active_pauses_safe(db, user_id)
 
     goal_bearing: list[tuple[object, float, float]] = []
     for habit in registry:

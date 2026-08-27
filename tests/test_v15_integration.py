@@ -245,9 +245,14 @@ async def test_ac16_bare_number_unit_still_logs_while_ollama_is_down(db, registr
 async def test_ac16_ambiguous_text_still_defers_while_ollama_is_down(db, registry, fixed_clock):
     """Sanity counterweight: the pre-parser gate's new placement doesn't
     broaden the "skip the deferral" behavior to messages it shouldn't --
-    an LLM-needing message during an outage is still deferred, unchanged."""
+    an LLM-needing message during an outage is still deferred, unchanged.
+
+    SPEC-v1.10.md §4 R15 (integration pass): `outage.honest_reply=False`
+    keeps `channel.actionable == []` accurate -- by default the deferral
+    ack now carries the `/log` keyboard (R15), which is this release's own
+    unrelated concern (`tests/test_outage_honesty.py`'s scope)."""
     channel = _CapturingChannel()
-    config = Config()
+    config = Config.model_validate({"outage": {"honest_reply": False}})
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
 
     await handle_inbound_message(
@@ -1262,7 +1267,7 @@ async def test_migration_008_rehearsal_on_a_v1_4_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 12
+        assert db.schema_version == 13
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert {"checkin_window", "last_announced_version"} <= cols
         assert db.get_last_announced_version(OWNER) is None  # no backfill (migration's own contract)

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, time
@@ -87,9 +88,49 @@ class ReminderState:
     another user's (AC-U-SNOOZE). One instance lives for the lifetime of
     the process (built once in `async_main`); lost on restart, which is
     fine -- there is nothing to snooze immediately after a fresh start
-    anyway."""
+    anyway.
+
+    SPEC-v1.10.md §5 R-SS6 (shared surface, "never lose a log" reply-to-
+    reminder attribution): `reminder_context` is a second per-user map,
+    `chat_id -> OrderedDict[message_id, habit_id]`, recording which habit
+    a given reminder MESSAGE (not just "the last one") was about --
+    `remember_reminder`/`habit_for_reply` below are its only read/write
+    surface. In-memory and bounded per chat (oldest entry evicted once a
+    chat's own map exceeds its `cap`), same "lost on restart, and that's
+    fine" posture as `last_habit_id` -- a reply to a pre-restart reminder
+    simply finds nothing here and falls through to the normal logging
+    path (R14's own "no wrong attribution, no data loss" guarantee)."""
 
     last_habit_id: dict[str, str] = field(default_factory=dict)
+    reminder_context: dict[str, "OrderedDict[str, str]"] = field(default_factory=dict)
+
+    def remember_reminder(self, chat_id: str, message_id: str, habit_id: str, *, cap: int) -> None:
+        """Records that `message_id` (a reminder just sent to `chat_id`) is
+        about `habit_id` -- `send_reminder` below is the only production
+        caller, right after a send that actually returned a message id
+        (R-SS6). Evicts the OLDEST entry in `chat_id`'s own map once it
+        would exceed `cap` (`config.reply_to_reminder.context_cap`) --
+        bounded PER CHAT, not globally, so one very active chat's own
+        reminder volume can never crowd another chat's entries out of the
+        map. `move_to_end` keeps the map in true recency order even when
+        `message_id` happens to already be a key (defensive; Telegram
+        message ids are unique per chat in practice, so this is never
+        actually hit)."""
+        per_chat = self.reminder_context.setdefault(chat_id, OrderedDict())
+        per_chat[message_id] = habit_id
+        per_chat.move_to_end(message_id)
+        while len(per_chat) > cap:
+            per_chat.popitem(last=False)
+
+    def habit_for_reply(self, chat_id: str, message_id: str) -> str | None:
+        """The habit id `message_id` (previously sent to `chat_id`) was a
+        reminder for, or `None` if this `(chat_id, message_id)` pair isn't
+        in the map -- covers every "can't attribute" case uniformly: the
+        message was never a reminder, `chat_id` has no map at all yet, or
+        the entry was evicted past `cap`/lost on restart. `core/reply_
+        attribution.py`'s own R13 caller treats `None` here as "fall
+        through to the normal logging path", never an error."""
+        return self.reminder_context.get(chat_id, {}).get(message_id)
 
 
 # Built-in habits reuse their v0.6.0 catalog entries verbatim (SPEC-v0.7.md
@@ -106,6 +147,16 @@ BUILTIN_REMINDER_MESSAGE_IDS = {
 # REMINDER_TEXTS` (a few older tests) keeps working; nothing in this
 # module's own code reads it anymore.
 REMINDER_TEXTS = {category: i18n.t(msg_id, "en") for category, msg_id in BUILTIN_REMINDER_MESSAGE_IDS.items()}
+
+# SPEC-v1.10.md §5 R-SS6: `send_reminder`'s own fallback when it's called
+# with a `state` but no `config` (a pre-1.10 direct-call test, or any other
+# caller that doesn't thread config through) -- mirrors `config.
+# ReplyToReminderConfig.context_cap`'s own default (config.py) so behavior
+# is consistent whether or not a real config is available, without this
+# module importing `config.py` just for one constant (the same "own copy,
+# cite the mirrored default" convention `pause.py`'s `_TH_WEEKDAYS` uses
+# for `backfill.py`'s table).
+_DEFAULT_REPLY_CONTEXT_CAP = 32
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -367,20 +418,16 @@ async def send_reminder(
     # None` mirrors the goal-met check's own guard just below (a bare
     # `send_reminder(channel, chat_id, habit, lang)` call with no `db`/
     # `config`, e.g. a pre-v1.9 test or direct caller, is unaffected --
-    # byte-identical, no pause lookup happens at all). Fail-open (mirrors
-    # `_goal_already_met`'s own AC9.5 posture just below): a DB read error
-    # is logged and treated as "not paused" -- a hiccup reading the
-    # `pauses` table must never silently swallow a reminder.
+    # byte-identical, no pause lookup happens at all).
+    #
+    # SPEC-v1.10.md §4 R-SS9/R18 (module `riders`): the ad-hoc inline
+    # fail-open try/except this site used to have is now `pause.
+    # is_paused_safe` -- same fail-open outcome (a read error is logged
+    # and treated as "not paused", the reminder still sends), now shared
+    # with the other 4 proactive sites instead of duplicated here.
     if db is not None and config is not None:
-        try:
-            today_local = datetime.now(ZoneInfo(config.app.timezone)).date()
-            habit_is_paused = pause.is_paused(db, config, chat_id, habit.id, today_local)
-        except Exception:
-            logger.exception(
-                "Pause read failed for %s/%s; sending reminder anyway (fail-open)", chat_id, habit.id
-            )
-            habit_is_paused = False
-        if habit_is_paused:
+        today_local = datetime.now(ZoneInfo(config.app.timezone)).date()
+        if pause.is_paused_safe(db, config, chat_id, habit.id, today_local):
             logger.info("Suppressing %s/%s reminder: habit is paused", chat_id, habit.id)
             return
 
@@ -393,9 +440,17 @@ async def send_reminder(
         custom = habit.reminder_text(language)
         text = custom if custom is not None else i18n.t("reminder_generic", language, label=habit.label(language))
     silent = config is not None and config.notifications.silent_proactive
-    await channel.send(chat_id, text, disable_notification=silent)
+    sent_message_id = await channel.send(chat_id, text, disable_notification=silent)
     if state is not None:
         state.last_habit_id[chat_id] = habit.id
+        # SPEC-v1.10.md §4 R-SS6: only when the send actually returned an
+        # id (a real Telegram send, or a test double that opts in) -- a
+        # channel that can't provide one (`None`, e.g. most existing test
+        # fakes' own `send()`) simply means no reply-to-reminder mapping is
+        # recorded for this send, same as pre-1.10 behavior.
+        if sent_message_id is not None:
+            cap = config.reply_to_reminder.context_cap if config is not None else _DEFAULT_REPLY_CONTEXT_CAP
+            state.remember_reminder(chat_id, sent_message_id, habit.id, cap=cap)
 
 
 async def run_due_reminders(

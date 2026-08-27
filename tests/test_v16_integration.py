@@ -1096,11 +1096,13 @@ async def test_menu_has_exactly_22_public_commands_both_languages(tmp_path, monk
     assert set(registered.keys()) == {"en", "th"}
     for lang, entries in registered.items():
         names = [name for name, _desc in entries]
-        assert len(names) == 22, f"{lang} menu has {len(names)} commands: {names}"
-        assert len(set(names)) == 22  # no duplicates
+        # SPEC-v1.10.md §4 R17 (integration pass): 22 -> 23, `/guide` added.
+        assert len(names) == 23, f"{lang} menu has {len(names)} commands: {names}"
+        assert len(set(names)) == 23  # no duplicates
         assert not (set(names) & {"approve", "block", "users", "invite", "audit"})  # admin-hidden, unchanged
         assert {"log", "routine"} <= set(names)  # SPEC-v1.8.md R-D2: the two v1.8 public commands
         assert {"cadence", "pause", "resume", "wrapped"} <= set(names)  # SPEC-v1.9.md §6/§11: the four new v1.9 public commands
+        assert "guide" in names  # SPEC-v1.10.md §4 R17: the new v1.10 public command
 
 
 async def test_help_text_lists_the_four_new_v16_commands_bilingually(tmp_path, monkeypatch):
@@ -1231,7 +1233,7 @@ async def test_migration_009_rehearsal_on_a_v1_5_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 12
+        assert db.schema_version == 13
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert "dashboard_msg_id" in cols
         tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

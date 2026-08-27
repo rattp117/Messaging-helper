@@ -191,12 +191,14 @@ async def test_addhabit_end_to_end_no_restart_dashboard_records_habits_help_pick
     assert '"20 pages"' in addhabit_reply  # the worked example uses the NEW unit
 
     # The instant, zero-LLM preparse confirmation for "15 pages" -- template
-    # is "✅ {value:g} {unit} logged — today {total:g} / {goal:g} {unit}
-    # ({pct}%)" (core/i18n.py:confirm_numeric_goal), so a successful
-    # zero-LLM preparse hit reads "15 pages logged"; a fallthrough to the
-    # LLM path (which would return "unknown" from the unprimed fake client)
-    # would instead have produced the clarifying question.
-    log_reply = next(t for t in sent if "15 pages logged" in t)
+    # is "✅ {value:g} {unit} {label} logged — today {total:g} / {goal:g}
+    # {unit} ({pct}%)" (core/i18n.py:confirm_numeric_goal; SPEC-v1.10.md's
+    # sanctioned EN {label} fix added {label} -- here label==unit=="pages",
+    # hence the doubled word), so a successful zero-LLM preparse hit reads
+    # "15 pages pages logged"; a fallthrough to the LLM path (which would
+    # return "unknown" from the unprimed fake client) would instead have
+    # produced the clarifying question.
+    log_reply = next(t for t in sent if "15 pages pages logged" in t)
     assert "clarifying" not in log_reply.lower()
 
     # dashboard.refresh, called from inside the SAME log-confirmation call

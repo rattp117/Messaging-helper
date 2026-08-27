@@ -81,8 +81,8 @@ class Database:
 
     def insert_log(self, entry: LogEntry) -> int:
         cur = self._conn.execute(
-            "INSERT INTO logs (user_id, ts, category, value_num, value_text, raw_message, source, habit_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO logs (user_id, ts, category, value_num, value_text, raw_message, source, habit_type, unparsed_state) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.user_id,
                 entry.ts,
@@ -92,6 +92,7 @@ class Database:
                 entry.raw_message,
                 entry.source,
                 entry.habit_type,
+                entry.unparsed_state,
             ),
         )
         self._conn.commit()
@@ -209,10 +210,95 @@ class Database:
         every deferred row across every user in one pass. Each row still
         carries its own `user_id` column (SELECT *), so the caller
         (`main.py:reparse_pending_unparsed`) addresses each confirmation
-        to the right chat (R-D3)."""
+        to the right chat (R-D3).
+
+        SPEC-v1.10.md §4 R-SS2 (shared surface, migration 013's own state
+        machine): additionally excludes any row whose `unparsed_state` has
+        already moved past `'awaiting_llm'` -- `'awaiting_clarify'` (tap-
+        to-fix offered, the LLM must never be retried on it, R8) or
+        `'closed'` (already terminally notified, R2's own "no zombies").
+        `unparsed_state IS NULL` is kept in the queue -- a legacy pre-1.10
+        deferral row, or a fresh one just written by this same release's
+        deferral path (both mean "awaiting_llm", R-SS1)."""
         return self._conn.execute(
-            "SELECT * FROM logs WHERE category = 'unparsed' AND deleted_at IS NULL ORDER BY ts"
+            "SELECT * FROM logs WHERE category = 'unparsed' AND deleted_at IS NULL "
+            "AND (unparsed_state IS NULL OR unparsed_state = 'awaiting_llm') ORDER BY ts"
         ).fetchall()
+
+    @staticmethod
+    def _unparsed_from_states_predicate(from_states: tuple[str | None, ...]) -> tuple[str, list[str]]:
+        """SPEC-v1.10.md §4 R-SS3: builds the SQL fragment (+ its bound
+        params) for a CAS `WHERE` clause from an `unparsed_state` origin
+        set that may or may not include `NULL` as an expected origin --
+        `NULL` is not a value `IN (...)` can ever match in SQL, so it needs
+        its own `IS NULL` branch, added ONLY when the caller's `from_states`
+        actually names `None` as a valid starting state (R1/R3's own
+        `from_states=(None, 'awaiting_llm')`). A `from_states` that does
+        NOT include `None` (R9's tap-side guard, `from_states=
+        ('awaiting_clarify',)`) must NOT match a NULL row -- a legacy/
+        awaiting-llm row is a different state entirely, so no `IS NULL`
+        branch is emitted at all in that case; this is what keeps the
+        sweep's and the tap's CAS guards on genuinely disjoint origin sets
+        (R11's own race-guard precondition)."""
+        named = [s for s in from_states if s is not None]
+        placeholders = ",".join("?" for _ in named)
+        if None in from_states:
+            if named:
+                return f"(unparsed_state IS NULL OR unparsed_state IN ({placeholders}))", named
+            return "unparsed_state IS NULL", []
+        return f"unparsed_state IN ({placeholders})", named
+
+    def resolve_unparsed(
+        self,
+        log_id: int,
+        *,
+        from_states: tuple[str | None, ...],
+        category: str,
+        value_num: float | None,
+        value_text: str | None,
+        habit_type: str | None,
+    ) -> bool:
+        """SPEC-v1.10.md §4 R-SS3: the guarded CAS reclassify -- turns an
+        `'unparsed'` row into a real habit's log (mirrors `reclassify_log`'s
+        own column set) AND clears `unparsed_state` back to NULL (the
+        column is only ever meaningful for `category='unparsed'` rows, R-SS4),
+        but ONLY if the row is still `category = 'unparsed'` AND its current
+        `unparsed_state` is one of `from_states` at the moment this UPDATE
+        actually runs -- both conditions are in the same WHERE clause, so
+        the check-and-write is atomic under SQLite's own single-writer
+        serialization (no separate SELECT-then-UPDATE race window). Returns
+        `rowcount == 1`: `True` means THIS call won the race and the caller
+        is the one who should send the confirmation/refresh the dashboard
+        (R3/R9); `False` means the row had already moved on (recovered
+        already, closed already, or never existed) -- a pure no-op, no
+        write, no further action for the caller (R11)."""
+        predicate, params = self._unparsed_from_states_predicate(from_states)
+        cursor = self._conn.execute(
+            "UPDATE logs SET category = ?, value_num = ?, value_text = ?, habit_type = ?, unparsed_state = NULL "
+            f"WHERE id = ? AND category = 'unparsed' AND {predicate}",
+            (category, value_num, value_text, habit_type, log_id, *params),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def mark_unparsed_state(self, log_id: int, *, from_states: tuple[str | None, ...], to_state: str) -> bool:
+        """SPEC-v1.10.md §4 R-SS3: the guarded CAS state-only transition --
+        same atomic "only if still `category='unparsed'` and currently in
+        `from_states`" guard as `resolve_unparsed` above, just writing
+        `unparsed_state = to_state` instead of reclassifying the row's
+        category/value. The sweep's own two terminal writes both go through
+        here: `to_state='closed'` (R1, no tier-1 guess) and
+        `to_state='awaiting_clarify'` (R7, guesses exist). Returns
+        `rowcount == 1` -- same "did THIS call win the race" contract as
+        `resolve_unparsed` (R11)."""
+        predicate, params = self._unparsed_from_states_predicate(from_states)
+        cursor = self._conn.execute(
+            "UPDATE logs SET unparsed_state = ? "
+            f"WHERE id = ? AND category = 'unparsed' AND {predicate}",
+            (to_state, log_id, *params),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def reclassify_log(
         self,

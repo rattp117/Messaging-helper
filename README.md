@@ -213,6 +213,16 @@ or `--test-reminder` does.
 uv run pytest
 ```
 
+Parallel (needs `pytest-xdist`, a `dev` extra — `uv sync --extra dev`):
+
+```powershell
+uv run pytest -n auto
+```
+
+`-n auto` is documented here, not forced via `[tool.pytest.ini_options] addopts` in
+`pyproject.toml` — a single-worker debug run needs no override, and CI opts in
+explicitly.
+
 ## Project layout
 
 See `SPEC.md` §4. Channel abstraction lives in `channels/base.py`

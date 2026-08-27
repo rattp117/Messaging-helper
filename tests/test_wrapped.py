@@ -105,9 +105,9 @@ CLOCK = _clock_at(TODAY)
 
 
 def test_wrapped_adds_no_migration_of_its_own(tmp_path):
-    assert len(MIGRATIONS) == 12  # 012 is the shared-surface lifecycle migration, not wrapped's own
+    assert len(MIGRATIONS) == 13  # 012/013 are shared-surface migrations (lifecycle, unparsed-state), not wrapped's own
     d = Database(tmp_path / "fresh.db")
-    assert d.schema_version == 12
+    assert d.schema_version == 13
     d.close()
 
 

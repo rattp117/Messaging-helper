@@ -48,6 +48,7 @@ from habit_assistant.core import (
     backfill,
     cadence,
     checkins,
+    clarify,
     commands,
     confirmation,
     dashboard,
@@ -63,6 +64,8 @@ from habit_assistant.core import (
     quicklog,
     reactions,
     records,
+    render_budget,
+    reply_attribution,
     routines,
     schedules,
     streaks,
@@ -79,6 +82,7 @@ from habit_assistant.core.health import HealthMonitor
 from habit_assistant.core.parser import parse_message as _default_parse_message
 from habit_assistant.core.registry_provider import RegistryProvider
 from habit_assistant.core.reminders import ReminderState, send_reminder
+from habit_assistant.llm.ollama_client import ExtractionResult
 from habit_assistant.storage.models import LogEntry
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,28 @@ logger = logging.getLogger(__name__)
 # second, redundant dispatch. This sentinel is the only way `command`'s
 # default is distinguishable from an explicit `command=None`.
 _NOT_DISPATCHED = object()
+
+# SPEC-v1.10.md §4 R15, Archi-sanctioned integration extra (item 4): bounds
+# just the QUOTED portion of the outage-honesty message, mirroring
+# `core/clarify.py:_QUOTE_MAX_CHARS`'s identical rationale/value for the
+# closure/clarify-offer messages -- a near-4096-char raw inbound message
+# would otherwise push the composed outage message past Telegram's own
+# `sendMessage` limit (measured by Vera in `tests/test_v110_m2_gaps.py`:
+# +92..+188 chars over budget at 4000-char inputs). Never applied to the
+# `text` written into the `LogEntry.raw_message` deferral row itself --
+# only to what gets embedded in the sent message.
+_OUTAGE_QUOTE_MAX_CHARS = 200
+
+# SPEC-v1.10.md §4 R4 (single-flight sweep guard): if a sweep is already
+# running, a new trigger (startup, and `HealthMonitor.on_ollama_recovered`)
+# logs and returns immediately -- the running sweep's own `db.
+# pending_unparsed()` snapshot already covers everything deferred up to the
+# outage's end. Plain module-level bool, not a lock: this app is a single
+# asyncio process (`storage/db.py`'s own documented "not thread-safe by
+# design" posture) and the guard is set synchronously, with no `await`
+# between the check and the set, so no interleaving window exists for two
+# concurrent callers to both observe `False`.
+_sweep_in_progress = False
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -271,30 +297,6 @@ async def _react_to_typed_log(
     await reactions.react(channel, chat_id, inbound_message_id, habit)
 
 
-async def _send_recovered_generic(
-    channel: Channel, chat_id: str, habit: Habit, value, lang: i18n.Language, buttons
-) -> None:
-    """The recovery-confirmation counterpart of `confirmation.confirmation_text`,
-    for `reparse_pending_unparsed`. A recovery re-confirmation is itself an
-    interactive log confirmation, so it carries the undo button too."""
-    if habit.type == "numeric":
-        await channel.send_actionable(
-            chat_id,
-            i18n.t("recovered_numeric", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
-            buttons,
-        )
-    elif habit.type == "duration":
-        await channel.send_actionable(
-            chat_id,
-            i18n.t("recovered_duration", lang, value=value, unit=habit.unit(lang) or "", label=habit.label(lang)),
-            buttons,
-        )
-    elif habit.type == "boolean":
-        await channel.send_actionable(chat_id, i18n.t("recovered_boolean", lang, label=habit.label(lang)), buttons)
-    else:  # text
-        await channel.send_actionable(chat_id, i18n.t("recovered_text", lang, label=habit.label(lang)), buttons)
-
-
 async def handle_inbound_message(
     text: str,
     *,
@@ -312,6 +314,7 @@ async def handle_inbound_message(
     reminder_state: ReminderState | None = None,
     provider: RegistryProvider | None = None,
     inbound_message_id: str | None = None,
+    reply_to_message_id: str | None = None,
     command: commands.Command | None = _NOT_DISPATCHED,  # type: ignore[assignment]
     parse_message=_default_parse_message,
 ) -> None:
@@ -326,6 +329,15 @@ async def handle_inbound_message(
     `--dry-run`, `reparse_pending_unparsed`'s sibling callers, every
     existing test) omits it entirely and gets the original dispatch-here
     behavior, unchanged.
+
+    SPEC-v1.10.md §5 R-SS7/R13 ("never lose a log"): `reply_to_message_id`
+    is the `message.reply_to_message.message_id` (as `str`) when the
+    inbound message is a Telegram reply, else `None` -- threaded here from
+    `on_message` below, itself threaded from `TelegramChannel.run`. When
+    set (and `config.reply_to_reminder.enabled`, and `reminder_state` maps
+    it to a habit), the reply-attribution block below (after backfill,
+    before preparse) resolves a bare-value reply zero-LLM, exactly like a
+    preparse hit.
     """
     registry = registry or HabitRegistry.from_config(config)
     lang = i18n.resolve_reply_language(text, config, user_pref=user_prefs.stored_language_pref(db, user_id))
@@ -558,6 +570,17 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "guide":
+            # SPEC-v1.10.md §4 R16 (functional 5): a compact bilingual
+            # getting-started card, one `channel.send` -- not budget-capped
+            # (fixed size, R16's own precedent).
+            reply = discoverability.build_guide_text(config, lang)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
         if command.kind == "history":
             reply = history_view.render_history(
                 db, config, registry, lang, user_id=user_id, category=command.category, limit=command.limit
@@ -604,7 +627,30 @@ async def handle_inbound_message(
     if backfill_result is not None:
         parse_text, backfill_date = backfill_result
 
-    preparsed = preparse.deterministic_parse(parse_text, registry)
+    # SPEC-v1.10.md §4 R13/R14 (module `reply_attribution`, functional 3):
+    # a bare-value reply to one of the bot's own per-habit reminder
+    # messages attributes zero-LLM -- placed here (after backfill, before
+    # preparse) per R13's own exact ordering. `reply_attribution.
+    # resolve_reply_value` is deliberately conservative (R14): non-`None`
+    # only for a bare positive number (numeric/duration habit) or an
+    # affirmative token (boolean habit); everything else (a number+unit,
+    # an unmapped/check-in/nudge reply, non-value text, or the map simply
+    # not knowing this `(chat_id, message_id)` pair) falls through
+    # unchanged to the normal preparse/LLM path below -- no wrong
+    # attribution, ever. A hit is treated EXACTLY like a preparse hit (the
+    # shared write+confirm block below fires the reaction and refreshes
+    # the dashboard the same way, R13's own "works offline" -- this needs
+    # no Ollama-up check at all, unlike the LLM path just below).
+    reply_result: ExtractionResult | None = None
+    if reply_to_message_id is not None and config.reply_to_reminder.enabled and reminder_state is not None:
+        reply_habit_id = reminder_state.habit_for_reply(user_id, reply_to_message_id)
+        reply_habit = registry.get(reply_habit_id) if reply_habit_id is not None else None
+        if reply_habit is not None:
+            reply_value = reply_attribution.resolve_reply_value(text, reply_habit)
+            if reply_value is not None:
+                reply_result = ExtractionResult(reply_habit.id, reply_value, 1.0)
+
+    preparsed = reply_result if reply_result is not None else preparse.deterministic_parse(parse_text, registry)
     if preparsed is not None:
         result = preparsed
     else:
@@ -613,7 +659,23 @@ async def handle_inbound_message(
             now = clock()
             ts = now.isoformat(timespec="seconds")
             db.insert_log(LogEntry(None, user_id, ts, "unparsed", None, None, text, source))
-            await channel.send(user_id, i18n.t("deferred_ack", lang))
+            # SPEC-v1.10.md §4 R15 (functional 4, outage honesty): replaces
+            # the bare `deferred_ack` with an immediate, honest message
+            # naming what still works instantly -- gated by `config.
+            # outage.honest_reply` (default True); `false` restores the
+            # pre-1.10 `deferred_ack` byte-for-byte. The deferral row above
+            # and the recovery machinery are unchanged either way.
+            if config.outage.honest_reply:
+                outage_text = i18n.t(
+                    "outage_honest_reply", lang, text=render_budget.truncate(text, max_chars=_OUTAGE_QUOTE_MAX_CHARS)
+                )
+                outage_buttons = quicklog.build_keyboard(registry, config, db, lang, user_id)
+                if outage_buttons:
+                    await channel.send_actionable(user_id, outage_text, outage_buttons)
+                else:
+                    await channel.send(user_id, outage_text)
+            else:
+                await channel.send(user_id, i18n.t("deferred_ack", lang))
             return
 
         # The full-NL target-intent step. `command` is guaranteed None here
@@ -688,7 +750,27 @@ async def handle_inbound_message(
 
     habit = registry.get(result.category)
     if habit is None:
-        await channel.send(user_id, i18n.t("clarifying_question", lang))
+        # SPEC-v1.10.md §4 R6/R10 (module `clarify`, functional 2): reached
+        # only when Ollama is UP and `parse_message` itself returned no
+        # registry habit -- the Ollama-DOWN deferral above already
+        # returned. `config.clarify.enabled=false` -> generic path always
+        # (R6's own "false -> generic clarifying question only, no guess
+        # buttons"). Guesses -> a fresh `awaiting_clarify` row (raw_message
+        # = text) + the tap-to-fix offer (R6); no guesses -> the existing
+        # bilingual clarifying question, now with the `/log` keyboard
+        # attached too (R10), and no row is written.
+        guesses = clarify.tier1_guesses(text, registry, db, config, user_id) if config.clarify.enabled else []
+        if guesses:
+            clarify_row_id = db.insert_log(
+                LogEntry(None, user_id, ts, "unparsed", None, None, text, source, unparsed_state=clarify.AWAITING_CLARIFY)
+            )
+            await clarify.offer_clarify(channel, db, config, registry, lang, user_id, row_id=clarify_row_id, text=text)
+        else:
+            clarify_buttons = quicklog.build_keyboard(registry, config, db, lang, user_id)
+            if clarify_buttons:
+                await channel.send_actionable(user_id, i18n.t("clarifying_question", lang), clarify_buttons)
+            else:
+                await channel.send(user_id, i18n.t("clarifying_question", lang))
         return
 
     # Snapshot whether today already satisfied this habit's streak
@@ -749,59 +831,93 @@ async def reparse_pending_unparsed(
     """Re-parse every row deferred while Ollama was DOWN (category=
     'unparsed'), convert it to its real category, and confirm. Rows come
     straight from `db.pending_unparsed()`, so this also picks up rows
-    deferred by a *previous* process run. A row that's still unparseable
-    after Ollama is back is left as 'unparsed' and logged -- not retried
-    again until the next DOWN->UP transition.
+    deferred by a *previous* process run.
+
+    SPEC-v1.10.md §4 R1-R4/R7 (modules `clarify`, "never lose a log"): a
+    row that's STILL unparseable after Ollama is back no longer sits in
+    'unparsed' forever, re-parsed on every future recovery sweep. It's
+    decided ONCE more, via `clarify.tier1_guesses` (deterministic,
+    zero-LLM, against the row's OWN user's registry): guesses exist -> CAS
+    `mark_unparsed_state(to='awaiting_clarify')`, winner sends the
+    tap-to-fix offer (R7); no guesses -> CAS `mark_unparsed_state(to=
+    'closed')`, winner sends the ONE closure notification (R1). Either way
+    the row permanently leaves `pending_unparsed()` (R2/R-SS2) -- the LLM
+    is never retried on it again. A row that DOES re-parse is reclassified
+    via the guarded CAS `resolve_unparsed` (R3), not the old unconditional
+    `reclassify_log` -- only the winner sends the recovered-* confirmation
+    + dashboard refresh. Every CAS is guarded on `from_states=(None,
+    clarify.AWAITING_LLM)` -- the sweep's own origin set, disjoint from the
+    tap's `('awaiting_clarify',)` (R11's race-guard precondition) -- so a
+    losing CAS (another concurrent sweep, or a tap that already resolved
+    this exact row) is a silent no-op: no double log, no double
+    notification.
+
+    SPEC-v1.10.md §4 R4 (single-flight guard): a sweep already in progress
+    makes any concurrent trigger a no-op (logged, returns immediately) --
+    defense-in-depth on top of the per-row CAS above, since a second sweep
+    reading the same `pending_unparsed()` snapshot would otherwise race
+    every one of its rows against the first sweep for no benefit (the
+    running sweep already covers everything deferred up to the outage's
+    end).
 
     `provider`, when given, resolves EACH row's own per-user registry
     inside the loop -- a backlog spanning multiple users re-parses each
     row against its OWN user's custom habits."""
-    registry = registry or HabitRegistry.from_config(config)
-    pending = db.pending_unparsed()
-    if not pending:
+    global _sweep_in_progress
+    if _sweep_in_progress:
+        logger.info("Skipping reparse_pending_unparsed: a sweep is already in progress")
         return
+    _sweep_in_progress = True
+    try:
+        registry = registry or HabitRegistry.from_config(config)
+        pending = db.pending_unparsed()
+        if not pending:
+            return
 
-    logger.info("Re-parsing %d deferred message(s)", len(pending))
-    for row in pending:
-        text = row["raw_message"]
-        user_id = row["user_id"]
-        row_registry = provider.for_user(user_id) if provider is not None else registry
-        lang = i18n.resolve_reply_language(text, config, user_pref=user_prefs.stored_language_pref(db, user_id))
-        result = await parse_message(text, llm, row_registry, config.ollama.confidence_threshold)
+        logger.info("Re-parsing %d deferred message(s)", len(pending))
+        for row in pending:
+            text = row["raw_message"]
+            user_id = row["user_id"]
+            row_registry = provider.for_user(user_id) if provider is not None else registry
+            lang = i18n.resolve_reply_language(text, config, user_pref=user_prefs.stored_language_pref(db, user_id))
+            result = await parse_message(text, llm, row_registry, config.ollama.confidence_threshold)
 
-        habit = row_registry.get(result.category)
-        if habit is None:
-            logger.warning(
-                "Deferred message id=%s still unparseable after Ollama recovery; left as 'unparsed': %r",
+            habit = row_registry.get(result.category)
+            if habit is None:
+                guesses = clarify.tier1_guesses(text, row_registry, db, config, user_id)
+                to_state = clarify.AWAITING_CLARIFY if guesses else clarify.CLOSED
+                won = db.mark_unparsed_state(row["id"], from_states=(None, clarify.AWAITING_LLM), to_state=to_state)
+                if won:
+                    if guesses:
+                        await clarify.offer_clarify(
+                            channel, db, config, row_registry, lang, user_id, row_id=row["id"], text=text
+                        )
+                    else:
+                        await clarify.send_closure(channel, db, config, row_registry, lang, user_id, text=text)
+                continue
+
+            recovered_entry = log_entry_from_result(habit, result, row["ts"], text, row["source"], user_id)
+            won = db.resolve_unparsed(
                 row["id"],
-                text,
+                from_states=(None, clarify.AWAITING_LLM),
+                category=habit.id,
+                value_num=recovered_entry.value_num,
+                value_text=recovered_entry.value_text,
+                habit_type=habit.type,
             )
-            continue
+            if not won:
+                continue
 
-        recovered_entry = log_entry_from_result(habit, result, row["ts"], text, row["source"], user_id)
-        db.reclassify_log(
-            row["id"], habit.id, recovered_entry.value_num, recovered_entry.value_text, habit_type=habit.type
-        )
-        undo_buttons = undo_ui.undo_button(row["id"], lang)
+            undo_buttons = undo_ui.undo_button(row["id"], lang)
+            await confirmation.send_recovered_confirmation(channel, user_id, habit, result.value, lang, undo_buttons)
 
-        if habit.id == "water":
-            await channel.send_actionable(
-                user_id, i18n.t("recovered_water", lang, water_ml=int(result.value)), undo_buttons  # type: ignore[arg-type]
-            )
-        elif habit.id == "stretch":
-            await channel.send_actionable(
-                user_id, i18n.t("recovered_stretch", lang, stretch_min=int(result.value)), undo_buttons  # type: ignore[arg-type]
-            )
-        elif habit.id == "diary":
-            await channel.send_actionable(user_id, i18n.t("recovered_diary", lang), undo_buttons)
-        else:
-            await _send_recovered_generic(channel, user_id, habit, result.value, lang, undo_buttons)
-
-        # The "recovery" case -- a deferred row landing late is still a
-        # real log, so the pinned board should reflect it too. No
-        # `clock=` override -- this loop has no injectable clock of its
-        # own, so it correctly falls back to the real wall clock.
-        await dashboard.refresh(db, channel, config, row_registry, user_id)
+            # The "recovery" case -- a deferred row landing late is still a
+            # real log, so the pinned board should reflect it too. No
+            # `clock=` override -- this loop has no injectable clock of
+            # its own, so it correctly falls back to the real wall clock.
+            await dashboard.refresh(db, channel, config, row_registry, user_id)
+    finally:
+        _sweep_in_progress = False
 
 
 async def on_message(
@@ -809,6 +925,7 @@ async def on_message(
     text: str,
     display_name: str | None = None,
     message_id: str | None = None,
+    reply_to_message_id: str | None = None,
     *,
     db: "Database",
     llm: "OllamaClient",
@@ -866,6 +983,7 @@ async def on_message(
         reminder_state=reminder_state,
         provider=provider,
         inbound_message_id=message_id,
+        reply_to_message_id=reply_to_message_id,
         command=command,
     )
 
@@ -884,10 +1002,11 @@ async def on_callback(
     """Route an inline-button tap. A non-active chat's tap is a silent
     no-op (no onboarding reply -- a tap isn't itself a message to onboard
     from). Dispatch by payload prefix: `log:` -> `quicklog`, `routine:run:`
-    -> `routines`, everything else (`undo:`) -> `undo_ui`, which this
-    function refreshes the dashboard for afterward (the other two prefixes
-    already refresh it themselves as part of their own "log + confirm"
-    flow)."""
+    -> `routines`, `clarify:` -> `clarify` (SPEC-v1.10.md §5 R9, module
+    `clarify`), everything else (`undo:`) -> `undo_ui`, which this
+    function refreshes the dashboard for afterward (the other three
+    prefixes already refresh it themselves as part of their own "log +
+    confirm" flow)."""
     if access.classify(db, chat_id) not in ("owner", "active"):
         return
     user_registry = provider.for_user(chat_id)
@@ -900,6 +1019,11 @@ async def on_callback(
     if data.startswith("routine:run:"):
         await routines.handle_routine_callback(
             chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, provider=provider, clock=datetime.now
+        )
+        return
+    if data.startswith("clarify:"):
+        await clarify.handle_clarify_callback(
+            chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, registry=user_registry, clock=datetime.now
         )
         return
 

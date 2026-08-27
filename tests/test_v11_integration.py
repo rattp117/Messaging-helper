@@ -178,6 +178,13 @@ async def test_ac3_log_confirmation_carries_exactly_one_undo_button_with_correct
 
 
 async def test_ac4_clarifying_question_carries_no_button(db, registry, monkeypatch):
+    """SPEC-v1.10.md §4 R10 (integration pass, module `clarify`): "zzz
+    completely unrecognized nonsense" has no tier-1 guess (no label/alias/
+    unit match, no bare number), so the generic clarifying question now
+    carries the `/log` keyboard (R10's own "never silence, never a guess
+    the bot can't stand behind" fallback) -- not zero buttons, the pre-1.10
+    behavior this test's name/original assertion pinned. Test name kept
+    for history; only the buttons/`clarify:`-vs-`log:` distinction changed."""
     patch_parse_message(monkeypatch, ExtractionResult(category="not-a-real-habit", value=None, confidence=0.9))
     channel = FakeChannel()
 
@@ -195,7 +202,11 @@ async def test_ac4_clarifying_question_carries_no_button(db, registry, monkeypat
         user_id=CHAT_ID,
     )
 
-    assert channel.actionable == []
+    assert len(channel.actionable) == 1
+    text, buttons = channel.actionable[0]
+    assert text == i18n.t("clarifying_question", "en")
+    assert buttons  # the /log keyboard (R10), never empty for the default registry
+    assert all(cb.startswith("log:") for _, cb in buttons)  # /log buttons, not clarify: (no guess existed)
     assert channel.sent == [i18n.t("clarifying_question", "en")]
 
 
@@ -205,7 +216,13 @@ async def test_ac4_deferred_ack_carries_no_button(db, registry):
     the pre-parser and logs successfully (WITH an undo button) even while
     Ollama is down, which would defeat this test's own point. See
     `test_ac16_bare_number_unit_while_ollama_down_logs_with_an_undo_
-    button_not_deferred` right below for that new behavior's own coverage."""
+    button_not_deferred` right below for that new behavior's own coverage.
+
+    SPEC-v1.10.md §4 R15 (integration pass): the deferral ack, by default
+    (`outage.honest_reply=true`), is now the outage-honesty message, which
+    itself carries the `/log` keyboard (R15's own "attaches the /log
+    keyboard") -- not zero buttons, the pre-1.10 behavior this test's
+    name/original assertion pinned. Test name kept for history."""
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
     channel = FakeChannel()
 
@@ -221,8 +238,10 @@ async def test_ac4_deferred_ack_carries_no_button(db, registry):
         user_id=CHAT_ID,
     )
 
-    assert channel.actionable == []
-    assert channel.sent == [i18n.t("deferred_ack", "en")]
+    assert len(channel.actionable) == 1
+    text, buttons = channel.actionable[0]
+    assert text == i18n.t("outage_honest_reply", "en", text="drank some water")
+    assert buttons  # the /log keyboard (R15), never empty for the default registry
     assert _log_count(db) == 1  # persisted verbatim as 'unparsed', not lost
 
 
@@ -400,6 +419,11 @@ async def test_ac31_nl_set_goal_on_goalless_habit_then_consumers_reflect_it_end_
 
 
 async def test_ac33_ollama_down_skips_nl_step_entirely_and_defers_as_unparsed_log(db, registry, monkeypatch):
+    """SPEC-v1.10.md §4 R15 (integration pass): `outage.honest_reply=False`
+    keeps this test's own `deferred_ack` assertion byte-for-byte accurate --
+    this test is about the target-NL gate (R-T16), not the outage-honesty
+    copy (`tests/test_outage_honesty.py`'s own scope)."""
+
     def forbidden_gate(text):
         raise AssertionError("looks_like_target_phrasing must not even be called while Ollama is down (R-T16)")
 
@@ -416,7 +440,7 @@ async def test_ac33_ollama_down_skips_nl_step_entirely_and_defers_as_unparsed_lo
         db=db,
         llm=FakeLLM(),
         channel=channel,
-        config=Config(),
+        config=Config.model_validate({"outage": {"honest_reply": False}}),
         registry=registry,
         clock=_clock(),
         health_monitor=_FrozenHealthMonitor(ollama_up=False),

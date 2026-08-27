@@ -31,7 +31,19 @@ a text message -- a callback-query update carries no loggable inbound
 message and never reaches `on_message` at all), and only
 `main.py:on_message` threads it into `handle_inbound_message`'s own
 `inbound_message_id` param, where module `quicklog`'s reaction call
-(R-Q4) consumes it at integration time."""
+(R-Q4) consumes it at integration time.
+
+SPEC-v1.10.md §5 R-SS7 (shared surface, module `reply_attribution`'s own
+future dependency, "never lose a log"): `on_message` may likewise
+optionally be called with a FIFTH argument, `reply_to_message_id: str |
+None` -- the inbound `message.reply_to_message.message_id` (as `str`) when
+the message is a Telegram *reply*, else `None`. Same additive/trailing/
+defaulted shape as `message_id` just above -- every 2-, 3-, or 4-arg
+caller/fake is unaffected; only `TelegramChannel.run()` actually supplies
+it, and only `core/routing.py:on_message` threads it into `handle_inbound_
+message`'s own `reply_to_message_id` param, plumbing only at this pass (no
+feature logic reads it yet -- that lands with module `reply_attribution`'s
+own R13 wiring at integration)."""
 
 from __future__ import annotations
 
@@ -44,7 +56,7 @@ Button = tuple[str, str]
 
 class Channel(ABC):
     @abstractmethod
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
         """Push a message to `chat_id`.
 
         SPEC-v1.8.md R-S1 (shared surface): `disable_notification` is an
@@ -56,7 +68,19 @@ class Channel(ABC):
         `nudge.run_due_nudges`, module `riders`, R-D1) when
         `[notifications] silent_proactive` is on -- user-initiated
         confirmations/replies and the one-time dashboard pin never pass
-        `True`."""
+        `True`.
+
+        SPEC-v1.10.md §5 R-SS5 (shared surface, "never lose a log"): the
+        return type is now `str | None` -- the sent message's own id
+        (mirrors `send_and_pin`'s existing `str | None` contract just
+        below), or `None` when the channel can't provide one. Purely
+        additive: every existing caller ignores the return value entirely
+        (a bare `await self.send(...)` statement), so this is byte-
+        identical for every one of them; only `core/reminders.py:
+        send_reminder` (R-SS6) is updated to capture it. `TelegramChannel.
+        send` returns `str(resp.json()["result"]["message_id"])`; a fake/
+        stub `Channel` that still returns `None` (or nothing at all, which
+        Python treats as `None`) is a valid "no id" answer, not an error."""
 
     @abstractmethod
     async def run(

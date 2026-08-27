@@ -163,7 +163,11 @@ async def test_backoff_grows_and_caps_across_consecutive_transport_errors(monkey
     )
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -203,7 +207,11 @@ async def test_backoff_resets_to_initial_after_a_successful_poll(monkeypatch):
     )
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -263,7 +271,11 @@ async def test_offset_never_advances_on_failure_and_recovery_resumes_from_correc
     received: list[str] = []
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         received.append(text)
 
@@ -305,7 +317,11 @@ async def test_telegram_unreachable_is_logged_and_retried_without_crashing(monke
     )
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -482,7 +498,11 @@ async def test_only_allowed_hosts_contacted_across_all_resilience_paths(monkeypa
     await health.run_once()
 
     async def on_message(
-        chat_id: str, text: str, display_name: str | None = None, message_id: str | None = None
+        chat_id: str,
+        text: str,
+        display_name: str | None = None,
+        message_id: str | None = None,
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -502,8 +522,14 @@ async def test_only_allowed_hosts_contacted_across_all_resilience_paths(monkeypa
 
 
 async def test_deferred_message_acks_writes_unparsed_row_and_never_calls_llm(db):
+    """SPEC-v1.10.md §4 R15 (integration pass): `outage.honest_reply`
+    defaults `true`, so the real production ack is the outage-honesty
+    message (`tests/test_outage_honesty.py`'s own scope), not this file's
+    `DEFERRED_ACK_MESSAGE` -- `honest_reply=False` restores the exact
+    pre-1.10 ack byte-for-byte, keeping this test on its own point (a
+    deferral row is written and the LLM is never called)."""
     channel = _RecordingChannel()
-    config = Config()
+    config = Config.model_validate({"outage": {"honest_reply": False}})
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
 
     await handle_inbound_message(
@@ -577,8 +603,12 @@ async def test_deferred_row_persists_across_database_close_and_reopen(tmp_path):
 
 
 async def test_reparse_on_recovery_reclassifies_confirms_and_reincludes_in_aggregations(db):
+    """SPEC-v1.10.md §4 R15 (integration pass): same `outage.honest_reply=
+    False` rationale as `test_deferred_message_acks_writes_unparsed_row_
+    and_never_calls_llm` above -- this test is about recovery/reclassify,
+    not the outage-honesty copy."""
     channel = _RecordingChannel()
-    config = Config()
+    config = Config.model_validate({"outage": {"honest_reply": False}})
     health_monitor = _FrozenHealthMonitor(ollama_up=False)
 
     fixed_clock = lambda: __import__("datetime").datetime(2026, 8, 19, 10, 0, 0)
@@ -642,10 +672,24 @@ async def test_startup_backlog_reparsed_with_no_in_process_transition(db):
 async def test_reparse_leaves_genuinely_unparseable_row_as_unparsed(db):
     """A row still not parseable after Ollama recovers (bad input, not an
     outage) stays `unparsed` rather than being silently dropped or
-    force-classified."""
+    force-classified.
+
+    SPEC-v1.10.md §4 R1/R2 (integration pass, "never lose a log"): a row
+    still unparseable after the ONE post-recovery attempt no longer sits
+    in `pending_unparsed()` forever, re-parsed on every future recovery
+    sweep -- that infinite re-parse loop, with the user never told their
+    log died, is exactly the bug this release's own name refers to (see
+    SPEC-v1.10.md §1). "asdkjhasd" has no tier-1 guess (no label/alias/unit
+    match, no bare number), so the row is CLOSED and the user gets the
+    ONE bilingual closure notification (R1) -- it still stays
+    `category='unparsed'` (never force-classified, this test's own
+    original point), just no longer in the pending queue. Updated in
+    place, not deleted, to lock in the new behavior instead of the old
+    zombie-loop one; `tests/test_unparsed_closure.py` has M1's own
+    dedicated, fuller coverage."""
     from habit_assistant.storage.models import LogEntry
 
-    db.insert_log(
+    row_id = db.insert_log(
         LogEntry(None, OWNER, "2026-08-19T09:00:00", "unparsed", None, None, "asdkjhasd", "reply")
     )
 
@@ -656,9 +700,12 @@ async def test_reparse_leaves_genuinely_unparseable_row_as_unparsed(db):
     await reparse_pending_unparsed(db, still_unknown_llm, channel, config)
 
     pending = db.pending_unparsed()
-    assert len(pending) == 1
-    assert pending[0]["category"] == "unparsed"
-    assert channel.sent == []  # no recovery confirmation for a row that's still unparseable
+    assert pending == []  # R2: no zombies -- permanently leaves the pending pool
+    row = db.get_log(row_id)
+    assert row["category"] == "unparsed"  # never force-classified
+    assert row["unparsed_state"] == "closed"
+    assert len(channel.sent) == 1  # the ONE closure notification (R1), not silence
+    assert '"asdkjhasd"' in channel.sent[0]
 
 
 # ---------------------------------------------------------------------------

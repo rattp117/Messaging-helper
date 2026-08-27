@@ -775,10 +775,17 @@ def test_migration_011_preexisting_v10_data_byte_identical_after_migration(tmp_p
         "users": _dump_table(db_path, "users"),
         "habit_records": _dump_table(db_path, "habit_records"),
     }
+    # SPEC-v1.10.md migration 013 additively adds `logs.unparsed_state`
+    # (default NULL) -- reflected here in the "before" baseline so this
+    # test keeps proving its own stated point ("doesn't mutate a single
+    # EXISTING value") rather than spuriously failing on a brand-new,
+    # correctly-NULL column that didn't exist yet at this test's v10 seed.
+    for row in before["logs"]:
+        row["unparsed_state"] = None
 
     db_ = Database(db_path)
     assert db_.schema_version_before == 10
-    assert db_.schema_version == 12
+    assert db_.schema_version == 13
     db_.close()
 
     after = {

@@ -185,7 +185,12 @@ async def wrapped_auto_job(db: "Database", channel: "Channel", config: "Config",
                 continue
             user_registry = provider.for_user(user_id)
             habit_ids = [h.id for h in user_registry]
-            if not habit_ids or all(pause.is_paused(db, config, user_id, hid, today) for hid in habit_ids):
+            # SPEC-v1.10.md §4 R-SS9 (shared surface, integration-pass note
+            # M3's own IMPL flagged: `jobs.py` isn't an M3-owned file):
+            # fail-open, matching the other 5 pause-gating sites -- a
+            # pauses-read error must never make an active habit look
+            # "fully paused" and silently skip this user's month-end card.
+            if not habit_ids or all(pause.is_paused_safe(db, config, user_id, hid, today) for hid in habit_ids):
                 continue
             lang = i18n.resolve_unprompted_language(config, user_pref=user_prefs.stored_language_pref(db, user_id))
             auto_command = commands.Command(kind="wrapped", pref_value="month")

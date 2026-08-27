@@ -278,3 +278,35 @@ max_days = 30
 [wrapped]
 auto_send = false
 celebrate_burst = true
+
+# SPEC-v1.10.md "Never lose a log" -- unparsed closure + tap-to-fix clarify,
+# reply-to-reminder logging, outage honesty, /guide. Three new sections, all
+# defaulted -- an absent section here uses config.py's own class defaults
+# (AC1), same convention as every prior config addition.
+
+# During an Ollama outage, a deferred/unparseable message gets an honest
+# reply naming what still works instantly (number+unit, /log, /routine)
+# instead of a bare "saved, will get back to you" ack. false restores the
+# pre-1.10 bare deferred acknowledgement.
+[outage]
+honest_reply = true
+
+# When a message can't be parsed (live, or on recovery), offer conservative
+# tap-to-fix guess buttons built only from deterministic (zero-LLM) matches
+# against your own habits -- never a guess the bot can't stand behind.
+# max_guesses caps how many buttons one offer shows; the plausibility window
+# bounds a bare-number guess (e.g. "500" plausibly means water, not stretch).
+[clarify]
+enabled = true
+max_guesses = 4
+plausibility_lower = 0.05
+plausibility_upper = 5.0
+
+# Replying to one of the bot's own reminder messages with a bare number (or,
+# for a yes/no habit, an affirmative word) logs that value against the
+# reminder's own habit -- zero-LLM, works even while Ollama is down.
+# context_cap bounds the in-memory per-chat reminder-to-habit map (oldest
+# entry evicted first); the mapping is lost on restart by design.
+[reply_to_reminder]
+enabled = true
+context_cap = 32

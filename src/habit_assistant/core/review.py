@@ -146,12 +146,20 @@ def compute_weekly_stats(
     excluded from the review entirely -- mirrors the same per-habit pause
     skip `core/checkins.py`/`core/nudge.py`/`core/streaks.compute_daily_
     summary` all apply to their own proactive sends; other, non-paused
-    habits still get their usual section."""
+    habits still get their usual section.
+
+    SPEC-v1.10.md §4 R18 (module `riders`): the per-habit check is
+    `pause.is_paused_safe`, not `pause.is_paused` -- a pauses-read
+    failure for this user is logged and treated as "not paused" (the
+    habit still gets its section, including its chart via `render_
+    weekly_review_charts`'s own call to this same function) rather than
+    raising out of this comprehension and aborting `weekly_review_job`'s
+    own fan-out for the users after this one (AC16)."""
     day_strs = timeutil.week_days(end_date)
     habits = [
         _compute_habit_stats(db, config, habit, day_strs, end_date, user_id)
         for habit in registry
-        if not pause.is_paused(db, config, user_id, habit.id, end_date)
+        if not pause.is_paused_safe(db, config, user_id, habit.id, end_date)
     ]
     return WeeklyStats(end_date=end_date, habits=habits)
 
@@ -302,8 +310,14 @@ async def run_weekly_review(
     # registry (`trends.py` itself is untouched; the on-demand `/trends`
     # command still shows every habit, per Rule 10's own "pause mutes
     # proactive sends only; the user can always query on demand").
+    #
+    # SPEC-v1.10.md §4 R18 (module `riders`): `pause.is_paused_safe`, not
+    # `pause.is_paused` -- a pauses-read failure here is logged and
+    # treated as "not paused" (the habit stays in the trends block)
+    # rather than raising out of `run_weekly_review` itself and aborting
+    # `weekly_review_job`'s fan-out for the users after this one (AC16).
     trends_registry = HabitRegistry(
-        [h for h in registry if not pause.is_paused(db, config, user_id, h.id, end_date)]
+        [h for h in registry if not pause.is_paused_safe(db, config, user_id, h.id, end_date)]
     )
     trends_section = trends.review_block(
         db, config, trends_registry, lang, user_id, clock=lambda: datetime.combine(end_date, datetime.min.time())

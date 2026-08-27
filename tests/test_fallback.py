@@ -310,11 +310,19 @@ async def test_below_threshold_confidence_yields_clarifying_question_and_no_row(
     "500ml" -- a whole-message "NUMBER UNIT" shape now resolves via
     `core/preparse.py:deterministic_parse` (always confidence 1.0) before
     `parse_message`/the threshold check is ever reached, which would make
-    this test pass for the wrong reason."""
+    this test pass for the wrong reason.
+
+    SPEC-v1.10.md §4 R6 (integration pass): "drank some water" contains
+    the exact token "water", so `clarify.tier1_guesses` (default `[clarify]
+    enabled = true`) now offers a tap-to-fix button instead of the plain
+    `CLARIFYING_QUESTION` this test is actually about -- `clarify.enabled
+    = false` restores the generic-path-always behavior (R6's own documented
+    gate), keeping this test's own point (the confidence threshold, not
+    tap-to-fix) unaffected by that unrelated feature."""
     content = json_payload(category="water", value=500, confidence=0.3)
     llm = _StaticLLM(content)
     channel = _RecordingChannel()
-    config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}})
+    config = Config.model_validate({"ollama": {"confidence_threshold": 0.55}, "clarify": {"enabled": False}})
 
     await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
@@ -362,11 +370,16 @@ async def test_custom_threshold_from_config_is_honored(db):
     SPEC-v1.5.md AC-14: uses "drank some water" rather than a bare
     "500ml" for the same reason as the two threshold tests above -- the
     pre-parser would otherwise resolve it before this test's own
-    threshold logic is ever reached."""
+    threshold logic is ever reached.
+
+    SPEC-v1.10.md §4 R6 (integration pass): `clarify.enabled = false`
+    keeps this test on its own point (the threshold), same rationale as
+    `test_below_threshold_confidence_yields_clarifying_question_and_no_row`
+    right above."""
     content = json_payload(category="water", value=500, confidence=0.6)
     llm = _StaticLLM(content)
     channel = _RecordingChannel()
-    config = Config.model_validate({"ollama": {"confidence_threshold": 0.9}})
+    config = Config.model_validate({"ollama": {"confidence_threshold": 0.9}, "clarify": {"enabled": False}})
 
     await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 
@@ -499,13 +512,17 @@ async def test_handler_path_survives_total_llm_outage_no_exception_escapes(db):
     SPEC-v1.5.md AC-14/AC-16: uses "drank some water" rather than a bare
     "500ml" -- the pre-parser would otherwise resolve it deterministically
     and log successfully without ever reaching (or needing) the LLM chain
-    this test means to exercise."""
+    this test means to exercise.
+
+    SPEC-v1.10.md §4 R6 (integration pass): `clarify.enabled = false`
+    keeps this test on its own point (survives a total outage cleanly),
+    same rationale as the two threshold tests above."""
     llm = make_client(
         model_responses_handler({"model-a": CONNECT_ERROR, "model-b": CONNECT_ERROR}),
         models=["model-a", "model-b"],
     )
     channel = _RecordingChannel()
-    config = Config()
+    config = Config.model_validate({"clarify": {"enabled": False}})
 
     await handle_inbound_message("drank some water", db=db, llm=llm, channel=channel, config=config, user_id=OWNER)
 

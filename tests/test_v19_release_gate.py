@@ -768,9 +768,20 @@ async def test_pause_gating_weekly_review_trends_block_also_excludes_only_the_pa
 
 async def test_pause_gating_fail_open_posture_actually_observed_at_each_site(tmp_path):
     """Not an assumption -- the ACTUAL behavior of each of the 5 R15 sites
-    when `db.active_pauses` (what `pause.is_paused` reads) raises. Findings
-    are asserted explicitly so a future change that alters this posture
-    shows up as a failing assertion here, not as silent drift."""
+    when `db.active_pauses` (what `pause.is_paused`/`is_paused_safe` reads)
+    raises. Findings are asserted explicitly so a future change that alters
+    this posture shows up as a failing assertion here, not as silent drift.
+
+    SPEC-v1.10.md §4 R18/R-SS9 (module `riders`): this v1.9-era test
+    originally locked in an INCONSISTENT posture (site 1 explicitly
+    fail-open; sites 2/4/5 raised outright; site 3 raised internally but
+    was masked one level up by `run_due_nudges`' own try/except) -- exactly
+    the finding `PROGRESS.md`'s v1.9.0 changelog row flagged as a
+    non-blocking follow-up. R18 unifies all 5 sites on the shared
+    `pause.is_paused_safe`/`active_pauses_safe` helpers (R-SS9), so every
+    site now fails OPEN the same way site 1 always did -- updated below to
+    match; see `tests/test_pause_failopen.py` for the fuller per-site
+    AC16 coverage (habit-inclusion + multi-user fan-out continuation)."""
     db = _db(tmp_path, OWNER)
     today = date.today()
     _seed(db, f"{today.isoformat()}T09:00:00", "diary", None, raw="entry")
@@ -779,39 +790,41 @@ async def test_pause_gating_fail_open_posture_actually_observed_at_each_site(tmp
     raising_db = _ActivePausesRaisingDB(db)
     fixed_clock = lambda: datetime(today.year, today.month, today.day, 8, 0, 0)  # noqa: E731
 
-    # Site 1 -- reminders.send_reminder: EXPLICITLY fail-open (core/
-    # reminders.py's own documented try/except around the pause check) --
-    # a pause-read error must never suppress a reminder.
+    # Site 1 -- reminders.send_reminder: EXPLICITLY fail-open (now via the
+    # shared `pause.is_paused_safe`, R-SS9) -- a pause-read error must
+    # never suppress a reminder.
     channel = _GateChannel()
     await reminders.send_reminder(channel, OWNER, registry.get("diary"), "en", raising_db, config)
     assert channel.sent_to(OWNER), "reminders.send_reminder must fail OPEN (send anyway) on a pause-read error"
 
-    # Site 2 -- checkins.build_checkin_message: NO internal try/except
-    # around its own per-habit pause check -- a read error propagates out
-    # of the function itself (documented finding, not a guess).
-    with pytest.raises(sqlite3.OperationalError):
-        checkins.build_checkin_message(raising_db, config, registry, "en", OWNER, clock=fixed_clock)
+    # Site 2 -- checkins.build_checkin_message: now routed through
+    # `pause.active_pauses_safe` (R18) -- a read error no longer propagates;
+    # the habit is treated as not-paused and the check-in still builds.
+    message = checkins.build_checkin_message(raising_db, config, registry, "en", OWNER, clock=fixed_clock)
+    assert message is not None, "checkins.build_checkin_message must fail OPEN, not raise, on a pause-read error"
 
-    # Site 3 -- nudge.build_nudge_message: also raises internally, BUT
-    # run_due_nudges' own pre-existing (v1.6, not v1.9-added) per-user
-    # try/except catches it one level up -- the TICK survives; this one
-    # user's nudge is skipped for the day (user-granularity fail-open, not
-    # reminders' finer habit-granularity fail-open).
-    with pytest.raises(sqlite3.OperationalError):
-        nudge.build_nudge_message(raising_db, config, registry, "en", OWNER, clock=fixed_clock)
+    # Site 3 -- nudge.build_nudge_message: also now routed through
+    # `pause.active_pauses_safe` (R18) -- no longer raises internally at
+    # all (previously masked one level up by run_due_nudges' own
+    # try/except, R18's own "rather than dropping the whole user's nudge"
+    # nuance: with a genuinely close habit, the user now gets their nudge
+    # the same day the read fails, not merely "the tick survives").
+    _seed(db, f"{today.isoformat()}T20:00:00", "water", 2000.0)  # 2000/2500 = 80% -- close
     nudge_channel = _GateChannel()
     nudge_clock = lambda: datetime(today.year, today.month, today.day, 20, 0, 0)  # noqa: E731
     db.set_checkin_window(OWNER, "08:00-20:00")  # nudge rides check-in enablement
     await nudge.run_due_nudges(nudge_channel, config, registry, raising_db, clock=nudge_clock)
-    assert nudge_channel.sent == [], "the tick itself must not crash -- but this user gets no nudge that day"
+    assert nudge_channel.sent_to(OWNER), "nudge must fail OPEN: a genuinely close habit still gets its nudge"
 
-    # Site 4 -- streaks.compute_daily_summary: no try/except -- propagates.
-    with pytest.raises(sqlite3.OperationalError):
-        streaks.compute_daily_summary(raising_db, config, registry, today, OWNER)
+    # Site 4 -- streaks.compute_daily_summary: now routed through
+    # `pause.is_paused_safe` (R18) -- no longer propagates.
+    lines = streaks.compute_daily_summary(raising_db, config, registry, today, OWNER)
+    assert lines, "streaks.compute_daily_summary must fail OPEN, not raise, on a pause-read error"
 
-    # Site 5 -- review.compute_weekly_stats: no try/except -- propagates.
-    with pytest.raises(sqlite3.OperationalError):
-        review.compute_weekly_stats(raising_db, config, registry, today, OWNER)
+    # Site 5 -- review.compute_weekly_stats: now routed through
+    # `pause.is_paused_safe` (R18) -- no longer propagates.
+    stats = review.compute_weekly_stats(raising_db, config, registry, today, OWNER)
+    assert stats.habits, "review.compute_weekly_stats must fail OPEN, not raise, on a pause-read error"
 
     db.close()
 
@@ -853,12 +866,13 @@ async def test_public_and_owner_menu_counts_both_languages(tmp_path, monkeypatch
     assert public_scope is None
     assert owner_scope == OWNER
 
+    # SPEC-v1.10.md §4 R17 (integration pass): 22 -> 23 / 27 -> 28, `/guide` added.
     for lang in ("en", "th"):
         public_names = [n for n, _d in public[lang]]
         owner_names = [n for n, _d in owner[lang]]
-        assert len(public_names) == 22, f"{lang}: public menu drifted from 22: {public_names!r}"
-        assert len(owner_names) == 27, f"{lang}: owner menu drifted from 27: {owner_names!r}"
-        assert {"cadence", "pause", "resume", "wrapped"} <= set(public_names)
+        assert len(public_names) == 23, f"{lang}: public menu drifted from 23: {public_names!r}"
+        assert len(owner_names) == 28, f"{lang}: owner menu drifted from 28: {owner_names!r}"
+        assert {"cadence", "pause", "resume", "wrapped", "guide"} <= set(public_names)
         assert set(public_names) <= set(owner_names), "the owner menu must be a strict superset of the public one"
         assert {"invite", "approve", "block", "users", "audit"} <= (set(owner_names) - set(public_names))
 

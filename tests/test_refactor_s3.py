@@ -202,11 +202,17 @@ _EXPECTED_ROW_ORDER = [
     "undo", "edit", "snooze", "target", "remind", "access", "audit", "lang",
     "quiet", "checkin", "dnd", "dashboard", "history", "heatmap", "records",
     "trends", "wrapped", "addhabit", "delhabit", "log", "routine", "cadence",
-    "pause", "resume", "help", "habits", "query",
+    "pause", "resume", "help", "habits",
+    "guide",  # SPEC-v1.10.md R-SS8 (shared surface): additive 28th row, before "query" (R-SS8's own stated placement).
+    "query",
 ]  # fmt: skip
 
 
 def test_matchers_table_has_all_27_rows_in_the_exact_pre_conversion_order():
+    """Name kept for historical continuity with the Stage 3 refactor this
+    file documents (the ORIGINAL 27-row conversion, still exactly
+    reproduced here) -- `_EXPECTED_ROW_ORDER` above now carries one
+    additive 28th row (SPEC-v1.10.md "guide")."""
     assert [m.kind for m in commands._MATCHERS] == _EXPECTED_ROW_ORDER
 
 

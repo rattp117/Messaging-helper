@@ -352,7 +352,9 @@ def _synthetic_habit(
 
 async def test_generic_numeric_with_goal_confirmation_matches_spec_example(db, fixed_clock, monkeypatch):
     """SPEC-v0.7.md §3.2: "sleep (en, numeric+goal): ✅ 7 h logged — today
-    7 / 8 h (88%)"."""
+    7 / 8 h (88%)" -- SPEC-v1.10.md's sanctioned EN {label} fix (confirm_
+    numeric_goal used to omit the habit name in English) now names the
+    habit too, matching confirm_duration's existing EN shape."""
     sleep = _synthetic_habit("sleep", "numeric", goal=8, unit_en="h", unit_th="ชม.", label_en="sleep", label_th="นอน")
     registry = HabitRegistry([sleep])
     patch_parse_message(monkeypatch, ExtractionResult("sleep", 7, 0.9))
@@ -361,7 +363,7 @@ async def test_generic_numeric_with_goal_confirmation_matches_spec_example(db, f
     await handle_inbound_message(
         "slept 7h", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
-    assert channel.sent == ["✅ 7 h logged — today 7 / 8 h (88%)"]
+    assert channel.sent == ["✅ 7 h sleep logged — today 7 / 8 h (88%)"]
 
 
 async def test_generic_numeric_with_goal_confirmation_thai(db, fixed_clock, monkeypatch):
@@ -379,7 +381,9 @@ async def test_generic_numeric_with_goal_confirmation_thai(db, fixed_clock, monk
 
 async def test_generic_numeric_without_goal_confirmation_matches_spec_example(db, fixed_clock, monkeypatch):
     """SPEC-v0.7.md §3.2: "steps (en, numeric no-goal): ✅ 8000 steps
-    logged today"."""
+    logged today" -- SPEC-v1.10.md's sanctioned EN {label} fix now names
+    the habit too (here label_en defaults to the habit id "steps", same
+    as its unit, hence the doubled word)."""
     steps = _synthetic_habit("steps", "numeric", goal=None, unit_en="steps", unit_th="ก้าว")
     registry = HabitRegistry([steps])
     patch_parse_message(monkeypatch, ExtractionResult("steps", 8000, 0.9))
@@ -388,7 +392,7 @@ async def test_generic_numeric_without_goal_confirmation_matches_spec_example(db
     await handle_inbound_message(
         "8000 steps", db=db, llm=FakeLLM(), channel=channel, config=Config(), clock=fixed_clock, registry=registry, user_id="owner")
 
-    assert channel.sent == ["✅ 8000 steps logged today"]
+    assert channel.sent == ["✅ 8000 steps steps logged today"]
 
 
 async def test_generic_duration_confirmation_ordinal(db, fixed_clock, monkeypatch):

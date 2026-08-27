@@ -73,10 +73,31 @@ class TelegramChannel(Channel):
             payload["disable_notification"] = True
         return f"{self._base_url}/sendMessage", payload
 
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
+        """SPEC-v1.10.md §5 R-SS5: returns the sent message's own id
+        (`str(result.message_id)`) -- same extraction `send_and_pin` (below)
+        already does after its own `sendMessage` call, just now surfaced
+        here too so `core/reminders.py:send_reminder` (R-SS6) can record a
+        `(chat_id, message_id) -> habit_id` mapping for reply-to-reminder
+        attribution. Byte-identical payload/behavior otherwise -- every
+        existing caller still ignores the return value.
+
+        Extraction is defensive (unlike `send_and_pin`'s own unconditional
+        `str(resp.json()["result"]["message_id"])`) -- a real Telegram
+        `sendMessage` 2xx response always carries `result.message_id`, but
+        this codebase's own test doubles mock a bare `{"ok": True, "result":
+        {}}` at many `send()` call sites that predate R-SS5 and don't care
+        about the return value; a missing/malformed `message_id` degrades to
+        `None` (a valid "no id" answer per the `str | None` contract) rather
+        than raising, so none of those pre-existing tests need to change
+        their mocked response shape for this additive feature."""
         url, payload = self.build_send_request(chat_id, text, disable_notification=disable_notification)
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
+        result = resp.json().get("result")
+        if isinstance(result, dict) and "message_id" in result:
+            return str(result["message_id"])
+        return None
 
     def build_send_image_request(
         self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False
@@ -330,6 +351,17 @@ class TelegramChannel(Channel):
         message_id = message.get("message_id")
         return str(message_id) if message_id is not None else None
 
+    @staticmethod
+    def _reply_to_message_id_of(message: dict[str, Any]) -> str | None:
+        """SPEC-v1.10.md §5 R-SS7: `message.reply_to_message.message_id` as
+        a `str` (same int->str conversion-at-the-boundary as
+        `_message_id_of`) when the inbound message IS a Telegram reply,
+        else `None` -- an ordinary (non-reply) message has no
+        `reply_to_message` key at all."""
+        reply_to = message.get("reply_to_message") or {}
+        message_id = reply_to.get("message_id")
+        return str(message_id) if message_id is not None else None
+
     async def run(
         self,
         on_message: Callable[[str, str], Awaitable[None]],
@@ -392,8 +424,12 @@ class TelegramChannel(Channel):
                 # channels/base.py's module docstring for the full
                 # additive-signature rationale (mirrors display_name above).
                 message_id = self._message_id_of(message)
+                # SPEC-v1.10.md R-SS7: the trailing, defaulted 5th arg --
+                # same additive-signature rationale, see channels/base.py's
+                # module docstring.
+                reply_to_message_id = self._reply_to_message_id_of(message)
                 try:
-                    await on_message(chat_id, text, display_name, message_id)
+                    await on_message(chat_id, text, display_name, message_id, reply_to_message_id)
                 except Exception:
                     logger.exception("on_message handler raised; continuing inbound loop")
 
