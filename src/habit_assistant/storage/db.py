@@ -23,6 +23,23 @@ from habit_assistant.storage.models import AuditEntry, LogEntry
 _UNSET = object()  # sentinel: "field not given" vs. "field explicitly set to None"
 
 
+def _day_bounds(day: str) -> tuple[str, str]:
+    """SPEC-REFACTOR.md Stage 1 rule 3: turn a 'YYYY-MM-DD' day into a
+    half-open `[day, next_day)` string range for an index-friendly `ts >=
+    ? AND ts < ?` filter -- replaces the `ts LIKE '{day}%'` pattern that
+    can't use `idx_logs_user`'s trailing `ts` column (SQLite's default
+    case-insensitive LIKE disables the index range-scan; measured 14x
+    slower over a year of rows). `date.fromisoformat(day) + timedelta(days=1)`
+    rolls over month/year boundaries correctly (e.g. '2026-12-31' ->
+    '2027-01-01'). Byte-identical to the LIKE form across every boundary:
+    the real `ts` format always uses the 'T' separator (`'T' > ''`, i.e.
+    every same-day timestamp string sorts `>= day` and `< next_day`
+    lexicographically, same convention `logs_between`/`prune_audit`/
+    `paused_dates` already rely on for ISO timestamp/date comparisons)."""
+    next_day = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    return day, next_day
+
+
 class Database:
     """Thin wrapper around one sqlite3 connection. Not thread-safe by
     design — the app is a single asyncio process; all DB calls happen on
@@ -35,6 +52,21 @@ class Database:
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
+        # SPEC-REFACTOR.md Stage 1 rule 4 (user-approved durability trade-off,
+        # OQ1, 2026-08-26): WAL's default synchronous=FULL fsyncs on every
+        # commit (measured 1.45 ms/write); NORMAL only fsyncs at WAL
+        # checkpoints, not every commit (measured 0.31 ms/write, ~4.7x).
+        # Standard recommendation for WAL mode. The only semantic change is
+        # durability on an OS crash / power loss -- the last few committed
+        # transactions since the last checkpoint could be lost on restart
+        # (never corruption; every already-checkpointed row is safe). No
+        # observable output changes for this single-process app.
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
+        # busy_timeout: retry up to 5s on SQLITE_BUSY (another connection
+        # holding the write lock) instead of raising immediately -- cheap
+        # insurance now that WAL is in use; this app is single-process/
+        # single-writer, so it is never expected to actually wait.
+        self._conn.execute("PRAGMA busy_timeout=5000;")
         # ROADMAP v0.3.0: schema now evolves through storage/migrations.py's
         # user_version-based runner instead of a single inline executescript.
         self.schema_version_before, self.schema_version = run_migrations(self._conn)
@@ -69,31 +101,48 @@ class Database:
         """Generic `SUM(value_num)` for one user's habit id, day:
         'YYYY-MM-DD'. Excludes soft-deleted rows (ROADMAP.md v0.5.0
         AC5.4) -- an undone/edited-away entry must not count toward
-        today's total. `water_total_ml` is a thin wrapper."""
+        today's total. `water_total_ml` is a thin wrapper.
+
+        SPEC-REFACTOR.md Stage 1 rule 3: filters on a `[day, next_day)`
+        range (`_day_bounds`) rather than `ts LIKE '{day}%'` -- byte-
+        identical result, but index-friendly (`idx_logs_user(user_id,
+        category, ts)` can range-scan `ts` instead of a LIKE-driven table
+        scan of the (user_id, category) partition; measured 14x faster
+        over a year of rows)."""
+        start, end = _day_bounds(day)
         row = self._conn.execute(
             "SELECT COALESCE(SUM(value_num), 0) AS total FROM logs "
-            "WHERE user_id = ? AND category = ? AND deleted_at IS NULL AND ts LIKE ?",
-            (user_id, habit_id, f"{day}%"),
+            "WHERE user_id = ? AND category = ? AND deleted_at IS NULL AND ts >= ? AND ts < ?",
+            (user_id, habit_id, start, end),
         ).fetchone()
         return float(row["total"])
 
     def count(self, user_id: str, habit_id: str, day: str) -> int:
         """Generic `COUNT(*)` for one user's habit id/day. `stretch_count`/
-        `diary_count` are thin wrappers."""
+        `diary_count` are thin wrappers.
+
+        SPEC-REFACTOR.md Stage 1 rule 3: range-bound day filter, see
+        `sum_value`'s own docstring for the byte-identity/perf rationale."""
+        start, end = _day_bounds(day)
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM logs WHERE user_id = ? AND category = ? AND deleted_at IS NULL AND ts LIKE ?",
-            (user_id, habit_id, f"{day}%"),
+            "SELECT COUNT(*) AS n FROM logs WHERE user_id = ? AND category = ? AND deleted_at IS NULL "
+            "AND ts >= ? AND ts < ?",
+            (user_id, habit_id, start, end),
         ).fetchone()
         return int(row["n"])
 
     def count_true(self, user_id: str, habit_id: str, day: str) -> int:
         """Generic count of one user's "truthy" boolean-habit rows for a
         day (`value_num != 0`, per `log_entry_from_result`'s 1.0/0.0
-        encoding of a boolean value)."""
+        encoding of a boolean value).
+
+        SPEC-REFACTOR.md Stage 1 rule 3: range-bound day filter, see
+        `sum_value`'s own docstring for the byte-identity/perf rationale."""
+        start, end = _day_bounds(day)
         row = self._conn.execute(
             "SELECT COUNT(*) AS n FROM logs "
-            "WHERE user_id = ? AND category = ? AND deleted_at IS NULL AND ts LIKE ? AND value_num != 0",
-            (user_id, habit_id, f"{day}%"),
+            "WHERE user_id = ? AND category = ? AND deleted_at IS NULL AND ts >= ? AND ts < ? AND value_num != 0",
+            (user_id, habit_id, start, end),
         ).fetchone()
         return int(row["n"])
 
@@ -630,6 +679,25 @@ class Database:
             (user_id, habit_id),
         ).fetchall()
         return [row["time"] for row in rows]
+
+    def all_reminder_times(self) -> list[sqlite3.Row]:
+        """SPEC-REFACTOR.md Stage 1 rule 1(a): one whole-table read of
+        every stored `user_reminder_times` row, for the parallel S1-B/tick
+        track's `run_due_reminders' per-tick bulk resolution
+        (`core/reminders.py:_bulk_reminder_time_overrides`, consumed via
+        `getattr`-based feature detection so it lights up automatically
+        the moment this lands) -- replaces that function's own
+        per-(user, habit) `get_reminder_times` calls (U*H reads/tick) with
+        exactly 1, the last piece of AC1's <=3-queries-per-idle-tick
+        floor. Storage-only, no interpretation, mirrors this file's own
+        "raw rows, caller resolves meaning" split (e.g. `list_user_habits`/
+        `get_checkin_window`) -- ordering matches `get_reminder_times`'s
+        own per-key `ORDER BY time`, with `user_id, habit_id` added so
+        rows for the same user+habit stay grouped and sorted for the
+        caller's own per-key bucketing."""
+        return self._conn.execute(
+            "SELECT user_id, habit_id, time FROM user_reminder_times ORDER BY user_id, habit_id, time"
+        ).fetchall()
 
     def set_reminder_times(self, user_id: str, habit_id: str, times: list[str]) -> None:
         """Delete-then-insert (R-S5): replaces any existing override for

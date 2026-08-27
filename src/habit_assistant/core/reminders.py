@@ -34,7 +34,30 @@ per asking user (R-S2/AC-U-SNOOZE) and quiet-hours become per-user via
 `ReminderState` (below) is a tiny, in-memory, single-process "which habit's
 reminder last actually fired, per user" tracker. It's plain data, not a
 channel/DB import, so it stays inside this "no channel imports" module
-without breaking the seam."""
+without breaking the seam.
+
+SPEC-REFACTOR.md Stage 1 (behavior-preserving performance pass), rules 1/2:
+`run_due_reminders`'s idle-minute cost was an N+1 -- `active_user_ids()`
+(1) + per-user `get_user` for language (U) + per-user-per-habit
+`get_reminder_times` (U*H) = `1 + U*(1+H)` queries EVERY minute, even when
+nothing is due (measured 13 for U=3/H=3). Two independent, byte-identical
+remedies: (a) `_bulk_reminder_time_overrides` reads the whole
+`user_reminder_times` table ONCE per tick via the new storage-layer
+accessor `Database.all_reminder_times()` (owned by the parallel Stage-1
+DB track per SPEC-REFACTOR.md §11's shared-surface note; this module only
+*consumes* it -- see that function's own docstring for the landed/
+not-yet-landed fallback) and resolves each habit's effective times in
+memory (`_reminder_times_from_overrides`, mirroring `effective_reminder_
+times`'s exact `no-rows->config`/`["off"]->[]` fallback -- that function
+itself is UNCHANGED and still serves every non-tick caller, e.g. `/remind`
+show/set); (b) the per-user language `get_user` read now happens only
+inside the `if current_hhmm in times:` branch -- i.e. only for a habit
+that is actually about to send -- since language is consumed nowhere else
+(`send_reminder`'s own body). `active_user_ids` (optional, additive) lets
+`main.py`'s consolidated minutely tick (rule 2/AC4) fetch the fan-out set
+ONCE and thread it into all three tick functions, instead of each calling
+`db.active_user_ids()` independently; omitted (`None`, the default),
+`run_due_reminders` calls it itself, byte-identical to pre-Stage-1."""
 
 from __future__ import annotations
 
@@ -226,6 +249,49 @@ def effective_reminder_times(db: Database, config: Config, habit: Habit, user_id
     return sorted(set(rows))
 
 
+def _bulk_reminder_time_overrides(db: Database) -> dict[tuple[str, str], list[str]] | None:
+    """SPEC-REFACTOR.md Stage 1 rule 1(a): one whole-table read of every
+    stored `user_reminder_times` row, grouped into `{(user_id, habit_id):
+    [times]}`, so `run_due_reminders`'s per-tick fan-out can resolve every
+    active user's every habit's effective reminder times in memory instead
+    of one `db.get_reminder_times` query per (user, habit) pair.
+
+    `Database.all_reminder_times()` is a new storage-layer accessor owned
+    by the parallel Stage-1 DB track (`storage/db.py`, disjoint file
+    ownership from this track per SPEC-REFACTOR.md §11 -- "if the reminder
+    bulk-read needs a new db.py read method, S1-A adds it first, then
+    S1-B consumes it"). This function only *consumes* it, via `getattr`
+    rather than a direct attribute access, so this module works correctly
+    -- just not yet at the Stage-1 query-count floor -- whether or not
+    that accessor has landed yet: `None` here means "not available", and
+    `run_due_reminders` falls back to its pre-Stage-1 per-(user, habit)
+    `effective_reminder_times` DB reads, unchanged."""
+    read_all = getattr(db, "all_reminder_times", None)
+    if read_all is None:
+        return None
+    overrides: dict[tuple[str, str], list[str]] = {}
+    for row in read_all():
+        overrides.setdefault((row["user_id"], row["habit_id"]), []).append(row["time"])
+    return overrides
+
+
+def _reminder_times_from_overrides(overrides: dict[tuple[str, str], list[str]], habit: Habit, user_id: str) -> list[str]:
+    """In-memory sibling of `effective_reminder_times` -- identical
+    fallback rules (`no rows -> habit.reminder_times`, `["off"] -> []`,
+    else `sorted(set(rows))`), just reading from the pre-fetched `overrides`
+    dict (`_bulk_reminder_time_overrides`) instead of issuing a query.
+    Rows for a given (user_id, habit.id) key land in `overrides` in the
+    same `ORDER BY time` order `get_reminder_times` itself returns them in
+    (see `Database.all_reminder_times`'s docstring), so `sorted(set(...))`
+    here produces the exact same result `effective_reminder_times` would."""
+    rows = overrides.get((user_id, habit.id), [])
+    if not rows:
+        return list(habit.reminder_times)
+    if rows == ["off"]:
+        return []
+    return sorted(set(rows))
+
+
 def _goal_already_met(db: Database, habit: Habit, config: Config, user_id: str) -> bool:
     """ROADMAP.md v0.9.0 AC9.1/AC9.4/AC9.5, extended by SPEC-v1.1.md R-T5/
     R-T5b: True only for a goal-bearing habit -- its effective goal
@@ -353,6 +419,7 @@ async def run_due_reminders(
     state: ReminderState | None = None,
     clock=datetime.now,
     registry_for: Callable[[str], HabitRegistry] | None = None,
+    active_user_ids: list[str] | None = None,
 ) -> None:
     """SPEC-v1.2.md R-S1: the minutely tick, replacing the per-config-time
     cron fan-out of the removed `schedule_reminders`. Computes the current
@@ -376,16 +443,40 @@ async def run_due_reminders(
     (`None`, the default), every existing caller/test that passes only
     `registry` keeps using that SAME registry for every user, byte-
     identical to pre-v1.7 behavior (AC-5) -- `registry` itself is
-    unchanged/still required, now serving as the base/fallback registry."""
+    unchanged/still required, now serving as the base/fallback registry.
+
+    SPEC-REFACTOR.md Stage 1 rules 1/2/AC1/AC4: `active_user_ids`, when
+    given (typically `main.py`'s consolidated minutely tick, which fetches
+    the fan-out set once and threads it into all three tick functions),
+    is used in place of a fresh `db.active_user_ids()` call; omitted
+    (`None`, the default), this function calls it itself, byte-identical
+    to pre-Stage-1. Reminder-time resolution below prefers the per-tick
+    bulk-read overrides map (`_bulk_reminder_time_overrides`) when the new
+    `Database.all_reminder_times()` accessor is available, falling back to
+    the original per-(user, habit) `effective_reminder_times` read
+    otherwise -- either way the SAME fallback semantics, and language is
+    now resolved lazily, only for a habit that is actually about to send
+    (`send_reminder` is the only consumer of `language`), so an idle tick
+    with nothing due never reads `get_user` at all."""
     current_hhmm = _now_hhmm(clock, config.app.timezone)
-    for user_id in db.active_user_ids():
-        # Integration step (SPEC-v1.2.md R-P1 call site #5 of 5): resolved
-        # per user now, not once globally -- so a user who ran `/lang th`
-        # gets their reminders in Thai regardless of what any other
-        # active user (or the global config default) resolves to.
-        language = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
+    overrides = _bulk_reminder_time_overrides(db)
+    user_ids = active_user_ids if active_user_ids is not None else db.active_user_ids()
+    for user_id in user_ids:
         user_registry = registry_for(user_id) if registry_for is not None else registry
         for habit in user_registry:
-            times = effective_reminder_times(db, config, habit, user_id)
+            times = (
+                _reminder_times_from_overrides(overrides, habit, user_id)
+                if overrides is not None
+                else effective_reminder_times(db, config, habit, user_id)
+            )
             if current_hhmm in times:
+                # Integration step (SPEC-v1.2.md R-P1 call site #5 of 5):
+                # resolved per user now, not once globally -- so a user
+                # who ran `/lang th` gets their reminders in Thai
+                # regardless of what any other active user (or the global
+                # config default) resolves to. SPEC-REFACTOR.md Stage 1
+                # rule 1(b): resolved here, lazily -- never read for a
+                # user/habit whose reminder isn't actually firing this
+                # minute.
+                language = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
                 await send_reminder(channel, user_id, habit, language, db, config, state)

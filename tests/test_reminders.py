@@ -7,11 +7,13 @@ config, registry)` -- one APScheduler cron job PER (habit, configured time)
 (`run_due_reminders(channel, config, registry, db, state, clock=...)`) that
 consults `effective_reminder_times(db, config, habit, user_id)` (R-S4) live
 on every call. `main.py` now registers exactly ONE `CronTrigger(second=0)`
-job (`id="reminder_tick"`) instead of one job per habit-time; the old
-per-habit-time cron-registration tests below (AC13/AC14) are rewritten
-against the new mechanism -- SAME acceptance intent ("a habit's reminder
-fires at its configured time, not at other times; a habit with no
-`reminder_times` never fires"), different plumbing.
+job (`id="reminder_tick"`, later consolidated into `id="minutely_tick"`
+per SPEC-REFACTOR.md Stage 1 rule 2/AC4 -- see the async_main wiring test
+below) instead of one job per habit-time; the old per-habit-time
+cron-registration tests below (AC13/AC14) are rewritten against the new
+mechanism -- SAME acceptance intent ("a habit's reminder fires at its
+configured time, not at other times; a habit with no `reminder_times`
+never fires"), different plumbing.
 
 `send_reminder(channel, chat_id, habit, language)` gained `chat_id` as a
 new 2nd positional param (R-C1: every send is now per-recipient)."""
@@ -550,9 +552,14 @@ async def test_async_main_registers_weekly_review_job_from_config(tmp_path, monk
     assert trigger_fields["hour"] == "9"
     assert trigger_fields["minute"] == "15"
 
-    # SPEC-v1.2.md R-S1: a single "reminder_tick" job replaces the old
+    # SPEC-v1.2.md R-S1: a single minutely job replaces the old
     # one-job-per-habit-time fan-out from the removed `schedule_reminders`.
-    tick_job = scheduler.get_job("reminder_tick")
+    # SPEC-REFACTOR.md Stage 1 rule 2/AC4: that job (formerly
+    # "reminder_tick") is now "minutely_tick" -- the consolidation of the
+    # three separate reminder/checkin/nudge tick jobs into one, calling
+    # all three tick functions in sequence (internal wiring change only;
+    # every send each one produces is byte-identical to before).
+    tick_job = scheduler.get_job("minutely_tick")
     assert tick_job is not None
     tick_fields = {f.name: str(f) for f in tick_job.trigger.fields}
     assert tick_fields["second"] == "0"

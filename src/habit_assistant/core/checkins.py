@@ -39,18 +39,30 @@ pre-existing `"quiet"` branch.
 Per-user isolation (R-K7/U-ISO): every DB read/write below is scoped to a
 single `user_id` -- `run_due_checkins`' own fan-out (`db.active_user_ids()`)
 is the only place this module iterates across users at all.
-"""
+
+SPEC-REFACTOR.md Stage 1 rule 7: `build_checkin_message` used to call
+`pause.is_paused` once per habit, and each call re-read the user's WHOLE
+`db.active_pauses(user_id)` set from scratch (H reads per build). `_is_
+paused_in` below is a same-file mirror of `pause.is_paused`'s own coverage
+check (habit-scoped OR all-habits row covering the date), operating on a
+pre-fetched row list instead of re-querying -- `pause.py` is out of this
+Stage-1 track's file ownership (disjoint from `core/reminders.py`/`core/
+checkins.py`/`core/nudge.py`/`main.py`, SPEC-REFACTOR.md §11), so the
+fetch-once-reuse-across-habits remedy lives here rather than as a changed
+`pause.is_paused` signature. Byte-identical: same coverage rule, same
+inclusive date-range check, just one `active_pauses` read per build
+instead of one per habit."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from habit_assistant.config import _HHMM_RE
-from habit_assistant.core import audit, i18n, pause, targets
+from habit_assistant.core import audit, i18n, targets
 from habit_assistant.core.reminders import in_dnd_now
 
 if TYPE_CHECKING:
@@ -144,6 +156,22 @@ def _today_str(config: "Config", clock) -> str:
     return now.date().isoformat()
 
 
+def _is_paused_in(pause_rows: list, habit_id: str, when_str: str) -> bool:
+    """Mirrors `core/pause.py:is_paused`'s exact coverage rule (a
+    habit-scoped row, OR an all-habits row where `row["habit_id"] is
+    None`, whose `[start_date, end_date]` covers `when_str`) -- operating
+    on a pre-fetched `db.active_pauses(user_id)` row list instead of
+    re-querying it per habit. See this module's docstring (SPEC-REFACTOR.md
+    Stage 1 rule 7) for why the fetch-once remedy lives here rather than
+    as a `pause.py` signature change."""
+    for row in pause_rows:
+        if row["habit_id"] is not None and row["habit_id"] != habit_id:
+            continue
+        if row["start_date"] <= when_str <= row["end_date"]:
+            return True
+    return False
+
+
 def build_checkin_message(
     db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language, user_id: str, clock=datetime.now
 ) -> str | None:
@@ -159,7 +187,10 @@ def build_checkin_message(
     rule -- a generic one-line nudge is returned instead, so such users
     still get check-ins. R-K7: every read is scoped to `user_id`."""
     today_str = _today_str(config, clock)
-    today_date = date.fromisoformat(today_str)
+    # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
+    # every habit below via `_is_paused_in`, instead of `pause.is_paused`
+    # re-reading the whole set once per habit.
+    pause_rows = db.active_pauses(user_id)
 
     goal_bearing: list[tuple[object, float, float]] = []
     for habit in registry:
@@ -171,7 +202,7 @@ def build_checkin_message(
         # EVERY habit ends up excluded (e.g. an all-habits pause) does the
         # existing "nothing to report" fall-through below naturally
         # suppress the whole send.
-        if pause.is_paused(db, config, user_id, habit.id, today_date):
+        if _is_paused_in(pause_rows, habit.id, today_str):
             continue
         goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None:
@@ -238,6 +269,7 @@ async def run_due_checkins(
     db: "Database",
     clock=datetime.now,
     registry_for: "Callable[[str], HabitRegistry] | None" = None,
+    active_user_ids: "list[str] | None" = None,
 ) -> None:
     """R-K1: called from the SAME minutely job that runs `core/reminders.
     run_due_reminders` (integration step, main.py). Returns immediately
@@ -261,12 +293,22 @@ async def run_due_checkins(
     SPEC-v1.8.md R-D1 (module `riders`): the send below passes
     `disable_notification=config.notifications.silent_proactive` (default
     `True`, AC-D1); `false` restores the pre-v1.8 notifying payload
-    (AC-D4)."""
+    (AC-D4).
+
+    SPEC-REFACTOR.md Stage 1 rules 2/AC4: `active_user_ids`, when given
+    (typically `main.py`'s consolidated minutely tick, which fetches the
+    fan-out set once and threads it into all three tick functions), is
+    used in place of a fresh `db.active_user_ids()` call; omitted (`None`,
+    the default), this function calls it itself, byte-identical to
+    pre-Stage-1. Note this call only ever happens AFTER the `:00` guard
+    below returns early -- so on a non-hour minute, `active_user_ids` is
+    never even consulted, matching this function's pre-Stage-1 0-query
+    idle-minute behavior."""
     hhmm = _now_hhmm(clock, config.app.timezone)
     if not hhmm.endswith(":00"):
         return
 
-    for user_id in db.active_user_ids():
+    for user_id in active_user_ids if active_user_ids is not None else db.active_user_ids():
         enabled, window = effective_checkin(db, config, user_id)
         if not enabled or window is None:
             continue

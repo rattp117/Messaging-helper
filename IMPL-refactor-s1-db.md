@@ -1,0 +1,65 @@
+# Implementation — Refactor Stage 1, DB track (v1.9.1, S1-A)
+
+## Files changed
+
+| Path | Created/modified | Description |
+|---|---|---|
+| `src/habit_assistant/storage/db.py` | modified | Added `PRAGMA synchronous=NORMAL` + `PRAGMA busy_timeout=5000` at connection setup (with the durability trade-off documented inline); added the `_day_bounds(day)` helper; rewrote `sum_value`/`count`/`count_true` from `ts LIKE '{day}%'` to `ts >= start AND ts < next_day`; added `all_reminder_times()` — one whole-table bulk read of `user_reminder_times`, the cross-track dependency the parallel S1-B/tick track flagged in `IMPL-refactor-s1-tick.md`'s "Known limitations" (rule 1(a)) |
+| `tests/test_refactor_s1_db.py` | modified | 22 regression tests total: the original 16 (pragma verification, `_day_bounds` unit tests, byte-identical boundary proofs for `sum_value`/`count`/`count_true`) + 6 new ones for `all_reminder_times()` (empty when unset, returns every row across users/habits, sorted by user/habit/time, returns the `["off"]` sentinel verbatim, excludes cleared rows, and a cross-check that grouping its rows by `(user_id, habit_id)` matches `get_reminder_times` called per key) |
+| `tools/bench_baseline.py` | created | Versioned copy of the session's benchmark script (originally in the scratchpad), adapted to stay implementation-independent across the refactor: section H now issues its own raw LIKE/range SQL (instead of calling `db.sum_value`, which itself changes shape in this stage) plus a cross-check assertion that the live `db.sum_value` agrees with both raw forms; section I explicitly forces `PRAGMA synchronous=FULL`/`NORMAL` around each timing loop instead of relying on the connection's ambient default (which is now `NORMAL` from `__init__`) |
+
+No migration was added — the spec's Stage 1 interfaces section (§5) calls for pragmas + a pure `_day_bounds` helper only, and the existing `idx_logs_user(user_id, category, ts)` index already carries the new range-bound query (confirmed via `EXPLAIN QUERY PLAN`, see below). Schema version stays at 12; no test literal needed a bump.
+
+## How it works
+
+`Database.__init__` now sets `synchronous=NORMAL` and `busy_timeout=5000` right after `journal_mode=WAL`, before migrations run — every write on this connection (and every connection opened against this DB going forward) inherits the relaxed fsync policy. `sum_value`/`count`/`count_true` each call the new module-level `_day_bounds(day)` (pure function: `date.fromisoformat(day) + timedelta(days=1)`) to turn the incoming `'YYYY-MM-DD'` into a half-open `[day, next_day)` pair, then filter with `ts >= ? AND ts < ?` instead of `ts LIKE ?`. Because the real `ts` column always uses the `'T'` separator, every timestamp on `day` sorts `>= day` and `< next_day` lexicographically — the same convention `logs_between`/`prune_audit`/`paused_dates` already rely on — so the result set is unchanged; only the query shape changes, from a LIKE-driven scan of the `(user_id, category)` index partition to a genuine index range-seek on `idx_logs_user(user_id, category, ts)` (verified with `EXPLAIN QUERY PLAN`, both before and after).
+
+## Smoke test done
+
+- `EXPLAIN QUERY PLAN` on the rewritten `sum_value` query (via `tools/bench_baseline.py` section J) confirms `SEARCH logs USING INDEX idx_logs_user (user_id=? AND category=? AND ts>? AND ts<?)` — a genuine range-seek, not a scan.
+- Ran `tools/bench_baseline.py` foreground against a fresh scratch DB (3 users × 365 days × ~6570 rows), both before (original `db.py`, via `git stash`) and after my change — see benchmark table below.
+- Ran the new `tests/test_refactor_s1_db.py` (16 tests) — all pass.
+- Ran `tests/test_db.py` + `tests/test_migrations.py` (78 tests, unmodified) — all pass, confirming the existing day-boundary/soft-delete/schema tests still hold byte-for-byte.
+- Ran the full suite twice (`.venv\Scripts\python.exe -m pytest`, `PYTHONPATH=src`, foreground) — see "Final suite numbers" below.
+
+## Benchmark: before vs. after (`tools/bench_baseline.py`, scratch DB, 3 users × 365 days × 6570 rows)
+
+| Metric | Before (original `db.py`) | After (this change) | Delta | Spec floor |
+|---|---|---|---|---|
+| H. `sum_value` LIKE-prefix (raw) | 0.1781 ms | 0.1542 ms | — (unchanged code path, machine variance only) | — |
+| H. `sum_value` range-bound (raw) | 0.0081 ms | 0.0078 ms | **~22.8x faster than LIKE** | ≥14x (spec measured) |
+| I. `insert_log` commit, `synchronous=FULL` | 1.4403 ms/write | 1.4303 ms/write | — (forced FULL for comparison; unaffected by the pragma default) | — |
+| I. `insert_log` commit, `synchronous=NORMAL` | 0.2873 ms/write | 0.2684 ms/write | **~5.3x faster than FULL** | ≥3x (1.45ms → ≤0.5ms; achieved 0.268ms) |
+
+Section H is measured with raw SQL on both sides in every run (not through `db.sum_value`), so the ratio is a fair, implementation-independent comparison; section I explicitly forces each `synchronous` mode around its own timing loop for the same reason. Both floors (AC2's byte-identity + AC3's ≥3x write speedup) are cleared with margin.
+
+A secondary observation from the same run: `F. handle_inbound_message '500ml' typed log` dropped from 7.652 ms to 1.485 ms median with an **unchanged query count (33)** — consistent with `synchronous=NORMAL` removing the fsync cost from that pipeline's dominant `insert_log` commit (a real-pipeline confirmation of the I. result, not a separate win). Note: `A. run_due_reminders NOTHING DUE` also shows a query-count drop (13 -> 10) in this run, but that is the parallel tick-track's (S1-B, `core/reminders.py`) own in-flight N+1 batching work landing concurrently on the shared repo — not attributable to this `db.py`-only track, and not claimed here.
+
+## Maps to acceptance criteria
+
+- **AC2** (byte-identical `sum_value`/`count`/`count_true` across day boundaries) → implemented in `storage/db.py:_day_bounds`, `Database.sum_value`/`count`/`count_true`; proven in `tests/test_refactor_s1_db.py` (midnight, 23:59:59, next-day exclusion, soft-delete interplay, month rollover, year rollover, leap day, and a multi-day fuzz sweep — each compared against a hand-rolled `LIKE` reference) plus the pre-existing `tests/test_db.py` boundary tests, unmodified, still passing.
+- **AC3** (`synchronous=NORMAL` ≥3x write speedup, identical rows written) → implemented in `storage/db.py:Database.__init__`; benchmark table above shows ~5.3x (1.43ms → 0.268ms), row-identity covered by every existing `insert_log`/round-trip test in `tests/test_db.py` staying green unmodified.
+- **AC-G1** (full suite green, unmodified except mechanical literals) → no test needed any literal change (no migration added); see "Final suite numbers" below — the only 2 failures are pre-existing and unrelated (see "Known limitations").
+- **AC-G2** (byte-identical output probe) → not owned by this track in isolation; the existing `tests/test_db.py`/`tests/test_migrations.py` round-trip and boundary assertions (byte-for-byte row comparisons) serve as this track's own slice of that gate and all pass unmodified. The cross-module probe is Archi/integration-level, spanning both S1 tracks.
+- **AC1, AC4, AC5** (reminder-tick query floor, tick consolidation, `active_pauses` reuse) → owned by the parallel S1-B (tick) track, not this track; out of scope here per the task's file ownership split. This track's own contribution to AC1 is the `all_reminder_times()` accessor (see iteration log below) — landing it flips the tick track's self-tightening `test_idle_reminder_tick_query_count_ac1` from the honest intermediate count (10) to the strict `<=3` floor, confirmed passing.
+
+## Known limitations
+
+- **Pre-existing, unrelated test failures discovered during the full-suite run** (not caused by this change): `tests/test_pause.py::TestAC19PauseResumeBasics::test_resume_habit_deletes_row_and_confirms` and `::test_resume_all_clears_every_row` fail on this machine right now. Root cause: `tests/test_pause.py` hardcodes `TODAY = date(2026, 8, 26)` and injects that fixed clock into `_pause()`, but its `_resume()` helper never passes a clock to `execute_resume` (which defaults to real `datetime.now()`). The system clock has since advanced to 2026-08-27, so `execute_resume`'s real-clock "today" is now one day after the fixed pause-creation date, which flips `core/pause.py:_resume_scope`'s "has this pause row started accumulating protected days yet" check from delete to truncate — the resumed row survives (truncated, not deleted), so `db.active_pauses(...)` is no longer empty. **Verified independent of this track**: reproduces identically against the original, unmodified `db.py` (checked via `git stash`). Not in this track's file ownership (`core/pause.py` / `tests/test_pause.py`); flagging to Archi rather than fixing directly. One-line fix would be threading a fixed clock into the test's `_resume()` helper.
+- No new index was added — Stage 1's interfaces section doesn't call for one, and `EXPLAIN QUERY PLAN` confirms the existing `idx_logs_user(user_id, category, ts)` already services the new range-bound query as a genuine index seek.
+- `wrapped.py` contains the substring "LIKE" but it's inside the word "UNLIKE" (a docstring) — confirmed not a real `LIKE` SQL query, out of scope, left untouched.
+
+## Iteration log
+
+- **Archi follow-up (2026-08-27): `Database.all_reminder_times()` cross-track dependency.** The parallel S1-B/tick track's `IMPL-refactor-s1-tick.md` ("Known limitations") flagged that its own `core/reminders.py:_bulk_reminder_time_overrides` needs a new bulk `storage/db.py` accessor to take the idle-reminder-tick query count the rest of the way from 10 to the strict AC1 floor (`<=3`) — per SPEC-REFACTOR.md §11's shared-surface note, this accessor belongs to this (S1-A/db) track. Added `Database.all_reminder_times()` (one `SELECT user_id, habit_id, time FROM user_reminder_times ORDER BY user_id, habit_id, time`) verbatim to the shape their report proposed and their tests already simulate via monkeypatch, right after `get_reminder_times` in the `user_reminder_times` section. The other track consumes it via `getattr`-based feature detection, so no signature negotiation was needed. Added 6 new tests in `tests/test_refactor_s1_db.py` covering the accessor's own shape/ordering/content (empty-when-unset, multi-user/multi-habit content, sort order, the `["off"]` sentinel returned verbatim, exclusion of cleared rows, and a cross-check against `get_reminder_times` grouped by key).
+- **Exit-bar run surfaced one stale assumption in the tick track's own test file, not a bug in this change.** `PYTHONPATH=src .venv\Scripts\python.exe -m pytest tests/test_refactor_s1_db.py tests/test_refactor_stage1_tick.py tests/test_reminders.py -q` → **1 failed, 57 passed**. The failure is `tests/test_refactor_stage1_tick.py::test_run_due_reminders_bulk_path_byte_identical_to_fallback`, which opens with a hard precondition `assert not hasattr(db, "all_reminder_times")` — written (per that file's own docstring) to simulate the accessor landing via monkeypatch, under the assumption it *hadn't* landed yet in the real `Database` class. That assumption is now false, so the guard itself fails before the test's actual logic (the monkeypatch-and-compare byte-identity check) ever runs. This is the one test in that file that was **not** written to self-tighten the way `test_idle_reminder_tick_query_count_ac1` was (that one's own `hasattr` check correctly flips to the strict branch — confirmed passing standalone). Not in this track's file ownership (`tests/test_refactor_stage1_tick.py` belongs to S1-B); the fix is a one-line change on their side (drop the `assert not hasattr(...)` guard, or gate it the same way the query-count test does) — flagging to Archi/the tick-track Luna rather than editing their file myself. Every test this track owns is clean: `tests/test_refactor_s1_db.py` (22/22) and `tests/test_reminders.py` (24/24) both pass in full; deselecting just that one stale test from `test_refactor_stage1_tick.py` leaves it 11/11 as well.
+
+## Final suite numbers
+
+`.venv\Scripts\python.exe -m pytest` (foreground, `PYTHONPATH=src`):
+
+```
+3 failed, 4287 passed, 1 skipped, 1 xfailed in ~168s
+```
+
+4258 (spec baseline total) + 16 (original `test_refactor_s1_db.py`) + 6 (new `all_reminder_times` tests) + 12 (S1-B's `test_refactor_stage1_tick.py`) = 4292 total, matching (4287 passed + 3 failed + 1 skipped + 1 xfailed). The 3 failures are: the 2 pre-existing, unrelated `test_pause.py` date-drift failures (documented above, confirmed independent of both Stage 1 tracks) plus the 1 stale-assumption `test_refactor_stage1_tick.py` test documented in the iteration log just above (also not caused by this track's code — the accessor it's testing against works correctly, per this track's own 6 passing tests and the tick track's now-strict, now-passing `test_idle_reminder_tick_query_count_ac1`). Every test this track owns or modified passes cleanly, and no test anywhere asserts on a changed emitted string, DB row, or PNG.

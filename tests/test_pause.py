@@ -100,10 +100,12 @@ async def _pause(db, config, registry, text, lang="en", user_id=OWNER, clock=_fi
     return await pause.execute_pause(command, db=db, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock)
 
 
-async def _resume(db, config, registry, text, lang="en", user_id=OWNER):
+async def _resume(db, config, registry, text, lang="en", user_id=OWNER, clock=_fixed_clock):
     command = commands.dispatch(text, registry)
     assert command is not None, f"{text!r} should dispatch as a command"
-    return await pause.execute_resume(command, db=db, config=config, registry=registry, lang=lang, user_id=user_id)
+    return await pause.execute_resume(
+        command, db=db, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock
+    )
 
 
 # ===========================================================================

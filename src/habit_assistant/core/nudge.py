@@ -45,17 +45,35 @@ effective_checkin`'s identical fail-open posture for the same reason.
 Wired into `main.py` at the integration step (documented in
 IMPL-v1.6-nudge.md, not this module): `run_due_nudges` runs on its own
 `nudge_tick` job, the same minutely `CronTrigger(second=0, ...)` cadence
-as `reminder_tick`/`checkin_tick`, registered alongside them."""
+as `reminder_tick`/`checkin_tick`, registered alongside them.
+
+SPEC-REFACTOR.md Stage 1 rule 7: `build_nudge_message` used to call
+`pause.is_paused` once per habit, and each call re-read the user's whole
+`db.active_pauses(user_id)` set from scratch. `_is_paused_in` below is a
+same-file mirror of `pause.is_paused`'s own coverage check, operating on a
+pre-fetched row list instead -- `pause.py` is out of this Stage-1 track's
+file ownership (see `core/checkins.py`'s identical mirror + docstring note
+for the full rationale), so the fetch-once-reuse-across-habits remedy
+lives here too. Byte-identical: same coverage rule, one `active_pauses`
+read per build instead of one per habit.
+
+SPEC-REFACTOR.md Stage 1 rules 2/AC4: `main.py`'s three minutely ticks
+(`reminder_tick`/`checkin_tick`/`nudge_tick`) are consolidated into ONE
+scheduler job that fetches `db.active_user_ids()` once and threads it into
+all three tick functions via each one's new optional `active_user_ids`
+param -- this docstring's own "registered alongside them" above still
+describes the functional relationship; only the scheduler wiring (three
+jobs -> one) changed."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from habit_assistant.core import i18n, pause, targets
+from habit_assistant.core import i18n, targets
 from habit_assistant.core.checkins import effective_checkin
 from habit_assistant.core.reminders import in_dnd_now
 
@@ -83,6 +101,22 @@ def _today_str(config: "Config", clock) -> str:
     return now.date().isoformat()
 
 
+def _is_paused_in(pause_rows: list, habit_id: str, when_str: str) -> bool:
+    """Mirrors `core/pause.py:is_paused`'s exact coverage rule (a
+    habit-scoped row, OR an all-habits row where `row["habit_id"] is
+    None`, whose `[start_date, end_date]` covers `when_str`) -- operating
+    on a pre-fetched `db.active_pauses(user_id)` row list instead of
+    re-querying it per habit. Byte-identical copy of `core/checkins.py:
+    _is_paused_in` (SPEC-REFACTOR.md Stage 1 rule 7; not shared/imported
+    across the two files -- see this module's own docstring)."""
+    for row in pause_rows:
+        if row["habit_id"] is not None and row["habit_id"] != habit_id:
+            continue
+        if row["start_date"] <= when_str <= row["end_date"]:
+            return True
+    return False
+
+
 def build_nudge_message(
     db: "Database", config: "Config", registry: "HabitRegistry", lang: i18n.Language, user_id: str, clock=datetime.now
 ) -> str | None:
@@ -105,8 +139,11 @@ def build_nudge_message(
     goal`) rather than divided, avoiding a `total / goal` float-precision
     wobble right at a boundary like exactly 80%."""
     today_str = _today_str(config, clock)
-    today_date = date.fromisoformat(today_str)
     threshold_pct = config.nudge.threshold_pct
+    # SPEC-REFACTOR.md Stage 1 rule 7: read once per build, reused across
+    # every habit below via `_is_paused_in`, instead of `pause.is_paused`
+    # re-reading the whole set once per habit.
+    pause_rows = db.active_pauses(user_id)
 
     close: list[tuple[object, float, float]] = []
     for habit in registry:
@@ -114,7 +151,7 @@ def build_nudge_message(
         # checkins.py:build_checkin_message`'s identical per-habit pause
         # skip -- a paused habit never contributes its own line to this
         # proactive, folded message; other habits still get theirs.
-        if pause.is_paused(db, config, user_id, habit.id, today_date):
+        if _is_paused_in(pause_rows, habit.id, today_str):
             continue
         goal = targets.effective_goal(db, habit, config, user_id)
         if goal is None or goal <= 0:
@@ -175,6 +212,7 @@ async def run_due_nudges(
     db: "Database",
     clock=datetime.now,
     registry_for: "Callable[[str], HabitRegistry] | None" = None,
+    active_user_ids: "list[str] | None" = None,
 ) -> None:
     """R-N1: called from the SAME minutely job that runs `run_due_reminders`/
     `run_due_checkins` (integration step, main.py). Returns immediately
@@ -208,12 +246,22 @@ async def run_due_nudges(
     SPEC-v1.8.md R-D1 (module `riders`): the send below passes
     `disable_notification=config.notifications.silent_proactive` (default
     `True`, AC-D1); `false` restores the pre-v1.8 notifying payload
-    (AC-D4)."""
+    (AC-D4).
+
+    SPEC-REFACTOR.md Stage 1 rules 2/AC4: `active_user_ids`, when given
+    (typically `main.py`'s consolidated minutely tick, which fetches the
+    fan-out set once and threads it into all three tick functions), is
+    used in place of a fresh `db.active_user_ids()` call; omitted (`None`,
+    the default), this function calls it itself, byte-identical to
+    pre-Stage-1. This call only ever happens AFTER the fixed-minute guard
+    below returns early -- so on a non-`[nudge] time` minute,
+    `active_user_ids` is never even consulted, matching this function's
+    pre-Stage-1 0-query idle-minute behavior."""
     hhmm = _now_hhmm(clock, config.app.timezone)
     if hhmm != config.nudge.time:
         return
 
-    for user_id in db.active_user_ids():
+    for user_id in active_user_ids if active_user_ids is not None else db.active_user_ids():
         try:
             enabled, _window = effective_checkin(db, config, user_id)
             if not enabled:

@@ -1949,53 +1949,70 @@ async def async_main(args: argparse.Namespace) -> None:
     # every user -- owner included -- falls back to the global config
     # times, so the owner's reminders fire at exactly the v1.1 minutes
     # (AC-M3/AC-S1).
+    #
+    # SPEC-REFACTOR.md Stage 1 rule 2/AC4: this used to be THREE separate
+    # `CronTrigger(second=0, ...)` jobs -- `reminder_tick`/`checkin_tick`/
+    # `nudge_tick` -- each independently calling `db.active_user_ids()` on
+    # any minute it ran past its own internal guard. Consolidated into
+    # ONE job (`minutely_tick`) that fetches the fan-out set once and
+    # threads the SAME list into all three tick functions via their new
+    # `active_user_ids` param, calling them in the exact same order the
+    # three jobs used to register in (reminders -> checkins -> nudge) --
+    # each function keeps its own internal guard/fail-open structure
+    # completely unchanged, so every send is byte-identical to before.
+    #
+    # Vera's TEST-refactor-s1.md finding: under the old THREE-independent-
+    # APScheduler-jobs design, one job raising (e.g. a DB read error
+    # escaping `run_due_reminders`) never affected the other two -- each
+    # had its own executor slot. Naively `await`-ing all three in sequence
+    # inside one job function would let the FIRST one's exception abort
+    # the whole tick, silently skipping that minute's check-ins/nudge --
+    # a real behavior change, not a "byte-identical, order-free" one (rule
+    # 2's own claim). Each call is therefore wrapped in its own try/except,
+    # logged and skipped, restoring the pre-Stage-1 per-tick-function
+    # isolation -- mirrors this file's own established fail-open logging
+    # style (e.g. `weekly_review_job`'s per-user chart try/except above).
+    async def _minutely_tick() -> None:
+        active_ids = db.active_user_ids()
+        try:
+            await run_due_reminders(
+                channel, config, registry, db, reminder_state,
+                # SPEC-v1.7.md R-G3: `registry_for=provider.for_user` is
+                # what makes this tick resolve each active user's OWN
+                # registry (base + their active custom habits) instead of
+                # the single global `registry` positional above, which now
+                # serves only as the fallback `registry_for` itself never
+                # needs (R-G2's own fail-open already covers a per-user
+                # build error).
+                registry_for=provider.for_user,
+                active_user_ids=active_ids,
+            )
+        except Exception:
+            logger.exception("run_due_reminders failed this tick; continuing with check-ins/nudge")
+
+        try:
+            await checkins.run_due_checkins(
+                channel, config, registry, db,
+                registry_for=provider.for_user,  # SPEC-v1.7.md R-G3
+                active_user_ids=active_ids,
+            )
+        except Exception:
+            logger.exception("run_due_checkins failed this tick; continuing with nudge")
+
+        try:
+            await nudge.run_due_nudges(
+                channel, config, registry, db,
+                registry_for=provider.for_user,  # SPEC-v1.7.md R-G3
+                active_user_ids=active_ids,
+            )
+        except Exception:
+            logger.exception("run_due_nudges failed this tick")
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        run_due_reminders,
+        _minutely_tick,
         trigger=CronTrigger(second=0, timezone=config.app.timezone),
-        args=[channel, config, registry, db, reminder_state],
-        # SPEC-v1.7.md R-G3: `registry_for=provider.for_user` is what
-        # makes this tick resolve each active user's OWN registry (base +
-        # their active custom habits) instead of the single global
-        # `registry` positional above, which now serves only as the
-        # fallback `registry_for` itself never needs (R-G2's own
-        # fail-open already covers a per-user build error).
-        kwargs={"registry_for": provider.for_user},
-        id="reminder_tick",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=30,
-    )
-
-    # SPEC-v1.5.md R-K1 (module `checkins`): a sibling of `reminder_tick`
-    # on the SAME minutely cadence -- `run_due_checkins`'s own internal
-    # `hhmm.endswith(":00")` guard is what limits it to firing once per
-    # hour, so the cron trigger itself still needs to fire every minute
-    # for that guard to be evaluated.
-    scheduler.add_job(
-        checkins.run_due_checkins,
-        trigger=CronTrigger(second=0, timezone=config.app.timezone),
-        args=[channel, config, registry, db],
-        kwargs={"registry_for": provider.for_user},  # SPEC-v1.7.md R-G3
-        id="checkin_tick",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=30,
-    )
-
-    # SPEC-v1.6.md R-N1 (module `nudge`): a sibling of `checkin_tick`/
-    # `reminder_tick` on the SAME minutely cadence -- `run_due_nudges`'s
-    # own internal `hhmm != config.nudge.time` guard is what limits it to
-    # firing once per day, so the cron trigger itself still needs to fire
-    # every minute for that guard to be evaluated.
-    scheduler.add_job(
-        nudge.run_due_nudges,
-        trigger=CronTrigger(second=0, timezone=config.app.timezone),
-        args=[channel, config, registry, db],
-        kwargs={"registry_for": provider.for_user},  # SPEC-v1.7.md R-G3
-        id="nudge_tick",
+        id="minutely_tick",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
