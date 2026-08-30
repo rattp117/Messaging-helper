@@ -32,6 +32,7 @@ def test_channel_is_abstract_and_cannot_be_instantiated():
         Channel()  # type: ignore[abstract]
 
 
+@pytest.mark.telegram_only
 def test_telegram_channel_is_a_channel():
     channel = TelegramChannel("fake-token", "12345")
     assert isinstance(channel, Channel)
@@ -42,6 +43,7 @@ def test_telegram_channel_is_a_channel():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.telegram_only
 def test_build_send_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
@@ -51,6 +53,7 @@ def test_build_send_request_shape():
     assert payload == {"chat_id": "999", "text": "hello world"}
 
 
+@pytest.mark.telegram_only
 async def test_send_posts_to_send_message_endpoint_with_mocked_transport():
     captured: list[httpx.Request] = []
 
@@ -69,6 +72,7 @@ async def test_send_posts_to_send_message_endpoint_with_mocked_transport():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_send_raises_on_http_error_status():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
@@ -108,6 +112,7 @@ def _queued_response_handler(responses: list[dict]):
     return handler
 
 
+@pytest.mark.telegram_only
 async def test_run_calls_on_message_for_each_inbound_text_and_advances_offset():
     calls: list[str] = []
     responses = [
@@ -141,6 +146,7 @@ async def test_run_calls_on_message_for_each_inbound_text_and_advances_offset():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_run_skips_updates_without_message_text():
     responses = [
         {
@@ -175,6 +181,7 @@ async def test_run_skips_updates_without_message_text():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_run_on_message_exception_does_not_crash_the_loop():
     """A handler exception must be swallowed so the inbound loop keeps
     running (per channels/telegram.py's try/except around on_message):
@@ -295,30 +302,11 @@ async def test_answer_callback_query_default_is_a_silent_noop():
     assert result is None
 
 
-async def test_line_channel_run_stub_accepts_on_callback_kwarg():
-    """channels/line.py's stub widened its `run` signature to match the
-    Channel ABC (SPEC-v1.1.md §6) without becoming implemented -- it must
-    still raise NotImplementedError, now also when called with on_callback.
-    `__init__` itself already raises NotImplementedError (documented stub),
-    so the instance is built via `object.__new__` to reach `run` at all."""
-    from habit_assistant.channels.line import LineChannel
-
-    instance = object.__new__(LineChannel)
-
-    async def on_message(
-        chat_id: str,
-        text: str,
-        display_name: str | None = None,
-        message_id: str | None = None,
-        reply_to_message_id: str | None = None,
-    ) -> None:
-        pass
-
-    async def on_callback(chat_id: str, data: str, source_text: str, cb_id: str) -> None:
-        pass
-
-    with pytest.raises(NotImplementedError):
-        await instance.run(on_message, on_callback=on_callback)
+# SPEC-LINE.md §4 Module A: channels/line.py is no longer a documented
+# stub -- it's a real Channel implementation now (tests/test_line_channel.py
+# and tests/test_line_webhook.py cover it). The `run`-must-raise-
+# NotImplementedError test that lived here pre-LINE-branch is gone with the
+# stub it was pinning down.
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +315,7 @@ async def test_line_channel_run_stub_accepts_on_callback_kwarg():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.telegram_only
 def test_build_send_actionable_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
@@ -340,6 +329,7 @@ def test_build_send_actionable_request_shape():
     }
 
 
+@pytest.mark.telegram_only
 async def test_send_actionable_posts_with_reply_markup():
     captured: list[httpx.Request] = []
 
@@ -359,6 +349,7 @@ async def test_send_actionable_posts_with_reply_markup():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 def test_build_set_my_commands_requests_one_per_language():
     channel = TelegramChannel("123456:ABC-fake", "999")
 
@@ -383,6 +374,7 @@ def test_build_set_my_commands_requests_one_per_language():
     assert {c["command"] for c in payloads_by_lang["th"]["commands"]} == {"undo", "target"}
 
 
+@pytest.mark.telegram_only
 async def test_set_my_commands_posts_one_request_per_language():
     captured: list[httpx.Request] = []
 
@@ -403,6 +395,7 @@ async def test_set_my_commands_posts_one_request_per_language():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_answer_callback_query_posts_callback_id():
     captured: list[httpx.Request] = []
 
@@ -428,6 +421,7 @@ async def test_answer_callback_query_posts_callback_id():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.telegram_only
 async def test_run_routes_callback_query_to_on_callback_and_answers_it():
     responses = [
         {
@@ -486,6 +480,7 @@ async def test_run_routes_callback_query_to_on_callback_and_answers_it():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_run_answers_callback_query_even_when_on_callback_raises():
     """R-U4: answerCallbackQuery must fire even on a handler error, so the
     client's spinner still clears."""
@@ -535,6 +530,7 @@ async def test_run_answers_callback_query_even_when_on_callback_raises():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_run_answers_callback_query_even_when_on_callback_is_none():
     """A caller that doesn't pass on_callback (back-compat) must still get
     its callback_query updates answered, not silently dropped."""
@@ -576,6 +572,7 @@ async def test_run_answers_callback_query_even_when_on_callback_is_none():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_run_offset_advances_past_a_mix_of_messages_and_callbacks():
     responses = [
         {
@@ -649,6 +646,7 @@ async def test_unpin_default_is_a_silent_noop():
     assert result is None
 
 
+@pytest.mark.telegram_only
 async def test_build_pin_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
     url, payload = channel.build_pin_request("999", "555")
@@ -659,6 +657,7 @@ async def test_build_pin_request_shape():
     assert "disable_notification" not in payload
 
 
+@pytest.mark.telegram_only
 async def test_send_and_pin_sends_then_pins_and_returns_the_message_id():
     captured: list[httpx.Request] = []
 
@@ -685,6 +684,7 @@ async def test_send_and_pin_sends_then_pins_and_returns_the_message_id():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_send_and_pin_still_returns_the_id_when_pin_itself_fails():
     """R-D3/R-D4's own fail-open posture, at the channel layer: a pin
     failure (permissions, rate limit) must not lose the sent message's
@@ -708,6 +708,7 @@ async def test_send_and_pin_still_returns_the_id_when_pin_itself_fails():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_send_and_pin_raises_if_the_send_itself_fails():
     """Unlike a pin failure, a SEND failure is not swallowed -- there is
     no message id to return at all, and `send`'s own existing contract
@@ -725,6 +726,7 @@ async def test_send_and_pin_raises_if_the_send_itself_fails():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_build_edit_message_request_shape():
     channel = TelegramChannel("123456:ABC-fake", "999")
     url, payload = channel.build_edit_message_request("999", "555", "new text")
@@ -732,6 +734,7 @@ async def test_build_edit_message_request_shape():
     assert payload == {"chat_id": "999", "message_id": "555", "text": "new text"}
 
 
+@pytest.mark.telegram_only
 async def test_edit_message_returns_true_on_success():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "result": {}})
@@ -744,6 +747,7 @@ async def test_edit_message_returns_true_on_success():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_edit_message_returns_true_on_not_modified():
     """R-D3: an unchanged render is skipped by `dashboard.refresh` itself
     BEFORE calling edit_message in the first place -- but if Telegram's
@@ -764,6 +768,7 @@ async def test_edit_message_returns_true_on_not_modified():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_edit_message_returns_false_on_not_found():
     """R-D4's own self-heal signal: the pinned message was deleted."""
 
@@ -780,6 +785,7 @@ async def test_edit_message_returns_false_on_not_found():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_edit_message_returns_false_on_any_other_failure_never_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"ok": False, "description": "Internal Server Error"})
@@ -792,6 +798,7 @@ async def test_edit_message_returns_false_on_any_other_failure_never_raises():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_edit_message_returns_false_on_transport_error_never_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
@@ -804,6 +811,7 @@ async def test_edit_message_returns_false_on_transport_error_never_raises():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_build_unpin_and_delete_message_request_shapes():
     channel = TelegramChannel("123456:ABC-fake", "999")
     unpin_url, unpin_payload = channel.build_unpin_request("999", "555")
@@ -814,6 +822,7 @@ async def test_build_unpin_and_delete_message_request_shapes():
     assert del_payload == {"chat_id": "999", "message_id": "555"}
 
 
+@pytest.mark.telegram_only
 async def test_unpin_calls_both_unpin_and_delete():
     calls: list[str] = []
 
@@ -833,6 +842,7 @@ async def test_unpin_calls_both_unpin_and_delete():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_unpin_never_raises_even_when_both_calls_fail():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"ok": False, "description": "Bad Request"})
@@ -847,6 +857,7 @@ async def test_unpin_never_raises_even_when_both_calls_fail():
     await channel.aclose()
 
 
+@pytest.mark.telegram_only
 async def test_unpin_deletes_even_when_unpin_itself_fails():
     """The two calls are independently best-effort -- a failed unpin must
     not skip the delete follow-up."""

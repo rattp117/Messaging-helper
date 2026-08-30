@@ -1,53 +1,318 @@
-"""Future LINE channel — documented stub only, not implemented for MVP.
+"""LINE Messaging API channel (SPEC-LINE.md §4 Module A).
 
-Why LINE is harder than Telegram:
-- Outbound (`send`): use the LINE Messaging API "push message" endpoint
-  (POST https://api.line.me/v2/bot/message/push) with a channel access
-  token in the Authorization header. Reasonably close to Telegram's
-  sendMessage.
-- Inbound (`run`): LINE has no long-poll equivalent to Telegram's
-  getUpdates. It requires a **webhook** — a publicly reachable HTTPS
-  endpoint that LINE POSTs signed events to. That means a LineChannel.run()
-  implementation needs:
-    1. A small HTTP server (e.g. aiohttp or a single-route FastAPI app)
-       bound to a public port.
-    2. A public URL — either a real public IP + TLS cert, or a tunnel
-       (ngrok / Cloudflare Tunnel) during development.
-    3. Signature verification of each inbound request using the channel
-       secret (`X-Line-Signature` header, HMAC-SHA256 over the raw body),
-       to reject spoofed events before calling on_message.
+Two economics drive every design choice here: LINE **Reply API** sends
+(triggered by an inbound event's single-use `replyToken`) are free and
+uncounted; **Push API** sends count against the account's monthly quota.
+`send`/`send_actionable`/`send_image` therefore don't call the API
+directly -- they append a LINE message object to a per-event reply buffer
+(a `contextvars.ContextVar`, R-A4) that `channels/line_webhook.py`'s worker
+sets before `await`-ing the inbound handler and flushes as ONE reply call
+after. Outside any active reply context (only the daily digest, module C)
+a send goes out via Push and increments `push_ledger` (R-A6/R-C6) -- the
+channel is the single, authoritative place that quota spend is counted,
+regardless of caller.
 
-None of this is wired up. When it is, LineChannel must still satisfy
-habit_assistant.channels.base.Channel exactly, so core/reminders.py,
-core/parser.py, core/review.py, and storage/db.py continue to work
-unmodified — they only ever depend on the Channel ABC, never on Telegram
-or LINE specifics.
-"""
+`LineChannel` still satisfies `channels.base.Channel` exactly, so
+`core/`/`storage/` are unaffected (verified: neither package imports this
+module, tests/test_channels.py's own AST scan enforces it)."""
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+import contextlib
+import logging
+import secrets as secrets_module
+from contextvars import ContextVar
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from habit_assistant.channels.base import Channel
+import httpx
+
+from habit_assistant.channels.base import Button, Channel
+from habit_assistant.channels.line_webhook import LineWebhookServer
+
+if TYPE_CHECKING:
+    from habit_assistant.config import Config
+    from habit_assistant.storage.db import Database
+
+logger = logging.getLogger(__name__)
+
+LINE_API_ROOT = "https://api.line.me"
+
+# LINE Messaging API hard limits (SPEC-LINE.md §7): at most 5 message
+# objects per reply/push, at most 13 quickReply items, postback `data`
+# capped at 300 chars.
+_MAX_REPLY_MESSAGES = 5
+_MAX_QUICK_REPLY_ITEMS = 13
+_MAX_POSTBACK_DATA_CHARS = 300
+
+# R-A4: {"replyToken": str, "buffer": list[message-object]} while an event
+# is being handled; `None` outside any reply context (a proactive/scheduled
+# send -- only the digest). Module-level (not an instance attribute) is
+# deliberate: contextvars are the whole point -- they propagate correctly
+# through the `await on_message(...)` call the worker makes, without
+# threading the buffer through every core/ call site.
+_REPLY_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("line_reply_context", default=None)
+
+
+def _default_rich_menu_payload() -> dict[str, Any]:
+    """SPEC-LINE.md §9 OQ3's own default: a plain 6-button layout
+    (`/log /habits /heatmap /wrapped /help /guide`) as message actions --
+    each arrives as an ordinary inbound text message and routes through
+    the existing dispatch unchanged (R-A10). 2500x1686, a LINE-supported
+    rich menu size; a 3x2 grid of message-action areas. The deployment PNG
+    (module D, `[line].rich_menu_image`) must match these dimensions."""
+    labels = ["/log", "/habits", "/heatmap", "/wrapped", "/help", "/guide"]
+    width, height, cols, rows = 2500, 1686, 3, 2
+    cell_w, cell_h = width // cols, height // rows
+    areas = []
+    for i, label in enumerate(labels):
+        row, col = divmod(i, cols)
+        areas.append(
+            {
+                "bounds": {"x": col * cell_w, "y": row * cell_h, "width": cell_w, "height": cell_h},
+                "action": {"type": "message", "text": label},
+            }
+        )
+    return {
+        "size": {"width": width, "height": height},
+        "selected": False,
+        "name": "habit-assistant-default",
+        "chatBarText": "Menu",
+        "areas": areas,
+    }
 
 
 class LineChannel(Channel):
-    """Not implemented. See module docstring for the design this will need."""
+    def __init__(
+        self,
+        channel_access_token: str,
+        channel_secret: str,
+        owner_user_id: str,
+        config: "Config",
+        db: "Database",
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._token = channel_access_token
+        self._channel_secret = channel_secret
+        self.owner_user_id = owner_user_id
+        self._config = config
+        self.db = db
+        self._client = client or httpx.AsyncClient(timeout=30.0)
+        self._media_dir = Path(config.line.media_dir)
+        self._media_dir.mkdir(parents=True, exist_ok=True)
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError("LineChannel is a documented stub; see channels/line.py docstring.")
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}"}
 
-    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> None:
-        raise NotImplementedError
+    # -- reply-buffer plumbing (R-A4) ---------------------------------------
+
+    @contextlib.contextmanager
+    def _reply_scope(self, reply_token: str, owner_chat_id: str | None = None):
+        """Release-gate Finding 2 (branch `line-version`): `owner_chat_id`
+        is the chat_id the INBOUND EVENT this reply context was opened for
+        actually belongs to -- additive, keyword-defaulted `None` for
+        back-compat with a bare call site that has no owning chat_id to
+        compare against (see `_emit`'s own docstring for what `None` means
+        there). The real production caller, `channels/line_webhook.py:
+        LineWebhookServer._dispatch`, always knows the event's own
+        `user_id` and passes it here."""
+        ctx: dict[str, Any] = {"replyToken": reply_token, "buffer": [], "ownerChatId": owner_chat_id}
+        token = _REPLY_CONTEXT.set(ctx)
+        try:
+            yield ctx
+        finally:
+            _REPLY_CONTEXT.reset(token)
+
+    async def _emit(self, chat_id: str, message_objs: list[dict[str, Any]]) -> None:
+        """Release-gate Finding 2: buffer into the active reply context
+        (R-A4) only when `chat_id` matches the context's own owner --
+        otherwise push immediately (R-A6), exactly as if there were no
+        active reply context at all. This covers the genuine cross-user
+        sends this app makes mid-event (`core/access.py:handle_gate`'s
+        owner-pending-approval alert, `execute_admin`'s access-granted
+        notice to a newly-approved user, `core/health.py`'s owner alert
+        if ever wired here) -- before this fix, ANY send made while
+        handling one user's event was folded into THAT user's own reply
+        buffer regardless of who it was actually addressed to, so an
+        owner notification triggered by a stranger's message silently
+        never reached the owner and instead leaked owner-facing text
+        (including the raw `/approve <id>` admin command) into the
+        stranger's own reply.
+
+        `ctx["ownerChatId"] is None` (the bare/default form of
+        `_reply_scope`, used directly at the channel level with no
+        owning event in scope -- e.g. a hand-rolled test) buffers
+        regardless of `chat_id`, preserving the original "buffer
+        everything sent during this scope" shape for a caller that has
+        no owning chat_id to compare against; every real production
+        call site (the webhook worker) always supplies one.
+
+        Compounding note: owner pending-approval / approval notifications
+        now cost push quota (a real Push API call + one `push_ledger`
+        increment, R-C6) instead of being free-riding on the triggering
+        event's own reply -- correct (SPEC-LINE.md's own U-ISO/no-cross-
+        user-leakage discipline requires the send actually reach its real
+        target) and rare (only fires on a new-user approval request or an
+        admin action, not on ordinary logging traffic)."""
+        ctx = _REPLY_CONTEXT.get()
+        if ctx is not None and (ctx["ownerChatId"] is None or ctx["ownerChatId"] == chat_id):
+            ctx["buffer"].extend(message_objs)
+            return
+        await self._push(chat_id, message_objs)
+
+    async def _push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
+        """R-A6/R-C6: the Push API call, and the ONLY place `push_ledger`
+        is incremented -- authoritative regardless of caller. Only counted
+        on success; a failed push (raise_for_status) never inflates the
+        ledger."""
+        resp = await self._client.post(
+            f"{LINE_API_ROOT}/v2/bot/message/push",
+            headers=self._auth_headers(),
+            json={"to": chat_id, "messages": messages},
+        )
+        resp.raise_for_status()
+        yyyymm = datetime.now().strftime("%Y-%m")
+        self.db.increment_push(chat_id, yyyymm)
+
+    async def _flush_reply(self, reply_token: str, messages: list[dict[str, Any]]) -> None:
+        """R-A5: the reply uses `reply_token` exactly once. A rejected
+        token (expired/already used) is logged and dropped -- NEVER falls
+        back to a push, which would spend quota for output the user didn't
+        get anyway (they can just re-send)."""
+        if not messages:
+            return
+        if len(messages) > _MAX_REPLY_MESSAGES:
+            logger.warning(
+                "LINE reply for token %s carries %d message objects; dropping the overflow (limit %d)",
+                reply_token,
+                len(messages),
+                _MAX_REPLY_MESSAGES,
+            )
+            messages = messages[:_MAX_REPLY_MESSAGES]
+        try:
+            resp = await self._client.post(
+                f"{LINE_API_ROOT}/v2/bot/message/reply",
+                headers=self._auth_headers(),
+                json={"replyToken": reply_token, "messages": messages},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.warning(
+                "LINE reply failed for token %s (expired/already used?); dropping, never falling back to push",
+                reply_token,
+                exc_info=True,
+            )
+
+    # -- Channel ABC ----------------------------------------------------------
+
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
+        # disable_notification: no LINE equivalent (§ degradation table) --
+        # accepted for ABC conformance, ignored.
+        await self._emit(chat_id, [{"type": "text", "text": text}])
+        return None
+
+    async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
+        if len(buttons) > _MAX_QUICK_REPLY_ITEMS:
+            logger.warning(
+                "send_actionable for %s carries %d buttons; truncating to LINE's %d-item quickReply limit",
+                chat_id,
+                len(buttons),
+                _MAX_QUICK_REPLY_ITEMS,
+            )
+        items = []
+        for label, data in buttons[:_MAX_QUICK_REPLY_ITEMS]:
+            if len(data) > _MAX_POSTBACK_DATA_CHARS:
+                logger.warning(
+                    "postback data for %s is %d chars, over LINE's %d-char limit; sending verbatim",
+                    chat_id,
+                    len(data),
+                    _MAX_POSTBACK_DATA_CHARS,
+                )
+            items.append({"type": "action", "action": {"type": "postback", "label": label, "data": data}})
+        message_obj: dict[str, Any] = {"type": "text", "text": text}
+        if items:
+            message_obj["quickReply"] = {"items": items}
+        await self._emit(chat_id, [message_obj])
+
+    async def send_image(self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False) -> None:
+        # R-A11: write the PNG under a random unguessable token, build the
+        # public media URL, and emit a text (caption) + image message pair
+        # as one unit. Any failure here (disk write, ...) propagates -- the
+        # existing caller's own try/except degrades to a text summary
+        # (R-3.5); this method must not swallow it.
+        token = secrets_module.token_urlsafe(16)
+        path = self._media_dir / f"{token}.png"
+        path.write_bytes(image)
+        url = f"{self._config.line.public_base_url}/media/{token}.png"
+        await self._emit(
+            chat_id,
+            [
+                {"type": "text", "text": caption},
+                {"type": "image", "originalContentUrl": url, "previewImageUrl": url},
+            ],
+        )
+
+    async def register_rich_menu(self) -> None:
+        """R-A10/AC14: create + upload + set-as-default the one static rich
+        menu, fail-open throughout -- a missing image asset or any API
+        failure is logged and startup continues."""
+        image_path = Path(self._config.line.rich_menu_image)
+        if not image_path.is_file():
+            logger.warning("Rich menu image %s not found; skipping rich menu registration", image_path)
+            return
+        try:
+            create_resp = await self._client.post(
+                f"{LINE_API_ROOT}/v2/bot/richmenu",
+                headers=self._auth_headers(),
+                json=_default_rich_menu_payload(),
+            )
+            create_resp.raise_for_status()
+            rich_menu_id = create_resp.json()["richMenuId"]
+
+            content_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
+            upload_resp = await self._client.post(
+                f"{LINE_API_ROOT}/v2/bot/richmenu/{rich_menu_id}/content",
+                headers={**self._auth_headers(), "Content-Type": content_type},
+                content=image_path.read_bytes(),
+            )
+            upload_resp.raise_for_status()
+
+            default_resp = await self._client.post(
+                f"{LINE_API_ROOT}/v2/bot/user/all/richmenu/{rich_menu_id}",
+                headers=self._auth_headers(),
+            )
+            default_resp.raise_for_status()
+            logger.info("LINE rich menu %s registered as the default", rich_menu_id)
+        except Exception:
+            logger.exception("LINE rich menu registration failed; continuing startup (fail-open)")
 
     async def run(
         self,
         on_message: Callable[[str, str], Awaitable[None]],
         on_callback: Callable[[str, str, str, str], Awaitable[None]] | None = None,
     ) -> None:
-        # If/when implemented: `Channel.run`'s own docstring (base.py)
-        # documents an OPTIONAL third `display_name` argument LINE's
-        # webhook payload could supply here too (its events carry a
-        # `source.userId`, resolvable to a display name via a separate
-        # Profile API call) -- not needed for this still-unimplemented stub.
-        raise NotImplementedError
+        # As with TelegramChannel.run (channels/telegram.py), this actually
+        # calls on_message with 5 positional args (userId, text, None,
+        # message_id, None) -- see channels/base.py's module docstring for
+        # why the ABC's own type hint stays the conservative 2-arg shape.
+        server = LineWebhookServer(
+            channel_secret=self._channel_secret,
+            bind_host=self._config.line.bind_host,
+            bind_port=self._config.line.bind_port,
+            media_dir=self._media_dir,
+            media_ttl_seconds=self._config.line.media_ttl_seconds,
+            reply_scope=self._reply_scope,
+            flush_reply=self._flush_reply,
+        )
+        await server.serve(on_message, on_callback)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    # send_and_pin / edit_message / unpin / set_message_reaction /
+    # answer_callback_query / set_my_commands: inherited base no-op/degrade
+    # defaults (R-A14) -- LINE has no pin/edit/reaction/spinner/command-menu
+    # concept; the base Channel ABC's defaults are exactly the documented
+    # degradation (§ degradation table).

@@ -479,6 +479,48 @@ def _migration_013_unparsed_state(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE logs ADD COLUMN unparsed_state TEXT")
 
 
+def _migration_014_line_digest(conn: sqlite3.Connection) -> None:
+    """SPEC-LINE.md §4 R-S4 (shared surface, branch `line-version`): two
+    additive pieces, no existing table/column/row touched at all -- purely
+    additive, like every migration except 006's own sanctioned break.
+
+    `push_ledger` (module C, R-C6): one row per `(user_id, yyyymm)`
+    tracking how many LINE Push API sends that user has received this
+    month -- the quota-bookkeeping half of the "at most one push/user/day"
+    decision (LINE's free plan counts ~300 pushes/month total, uncounted
+    Reply API sends don't touch this table at all). `count` starts at 0 and
+    is only ever incremented via `Database.increment_push`'s upsert (R-S5);
+    `updated_at` is informational only, not read by any query here.
+
+    `users.digest_opt_out` (module C, R-C4): `0` (subscribed) by default --
+    the locked user decision (2026-08-29, SPEC-LINE.md's own header) is
+    "digest default ON, per-user OPT-OUT", so every existing row (and every
+    fresh one, via the table's own column default) starts subscribed,
+    exactly matching that decision without a backfill pass. Mirrors
+    migration 008's/009's own "the column default alone encodes the right
+    starting state, no UPDATE needed" posture.
+
+    A fresh/pre-LINE install starts with zero `push_ledger` rows and every
+    `users` row un-opted-out, so `monthly_push_total`/`push_count` read 0
+    and `digest_opt_out` reads `False` for everyone until the digest job
+    (module C, not yet wired) actually sends something (AC2/AC3's own
+    idempotent-rerun gate). Idempotent the same way every migration here
+    is: the runner only ever applies this once, guarded by `PRAGMA
+    user_version`."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS push_ledger (
+          user_id    TEXT NOT NULL,
+          yyyymm     TEXT NOT NULL,
+          count      INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          PRIMARY KEY (user_id, yyyymm)
+        )
+        """
+    )
+    conn.execute("ALTER TABLE users ADD COLUMN digest_opt_out INTEGER NOT NULL DEFAULT 0")
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -496,6 +538,7 @@ MIGRATIONS: list[Migration] = [
     _migration_011_routines,
     _migration_012_lifecycle,
     _migration_013_unparsed_state,
+    _migration_014_line_digest,
 ]
 
 

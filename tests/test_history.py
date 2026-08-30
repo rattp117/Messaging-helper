@@ -85,9 +85,9 @@ def test_no_migration_was_added_for_history(tmp_path):
     `routine_items`) -- same reasoning.
     UPDATED (v1.9.0): now also includes SPEC-v1.9.md's own migration 012
     (`habit_cadence`/`grace_ledger`/`pauses`) -- same reasoning."""
-    assert len(MIGRATIONS) == 13
+    assert len(MIGRATIONS) == 14
     db = Database(tmp_path / "fresh.db")
-    assert db.schema_version == 13
+    assert db.schema_version == 14
     db.close()
 
 

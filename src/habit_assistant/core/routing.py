@@ -52,6 +52,7 @@ from habit_assistant.core import (
     commands,
     confirmation,
     dashboard,
+    digest,
     discoverability,
     habitdef,
     heatmap,
@@ -66,6 +67,7 @@ from habit_assistant.core import (
     records,
     render_budget,
     reply_attribution,
+    review,
     routines,
     schedules,
     streaks,
@@ -410,6 +412,17 @@ async def handle_inbound_message(
             assert channel is not None, "channel is required outside dry-run"
             await channel.send(user_id, reply)
             return
+        if command.kind == "digest":
+            # SPEC-LINE.md §4 R-C4/§9 OQ4 (module C, branch `line-version`):
+            # same recognize-shape-in-commands.py/interpret-and-execute-here
+            # split as every other settings-style command below.
+            reply = await digest.execute_digest_toggle(command, db=db, config=config, lang=lang, user_id=user_id)
+            if dry_run:
+                print(reply)
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, reply)
+            return
         if command.kind == "dashboard":
             reply = await dashboard.execute_dashboard(
                 command, db=db, channel=channel, config=config, registry=registry, lang=lang, user_id=user_id, clock=clock
@@ -526,6 +539,22 @@ async def handle_inbound_message(
             )
             if reply:
                 await channel.send(user_id, reply)
+            return
+        if command.kind == "review":
+            # SPEC-LINE.md §4 R-C5/AC25 (module C's own flagged gap, built
+            # at Integration): `execute_review` always sends itself (text,
+            # then up to a couple of chart images) -- unlike `wrapped`/
+            # `heatmap`, there is no "already delivered -> ''" convention
+            # here since the text half is never optional (R-C5's own "text
+            # + up to a few chart images", not "image, or text as a
+            # fallback").
+            if dry_run:
+                print({"kind": "review", "note": "requires a real channel; not supported in --dry-run"})
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await review.execute_review(
+                command, db=db, channel=channel, config=config, registry=registry, llm=llm, lang=lang, user_id=user_id, clock=clock
+            )
             return
         if command.kind == "query":
             answer = await query.answer_question(
@@ -653,7 +682,7 @@ async def handle_inbound_message(
     preparsed = reply_result if reply_result is not None else preparse.deterministic_parse(parse_text, registry)
     if preparsed is not None:
         result = preparsed
-    else:
+    elif config.ollama.enabled:
         if not dry_run and health_monitor is not None and not health_monitor.ollama_up:
             assert channel is not None, "channel is required outside dry-run"
             now = clock()
@@ -732,6 +761,29 @@ async def handle_inbound_message(
                 return
             if offset_result is not None:
                 backfill_date = offset_result
+    else:
+        # SPEC-LINE.md §4 R-B1/R-B2/R-B3 (no-LLM mode, branch `line-version`),
+        # §5.2 rows 1/3: `config.ollama.enabled == False` -- a preparse miss
+        # NEVER writes a deferral row (R-B1, `pending_unparsed()` stays
+        # permanently empty), NEVER calls the target-intent classifier
+        # (R-B3), and NEVER calls `parse_message` (R-B2/R-B9: zero LLM calls
+        # on this whole path). The cheap, zero-LLM `looks_like_target_
+        # phrasing` gate still runs -- it routes target-shaped phrasing at
+        # the explicit `/target` command instead of falling through to the
+        # ordinary clarify machinery below (AC17).
+        if backfill_date is None and target_nl.looks_like_target_phrasing(text):
+            if dry_run:
+                print({"kind": "target_nl_no_llm_pointer"})
+                return
+            assert channel is not None, "channel is required outside dry-run"
+            await channel.send(user_id, i18n.t("target_nl_no_llm_pointer", lang))
+            return
+        # A synthetic "no habit recognized" result routes straight into the
+        # SAME clarify machinery below (`habit is None`) that a genuine LLM
+        # parse miss reaches -- `clarify.tier1_guesses`'s tap-to-fix offer,
+        # or the generic clarifying question + `/log` keyboard, zero-LLM
+        # either way (R-B2).
+        result = ExtractionResult.unknown()
 
     if dry_run:
         print(asdict(result))
@@ -862,8 +914,19 @@ async def reparse_pending_unparsed(
 
     `provider`, when given, resolves EACH row's own per-user registry
     inside the loop -- a backlog spanning multiple users re-parses each
-    row against its OWN user's custom habits."""
+    row against its OWN user's custom habits.
+
+    SPEC-LINE.md §4 R-B8, §5.2 row 2 (no-LLM mode, branch `line-version`):
+    `config.ollama.enabled == False` makes this whole sweep dead code -- a
+    no-op guard, checked BEFORE the single-flight lock below. R-B1 already
+    guarantees `pending_unparsed()` stays empty going forward on this
+    branch, but this guard also protects any row left over from BEFORE the
+    branch flipped (e.g. a DB carried over from a Telegram deployment) from
+    ever reaching `parse_message` (an LLM call) here."""
     global _sweep_in_progress
+    if not config.ollama.enabled:
+        logger.info("Skipping reparse_pending_unparsed: ollama.enabled is False (no-LLM mode)")
+        return
     if _sweep_in_progress:
         logger.info("Skipping reparse_pending_unparsed: a sweep is already in progress")
         return

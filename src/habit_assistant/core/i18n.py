@@ -2235,4 +2235,119 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🤖 Type /help anytime for the complete guide.",
         "th": "🤖 พิมพ์ /help เมื่อไหร่ก็ได้เพื่อดูคู่มือฉบับเต็ม",
     },
+
+    # ===================================================================
+    # SPEC-LINE.md §4 R-S6 (shared surface, branch `line-version`): the
+    # LINE edition's own new bilingual copy -- the trimmed daily digest
+    # (module C) and the no-LLM NL-target pointer (module B). Keys must use
+    # a `digest_*`/`target_nl_*` prefix. `clarify.tier1_guesses`'s own
+    # tap-to-fix offer (R-B2) and the generic clarifying question reuse the
+    # EXISTING `clarify_offer`/`clarifying_question` keys above verbatim --
+    # both are already channel-agnostic copy (no Telegram-specific
+    # "tap the button below" framing), so no new key is needed there.
+    # -----------------------------------------------------------------
+    # Module C -- trimmed daily digest (SPEC-LINE.md §4 R-C1/R-C5/R-C7,
+    # core/digest.py). `digest_header` opens the one daily push;
+    # `digest_due_reminders_header`/`digest_all_caught_up` frame the (a)
+    # due-reminders section (R-C1); `digest_review_ready_line` is the
+    # optional one-liner appended on the weekly-review weekday (R-C5,
+    # `[digest].include_weekly_review_day`); `digest_quota_warning` is the
+    # owner-only line appended once `monthly_push_total >= [digest].
+    # warn_cap` (R-C7, default 280 against LINE's free-plan ceiling of
+    # ~300/month) -- it never blocks the digest from sending.
+    # -----------------------------------------------------------------
+    "digest_header": {
+        "en": "📋 Your day, in one message:",
+        "th": "📋 สรุปวันนี้ในข้อความเดียว:",
+    },
+    "digest_due_reminders_header": {
+        "en": "⏰ Still due today:",
+        "th": "⏰ วันนี้ยังไม่ครบ:",
+    },
+    "digest_all_caught_up": {
+        "en": "✅ Everything's logged for today — nice work.",
+        "th": "✅ วันนี้บันทึกครบทุกอย่างแล้ว เก่งมาก",
+    },
+    "digest_review_ready_line": {
+        "en": "📈 Your weekly review is ready — send /review to see it.",
+        "th": "📈 รีวิวประจำสัปดาห์ของคุณพร้อมแล้ว พิมพ์ /review เพื่อดู",
+    },
+    "digest_quota_warning": {
+        "en": (
+            "⚠️ Owner note: this month's LINE push total is {total}/{cap} "
+            "(free-plan ceiling ≈300). New digest subscribers may need to wait "
+            "until next month, or the account may need paid message capacity."
+        ),
+        "th": (
+            "⚠️ ข้อความถึงเจ้าของบอท: ยอดพุชข้อความเดือนนี้อยู่ที่ {total}/{cap} "
+            "(เพดานแพ็กเกจฟรี ≈300) ผู้สมัครสรุปรายวันใหม่อาจต้องรอเดือนถัดไป "
+            "หรืออาจต้องซื้อโควตาข้อความเพิ่ม"
+        ),
+    },
+
+    # -----------------------------------------------------------------
+    # Module C -- `/digest on|off` setter (SPEC-LINE.md §4 R-C4/§9 OQ4,
+    # core/digest.py:execute_digest_toggle). Mirrors `checkin_show`/
+    # `checkin_show_off`/`checkin_set_on`/`checkin_set_off`/`checkin_usage`/
+    # `checkin_save_failed`'s own naming shape one-for-one.
+    # -----------------------------------------------------------------
+    "digest_toggle_show": {
+        "en": "📋 Daily digest: ON (around {time}).",
+        "th": "📋 สรุปรายวัน: เปิดอยู่ (ประมาณ {time})",
+    },
+    "digest_toggle_show_off": {
+        "en": "📋 Daily digest: OFF. Send /digest on to turn it back on.",
+        "th": "📋 สรุปรายวัน: ปิดอยู่ พิมพ์ /digest on เพื่อเปิดอีกครั้ง",
+    },
+    "digest_toggle_set_on": {
+        "en": "✅ Daily digest turned on — you'll get one message a day with your summary.",
+        "th": "✅ เปิดสรุปรายวันแล้ว — คุณจะได้รับข้อความสรุปวันละหนึ่งครั้ง",
+    },
+    "digest_toggle_set_off": {
+        "en": "🔕 Daily digest turned off. Send /digest on anytime to turn it back on.",
+        "th": "🔕 ปิดสรุปรายวันแล้ว พิมพ์ /digest on เมื่อไหร่ก็ได้เพื่อเปิดอีกครั้ง",
+    },
+    "digest_toggle_usage": {
+        "en": "Usage: /digest on, /digest off, or bare /digest to check the current setting.",
+        "th": "วิธีใช้: /digest on, /digest off หรือพิมพ์ /digest เฉยๆ เพื่อดูสถานะปัจจุบัน",
+    },
+    "digest_toggle_save_failed": {
+        "en": "⚠️ Couldn't save your digest setting — please try again.",
+        "th": "⚠️ บันทึกการตั้งค่าสรุปรายวันไม่สำเร็จ ลองอีกครั้งนะ",
+    },
+    "audit_action_digest_set": {
+        "en": "digest on",
+        "th": "เปิดสรุปรายวัน",
+    },
+    "audit_action_digest_off": {
+        "en": "digest off",
+        "th": "ปิดสรุปรายวัน",
+    },
+
+    # -----------------------------------------------------------------
+    # Module B -- no-LLM NL-target pointer (SPEC-LINE.md §4 R-B3,
+    # core/target_nl.py / core/routing.py). NL target-setting ("from now
+    # on 3L a day") has no deterministic fallback in no-LLM mode -- this
+    # points the user at the explicit, LLM-free /target command instead
+    # of silently doing nothing (AC17).
+    # -----------------------------------------------------------------
+    "target_nl_no_llm_pointer": {
+        "en": "🎯 I can't read free-form goal changes right now — use /target <habit> <value> instead.",
+        "th": "🎯 ตอนนี้ยังอ่านการตั้งเป้าหมายแบบข้อความอิสระไม่ได้ ใช้คำสั่ง /target <กิจกรรม> <ค่า> แทนนะ",
+    },
+
+    # -----------------------------------------------------------------
+    # Module B -- no-LLM NL-query pointer (SPEC-LINE.md §4 R-B4,
+    # core/query.py). AC17: "how much water this week?" has no
+    # deterministic fallback in no-LLM mode -- this points the user at the
+    # deterministic /records, /trends, /dashboard commands instead of
+    # spending an LLM call on classification. Additive-only: the existing
+    # `query_cant_answer` key (the fail-closed classify-miss fallback,
+    # used identically whether ollama.enabled is True or False) is left
+    # byte-unchanged so the enabled=true path stays byte-identical.
+    # -----------------------------------------------------------------
+    "query_no_llm_pointer": {
+        "en": "🤔 I can't answer free-form questions right now — try /records, /trends, or /dashboard instead.",
+        "th": "🤔 ตอนนี้ยังตอบคำถามแบบข้อความอิสระไม่ได้ ลองใช้ /records, /trends หรือ /dashboard แทนนะ",
+    },
 }

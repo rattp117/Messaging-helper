@@ -84,6 +84,12 @@ Action = Literal[
     "pause_set",
     "pause_clear",
     "grace_consumed",
+    # SPEC-LINE.md §4 R-C4 (module C, branch `line-version`): `/digest
+    # on|off`'s own mutation, one fail-open audit row each -- `digest_set`
+    # for "on" (subscribed), `digest_off` for "off" (opted out), mirroring
+    # `dashboard_set`/`dashboard_off`'s identical naming.
+    "digest_set",
+    "digest_off",
 ]
 ACTIONS: tuple[Action, ...] = (
     "undo",
@@ -115,6 +121,8 @@ ACTIONS: tuple[Action, ...] = (
     "pause_set",
     "pause_clear",
     "grace_consumed",
+    "digest_set",
+    "digest_off",
 )
 
 Source = Literal["command", "nl", "button", "admin", "system"]

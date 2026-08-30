@@ -30,6 +30,7 @@ import logging
 import sys
 
 from habit_assistant import __version__
+from habit_assistant.channels.line import LineChannel
 from habit_assistant.channels.telegram import TelegramChannel
 from habit_assistant.config import Config, load_config, load_secrets
 from habit_assistant.core import i18n, routing
@@ -91,6 +92,7 @@ async def async_main(args: argparse.Namespace) -> None:
         setup_logging=setup_logging,
         AsyncIOScheduler=AsyncIOScheduler,
         TelegramChannel=TelegramChannel,
+        LineChannel=LineChannel,
         OllamaClient=OllamaClient,
         HealthMonitor=HealthMonitor,
         run_due_reminders=run_due_reminders,

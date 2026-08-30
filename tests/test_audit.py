@@ -72,7 +72,12 @@ def test_actions_matches_the_spec_vocabulary_exactly():
     `grace`'s own dependency): `cadence_set`/`cadence_clear`,
     `pause_set`/`pause_clear`, and `grace_consumed` extend the vocabulary
     once more (R27) -- the five mutations Theme A's engine rework
-    introduces."""
+    introduces.
+
+    SPEC-LINE.md §4 R-C4 (module C, branch `line-version`): `digest_set`/
+    `digest_off` extend the vocabulary once more -- `/digest on|off`'s
+    own two-way toggle (no `default`/`clear` shape, unlike `/checkin` --
+    there's nothing else to configure)."""
     assert set(audit.ACTIONS) == {
         "undo", "edit", "target_set", "target_clear", "remind_set", "remind_off",
         "remind_default", "lang_set", "quiet_set", "quiet_off",
@@ -82,6 +87,7 @@ def test_actions_matches_the_spec_vocabulary_exactly():
         "habit_create", "habit_archive", "habit_delete",
         "routine_create", "routine_delete", "routine_run",
         "cadence_set", "cadence_clear", "pause_set", "pause_clear", "grace_consumed",
+        "digest_set", "digest_off",
     }
 
 

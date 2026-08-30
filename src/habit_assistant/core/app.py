@@ -19,7 +19,27 @@ value, which only works if the code that uses them reads them from
 small zero-arg forwarding closures over `core/routing.py`/`core/jobs.py`'s
 real, parameter-taking implementations -- the only closures left in this
 file, carrying no logic of their own (OQ3).
-"""
+
+SPEC-LINE.md §4 R-I1-R-I5 (Integration pass, branch `line-version`): this
+is the ONE central file §11 reserves for wiring the LINE channel in --
+every LINE module (A/B/C/D) built its own piece in isolation and left this
+file untouched. `LineChannel` is now a fourth explicit, keyword-only
+constructor parameter, exactly mirroring `TelegramChannel`'s own shape (so
+a test can inject a fake/instrumented class the same way existing tests
+already do for `TelegramChannel`/`OllamaClient`/`HealthMonitor`) --
+`config.channel.type` picks which one `async_main` actually constructs
+(R-I1); the Telegram branch is untouched, byte-for-byte, so `type=
+"telegram"` (the default, and every pre-LINE `config.toml`) reaches the
+exact same code it always did (AC28). `config.ollama.enabled == False`
+(this branch's own only-supported mode, but checked generically, not
+keyed off channel type, since the two are independent config knobs)
+short-circuits `OllamaClient` construction and the startup schema probe
+(R-B7/R-B9); `llm` then threads through as `None` to every downstream
+call site, all of which already guard on `config.ollama.enabled`
+themselves (module B) before ever touching it -- see `_owner_chat_id`'s
+own docstring for the parallel `channel.type`-keyed owner-id resolution
+this same pass threads through the three existing `load_secrets()` call
+sites (R-I4)."""
 
 from __future__ import annotations
 
@@ -34,8 +54,8 @@ from datetime import datetime, timedelta
 import httpx
 from apscheduler.triggers.cron import CronTrigger
 
-from habit_assistant.config import ConfigError
-from habit_assistant.core import announce, i18n, jobs, routing, undo_ui
+from habit_assistant.config import Config, ConfigError, Secrets
+from habit_assistant.core import announce, digest, i18n, jobs, routing, undo_ui
 from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
@@ -48,6 +68,34 @@ from habit_assistant.storage.db import Database
 from habit_assistant.storage.models import LogEntry
 
 logger = logging.getLogger(__name__)
+
+
+def _owner_chat_id(config: Config, secrets: Secrets) -> str:
+    """SPEC-LINE.md §4 R-I4: the id every owner-only surface (`/audit`,
+    `/users`, admin commands, the digest quota warning) and startup's own
+    `attribute_legacy_to_owner` key off -- `LINE_OWNER_USER_ID` when
+    `config.channel.type=="line"`, else the pre-LINE `secrets.
+    telegram_chat_id` (byte-identical for every existing Telegram install,
+    AC28 -- `config.channel.type` defaults to `"telegram"`, so an
+    unconfigured `config.toml` resolves exactly as it always did)."""
+    return secrets.line_owner_user_id if config.channel.type == "line" else secrets.telegram_chat_id
+
+
+def _load_secrets_for_channel(load_secrets, config: Config) -> Secrets:
+    """SPEC-LINE.md §4 R-I1/AC1: validates the SELECTED channel's secrets
+    (`config.py:load_secrets`'s own new `channel_type` param, shared
+    surface). Calls `load_secrets()` completely bare -- no kwarg at all --
+    for the Telegram default, byte-identical to every pre-LINE call site
+    (AC28): roughly two dozen existing tests across this suite monkeypatch
+    `main_module.load_secrets` with a zero-argument fake
+    (`lambda: SimpleNamespace(...)`), and none of them need to know this
+    branch exists. `channel_type="line"` is only ever passed when
+    `config.channel.type=="line"`, a shape unreachable outside this
+    branch's own tests."""
+    if config.channel.type == "line":
+        return load_secrets(channel_type="line")
+    return load_secrets()
+
 
 # Bot command menu copy -- used only by this module's own `set_my_commands`
 # registration below. See `main.py`'s pre-Stage-2 history for the per-entry
@@ -203,6 +251,7 @@ async def async_main(
     setup_logging,
     AsyncIOScheduler,
     TelegramChannel,
+    LineChannel=None,
     OllamaClient,
     HealthMonitor,
     run_due_reminders,
@@ -223,24 +272,26 @@ async def async_main(
     # row) -- the owner id only exists in `.env`, so both load secrets too.
     if args.seed:
         try:
-            secrets = load_secrets()
+            secrets = _load_secrets_for_channel(load_secrets, config)
         except ConfigError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         db = Database(config.app.db_path)
-        db.attribute_legacy_to_owner(secrets.telegram_chat_id)
-        seed_fake_data(db, config, secrets.telegram_chat_id)
+        owner_id = _owner_chat_id(config, secrets)
+        db.attribute_legacy_to_owner(owner_id)
+        seed_fake_data(db, config, owner_id)
         db.close()
         return
 
     if args.dry_run is not None:
         try:
-            secrets = load_secrets()
+            secrets = _load_secrets_for_channel(load_secrets, config)
         except ConfigError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         db = Database(config.app.db_path)
-        db.attribute_legacy_to_owner(secrets.telegram_chat_id)
+        owner_id = _owner_chat_id(config, secrets)
+        db.attribute_legacy_to_owner(owner_id)
         llm = OllamaClient(config.ollama.base_url, config.ollama.model_chain, config.ollama.timeout_seconds)
         await routing.handle_inbound_message(
             args.dry_run,
@@ -250,7 +301,7 @@ async def async_main(
             config=config,
             dry_run=True,
             registry=registry,
-            user_id=secrets.telegram_chat_id,
+            user_id=owner_id,
         )
         await llm.aclose()
         db.close()
@@ -293,7 +344,7 @@ async def async_main(
         return
 
     try:
-        secrets = load_secrets()
+        secrets = _load_secrets_for_channel(load_secrets, config)
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -304,10 +355,12 @@ async def async_main(
     # (kept as-is -- still used for the startup schema-conformance probe
     # and as every fan-out function's own fallback-only positional).
     provider = RegistryProvider(config, db)
+    owner_id = _owner_chat_id(config, secrets)
     # Startup attribution, called ONCE right after `load_secrets` -- the
     # owner id only lives in `.env`. Idempotent: safe to call on every
-    # startup unconditionally.
-    db.attribute_legacy_to_owner(secrets.telegram_chat_id)
+    # startup unconditionally. SPEC-LINE.md §4 R-I4: `owner_id` resolves to
+    # `LINE_OWNER_USER_ID` on this branch when `config.channel.type=="line"`.
+    db.attribute_legacy_to_owner(owner_id)
     # Retention, run ONCE at startup (cheap housekeeping, not per-insert) --
     # `retention_days = 0` means "keep forever".
     if config.audit.retention_days > 0:
@@ -317,20 +370,47 @@ async def async_main(
             logger.info(
                 "Pruned %d audit_log row(s) older than %s (retention_days=%d)", pruned, cutoff, config.audit.retention_days
             )
-    llm = OllamaClient(
-        config.ollama.base_url,
-        config.ollama.model_chain,
-        config.ollama.timeout_seconds,
-        retry_attempts=config.ollama.retry_attempts,
-        retry_backoff_seconds=config.ollama.retry_backoff_seconds,
+    # SPEC-LINE.md §4 R-B9/§5.2 row 8 (branch `line-version`): no
+    # `OllamaClient` at all when `ollama.enabled` is False -- not even a
+    # stub -- so there is structurally nothing to accidentally call.
+    # `llm` threads through as `None` to every downstream site below (the
+    # long-poll loop, the digest job, the recovery sweep); each one already
+    # gates on `config.ollama.enabled` itself (module B) before ever
+    # touching it, so `None` is safe by construction, not by luck.
+    llm = (
+        OllamaClient(
+            config.ollama.base_url,
+            config.ollama.model_chain,
+            config.ollama.timeout_seconds,
+            retry_attempts=config.ollama.retry_attempts,
+            retry_backoff_seconds=config.ollama.retry_backoff_seconds,
+        )
+        if config.ollama.enabled
+        else None
     )
-    channel = TelegramChannel(
-        secrets.telegram_bot_token,
-        secrets.telegram_chat_id,
-        config.telegram.poll_timeout,
-        backoff_initial_seconds=config.telegram.backoff_initial_seconds,
-        backoff_max_seconds=config.telegram.backoff_max_seconds,
-    )
+    # SPEC-LINE.md §4 R-I1: channel selection by `config.channel.type` --
+    # the Telegram branch is untouched, byte-for-byte (AC28). `LineChannel`
+    # is a required constructor for the "line" branch (a caller that
+    # configures `type="line"` without supplying one is a wiring bug, not a
+    # runtime case to silently degrade); the default `None` on the
+    # parameter itself exists purely so a Telegram-only caller/test isn't
+    # forced to pass an unused class.
+    if config.channel.type == "line":
+        channel = LineChannel(
+            secrets.line_channel_access_token,
+            secrets.line_channel_secret,
+            secrets.line_owner_user_id,
+            config,
+            db,
+        )
+    else:
+        channel = TelegramChannel(
+            secrets.telegram_bot_token,
+            secrets.telegram_chat_id,
+            config.telegram.poll_timeout,
+            backoff_initial_seconds=config.telegram.backoff_initial_seconds,
+            backoff_max_seconds=config.telegram.backoff_max_seconds,
+        )
 
     # One `ReminderState` for the process lifetime, updated by every
     # `send_reminder` that actually fires and read by `_execute_snooze` to
@@ -342,21 +422,24 @@ async def async_main(
         if habit is None:
             print(f"ERROR: {args.test_reminder!r} is not a configured habit", file=sys.stderr)
             await channel.aclose()
-            await llm.aclose()
+            if llm is not None:
+                await llm.aclose()
             db.close()
             sys.exit(1)
         try:
             await send_reminder(
-                channel, secrets.telegram_chat_id, habit, i18n.resolve_unprompted_language(config), db, config, reminder_state
+                channel, owner_id, habit, i18n.resolve_unprompted_language(config), db, config, reminder_state
             )
         except httpx.HTTPError as exc:
             print(f"ERROR: Failed to send test reminder: {exc}", file=sys.stderr)
             await channel.aclose()
-            await llm.aclose()
+            if llm is not None:
+                await llm.aclose()
             db.close()
             sys.exit(1)
         await channel.aclose()
-        await llm.aclose()
+        if llm is not None:
+            await llm.aclose()
         db.close()
         return
 
@@ -364,7 +447,9 @@ async def async_main(
     # system/user prompt, then probe each configured model's schema
     # conformance once at startup, purely for operator visibility. Never
     # allowed to crash startup.
-    if config.ollama.probe_on_startup:
+    # SPEC-LINE.md §4 R-B7/§5.2 row 7: the probe never runs at all when
+    # `ollama.enabled` is False -- there is no client to probe with.
+    if config.ollama.enabled and config.ollama.probe_on_startup:
         extraction_schema = build_extraction_schema(registry.category_enum())
         probe_system_prompt = build_extraction_system_prompt(registry)
         probe_user_prompt = build_extraction_user_prompt("500ml")
@@ -377,7 +462,19 @@ async def async_main(
     # fanned out to every active user. Deliberately NOT reached by the
     # --seed/--dry-run/--test-reminder CLI branches above (all of which
     # already returned by this point).
-    await announce.announce_release(db, channel, config, version)
+    #
+    # SPEC-LINE.md §4 R-C2 (branch `line-version`): this is a proactive
+    # PUSH send (no reply context ever active at startup), and it is fired
+    # directly from here rather than through `core/jobs.py` -- the ONE
+    # proactive-send call site R-C2's own suppression list doesn't cover,
+    # since module C only gates functions living in `jobs.py`. Skipped
+    # entirely on LINE: the release note is instead folded into the daily
+    # digest (R-C1 item (e), `core/digest.py`'s own `_pending_announcement_
+    # version` read of this SAME `RELEASE_NOTES`/`last_announced_version`
+    # state), so nothing here needs a channel-type branch beyond this one
+    # early skip -- the Telegram path is unaffected (AC28).
+    if config.channel.type != "line":
+        await announce.announce_release(db, channel, config, version)
 
     # Register the bot command menu once at startup -- 23 public commands
     # (SPEC-v1.10.md §4 R17: 22 -> 23, `/guide` appended after `/wrapped`).
@@ -429,12 +526,14 @@ async def async_main(
         for lang, entries in command_menu.items()
     }
     try:
-        await channel.set_my_commands(owner_command_menu, scope_chat_id=secrets.telegram_chat_id)
+        await channel.set_my_commands(owner_command_menu, scope_chat_id=owner_id)
     except Exception:
         logger.exception("set_my_commands (owner-scoped) failed at startup; continuing")
 
     # Catch up on anything deferred by a *previous* process run before
-    # entering the main loop.
+    # entering the main loop. Already self-guarded on `config.ollama.
+    # enabled` inside `reparse_pending_unparsed` (module B) -- safe to call
+    # unconditionally with `llm=None`.
     try:
         await routing.reparse_pending_unparsed(db, llm, channel, config, registry, provider=provider)
     except Exception:
@@ -443,15 +542,28 @@ async def async_main(
     async def on_ollama_recovered() -> None:
         await routing.reparse_pending_unparsed(db, llm, channel, config, registry, provider=provider)
 
-    health_monitor = HealthMonitor(
-        config.ollama.base_url,
-        secrets.telegram_bot_token,
-        secrets.telegram_chat_id,
-        interval_seconds=config.health.interval_seconds,
-        channel=channel,
-        on_ollama_recovered=on_ollama_recovered,
-        language=i18n.resolve_unprompted_language(config),
-    )
+    # SPEC-LINE.md §4 R-B8/§5.2 row 8 (branch `line-version`): the monitor
+    # is not wired at all on LINE -- not just its Ollama half. Its
+    # Telegram half (`check_telegram`, a `getMe` liveness ping) has no
+    # LINE equivalent and needs `secrets.telegram_bot_token`, which is
+    # `None` on a LINE deployment; connectivity is implicit in webhook
+    # delivery instead (AC28's own "does not construct ... the health
+    # monitor" for `type=="line"`). `ollama_enabled=config.ollama.enabled`
+    # covers the OTHER, independent axis (a hypothetical no-LLM Telegram
+    # install) -- module B's own `HealthMonitor.check_ollama` already
+    # no-ops when this is False.
+    health_monitor = None
+    if config.channel.type == "telegram":
+        health_monitor = HealthMonitor(
+            config.ollama.base_url,
+            secrets.telegram_bot_token,
+            secrets.telegram_chat_id,
+            interval_seconds=config.health.interval_seconds,
+            channel=channel,
+            on_ollama_recovered=on_ollama_recovered,
+            language=i18n.resolve_unprompted_language(config),
+            ollama_enabled=config.ollama.enabled,
+        )
 
     # SPEC-REFACTOR.md Stage 1 rule 2/AC4: a single minutely tick
     # (`core/jobs.py:minutely_tick`) replaces the three independent
@@ -542,8 +654,55 @@ async def async_main(
         misfire_grace_time=3600,
     )
 
+    # SPEC-LINE.md §4 R-C1/R-I2 (branch `line-version`): the one daily
+    # digest push, registered ONLY on LINE -- on Telegram this would be a
+    # brand-new proactive send with no pre-LINE equivalent, which AC28's
+    # "the Telegram path is byte-unchanged" forbids adding. The other six
+    # jobs just above stay registered unconditionally on BOTH channels
+    # (R-I2's own "or run in their suppressed form" alternative) -- each
+    # already self-gates on `config.channel.type == "line"` inside
+    # `core/jobs.py` (module C), so leaving their registration untouched
+    # here is the smallest-diff way to satisfy R-I2 without a second,
+    # parallel wiring path. `scheduler=scheduler` is what lets `run_daily_
+    # digest` defer a send past a user's own quiet-hours window (see that
+    # function's own docstring for the ARCHI RULING this implements, and
+    # `deploy/habit-assistant-line.service`'s own comment for the single-
+    # instance assumption the in-memory once-per-day guard relies on).
+    if config.channel.type == "line":
+        digest_hour, digest_minute = (int(x) for x in config.digest.time.split(":"))
+
+        async def _digest_job() -> None:
+            await digest.run_daily_digest(db, channel, config, provider, scheduler=scheduler)
+
+        scheduler.add_job(
+            _digest_job,
+            trigger=CronTrigger(hour=digest_hour, minute=digest_minute, timezone=config.app.timezone),
+            id="daily_digest",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=30,
+        )
+
     scheduler.start()
-    logger.info("Scheduler started; entering Telegram long-poll loop")
+
+    # SPEC-LINE.md §4 R-A10/R-I3 (branch `line-version`): the one static
+    # rich menu, registered once at startup, fail-open (`register_rich_
+    # menu` itself never raises -- module A's own contract, AC14) --
+    # called here, right before the app enters its serve-forever loop
+    # (`channel.run(...)` below never returns control until shutdown, so
+    # "after the app is up" means "after all one-time startup wiring is
+    # done", the same point every other startup-only step above already
+    # runs at).
+    if config.channel.type == "line":
+        try:
+            await channel.register_rich_menu()
+        except Exception:
+            logger.exception("LINE rich menu registration failed at startup; continuing")
+
+    logger.info(
+        "Scheduler started; entering %s", "the LINE webhook server" if config.channel.type == "line" else "the Telegram long-poll loop"
+    )
 
     async def _on_message(
         chat_id: str,
@@ -562,7 +721,7 @@ async def async_main(
             llm=llm,
             channel=channel,
             config=config,
-            owner_chat_id=secrets.telegram_chat_id,
+            owner_chat_id=owner_id,
             provider=provider,
             scheduler=scheduler,
             reminder_state=reminder_state,
@@ -572,17 +731,20 @@ async def async_main(
     async def _on_callback(chat_id: str, data: str, source_text: str, callback_id: str) -> None:
         await routing.on_callback(chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, provider=provider)
 
-    # The health monitor runs as its own asyncio task alongside the
-    # scheduler and the inbound loop.
-    health_task = asyncio.create_task(health_monitor.run())
+    # The health monitor (Telegram only, see its construction above) runs
+    # as its own asyncio task alongside the scheduler and the inbound loop.
+    health_task = asyncio.create_task(health_monitor.run()) if health_monitor is not None else None
     try:
         await channel.run(_on_message, on_callback=_on_callback)
     finally:
-        health_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await health_task
-        await health_monitor.aclose()
+        if health_task is not None:
+            health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await health_task
+        if health_monitor is not None:
+            await health_monitor.aclose()
         scheduler.shutdown(wait=False)
         await channel.aclose()
-        await llm.aclose()
+        if llm is not None:
+            await llm.aclose()
         db.close()

@@ -691,7 +691,7 @@ def test_migration_011_touches_no_existing_data(tmp_path):
     conn.close()
 
     db_ = Database(db_path)
-    assert db_.schema_version == 13
+    assert db_.schema_version == 14
     assert db_.schema_version_before == 10
 
     row = db_._conn.execute("SELECT * FROM logs WHERE category = 'water'").fetchone()

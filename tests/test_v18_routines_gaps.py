@@ -782,10 +782,15 @@ def test_migration_011_preexisting_v10_data_byte_identical_after_migration(tmp_p
     # correctly-NULL column that didn't exist yet at this test's v10 seed.
     for row in before["logs"]:
         row["unparsed_state"] = None
+    # SPEC-LINE.md migration 014 (branch `line-version`) additively adds
+    # `users.digest_opt_out` (default 0) -- same reasoning as above, applied
+    # to the "before" users baseline instead of logs.
+    for row in before["users"]:
+        row["digest_opt_out"] = 0
 
     db_ = Database(db_path)
     assert db_.schema_version_before == 10
-    assert db_.schema_version == 13
+    assert db_.schema_version == 14
     db_.close()
 
     after = {

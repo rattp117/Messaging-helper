@@ -200,8 +200,12 @@ def test_invariant_query_is_the_only_substring_matcher_and_stays_last():
 
 _EXPECTED_ROW_ORDER = [
     "undo", "edit", "snooze", "target", "remind", "access", "audit", "lang",
-    "quiet", "checkin", "dnd", "dashboard", "history", "heatmap", "records",
-    "trends", "wrapped", "addhabit", "delhabit", "log", "routine", "cadence",
+    "quiet", "checkin", "dnd", "dashboard",
+    "digest",  # SPEC-LINE.md §4 R-C4 (module C, branch `line-version`): additive 29th row, grouped next to "dashboard" (disjoint trigger text, exact position doesn't change behavior).
+    "history", "heatmap", "records",
+    "trends", "wrapped",
+    "review",  # SPEC-LINE.md §4 R-C5 (Integration pass, branch `line-version`): additive 30th row, grouped next to "wrapped" (disjoint trigger text, exact position doesn't change behavior).
+    "addhabit", "delhabit", "log", "routine", "cadence",
     "pause", "resume", "help", "habits",
     "guide",  # SPEC-v1.10.md R-SS8 (shared surface): additive 28th row, before "query" (R-SS8's own stated placement).
     "query",
@@ -211,8 +215,9 @@ _EXPECTED_ROW_ORDER = [
 def test_matchers_table_has_all_27_rows_in_the_exact_pre_conversion_order():
     """Name kept for historical continuity with the Stage 3 refactor this
     file documents (the ORIGINAL 27-row conversion, still exactly
-    reproduced here) -- `_EXPECTED_ROW_ORDER` above now carries one
-    additive 28th row (SPEC-v1.10.md "guide")."""
+    reproduced here) -- `_EXPECTED_ROW_ORDER` above now carries three
+    additive rows on top of the original 27 (SPEC-v1.10.md "guide", then
+    SPEC-LINE.md "digest", then SPEC-LINE.md "review")."""
     assert [m.kind for m in commands._MATCHERS] == _EXPECTED_ROW_ORDER
 
 

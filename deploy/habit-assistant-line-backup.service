@@ -1,0 +1,26 @@
+# SPEC-LINE.md §4 R-D3 (Module D, branch line-version): nightly DB backup
+# as a systemd oneshot, triggered by habit-assistant-line-backup.timer.
+# Replaces the Windows Task Scheduler "Habit Assistant Nightly Backup" job
+# (PROGRESS.md 2026-08-27, daily 03:30, `--backup` CLI) -- same flag, same
+# schedule, same [backup] dir/retain config knobs (config.toml.line).
+# Installed by deploy/setup.sh; see docs/DEPLOY-LINE.md.
+
+[Unit]
+Description=Habit Assistant (LINE edition) - nightly DB backup
+Documentation=file:/opt/habit-assistant/docs/DEPLOY-LINE.md
+After=network.target
+
+[Service]
+Type=oneshot
+User=habitbot
+Group=habitbot
+WorkingDirectory=/opt/habit-assistant
+EnvironmentFile=/opt/habit-assistant/.env
+ExecStart=/opt/habit-assistant/.venv/bin/python -m habit_assistant.main --backup
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/habit-assistant/data
+UMask=0027

@@ -93,6 +93,9 @@ _ACTION_LABEL_MSG_IDS: dict[str, str] = {
     "pause_set": "audit_action_pause_set",
     "pause_clear": "audit_action_pause_clear",
     "grace_consumed": "audit_action_grace_consumed",
+    # SPEC-LINE.md §4 R-C4 (module C, branch `line-version`).
+    "digest_set": "audit_action_digest_set",
+    "digest_off": "audit_action_digest_off",
 }
 
 

@@ -1171,3 +1171,67 @@ class Database:
             (user_id, habit_id, period_key),
         ).fetchone()
         return row is not None
+
+    # -----------------------------------------------------------------
+    # push_ledger / users.digest_opt_out (SPEC-LINE.md §4 R-S5, migration
+    # 014, branch `line-version`): LINE Push API quota bookkeeping + the
+    # trimmed daily digest's own per-user opt-out. The ONLY writer of
+    # `push_ledger` is the channel's own push path (R-A6/R-C6, module A) --
+    # every send that ever counts against LINE's monthly quota (Reply API
+    # sends never call `increment_push` at all, they're free/uncounted) --
+    # so the count here is authoritative regardless of caller. Storage-only
+    # throughout, mirrors `set_target`'s/`upsert_record`'s own "storage
+    # just stores/sums, the caller already decided" split.
+    # -----------------------------------------------------------------
+
+    def increment_push(self, user_id: str, yyyymm: str) -> None:
+        """Upsert -- `count = count + 1` for `(user_id, yyyymm)`, creating
+        the row at `count = 1` on the first push of a new month. `ON
+        CONFLICT` matches migration 014's `PRIMARY KEY (user_id, yyyymm)`."""
+        self._conn.execute(
+            "INSERT INTO push_ledger (user_id, yyyymm, count, updated_at) "
+            "VALUES (?, ?, 1, datetime('now','localtime')) "
+            "ON CONFLICT(user_id, yyyymm) DO UPDATE SET "
+            "count = count + 1, updated_at = excluded.updated_at",
+            (user_id, yyyymm),
+        )
+        self._conn.commit()
+
+    def push_count(self, user_id: str, yyyymm: str) -> int:
+        """How many pushes `user_id` has received in `yyyymm` ("YYYY-MM"),
+        or 0 if no row exists yet (no push sent this month)."""
+        row = self._conn.execute(
+            "SELECT count FROM push_ledger WHERE user_id = ? AND yyyymm = ?", (user_id, yyyymm)
+        ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def monthly_push_total(self, yyyymm: str) -> int:
+        """R-C7: the running month's total push count summed ACROSS every
+        user -- the owner's own digest quota-warning line compares this
+        against `config.digest.warn_cap` (default 280, against LINE's
+        free-plan ceiling of ~300/month). 0 (via `COALESCE`) when no push
+        has been sent yet this month, not an error/None."""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(count), 0) AS total FROM push_ledger WHERE yyyymm = ?", (yyyymm,)
+        ).fetchone()
+        return int(row["total"])
+
+    def digest_opt_out(self, user_id: str) -> bool:
+        """The stored `users.digest_opt_out` flag for `user_id` -- `False`
+        (subscribed) for both a row that has never toggled it (column
+        default 0, migration 014) and a `user_id` with no `users` row at
+        all yet, matching the locked decision (2026-08-29): digest is
+        opt-OUT, default ON."""
+        row = self.get_user(user_id)
+        return bool(row["digest_opt_out"]) if row is not None else False
+
+    def set_digest_opt_out(self, user_id: str, value: bool) -> None:
+        """Upsert, mirrors `set_checkin_window`'s/`set_last_announced_
+        version`'s own shape exactly. `/digest off` (module C, R-C4) calls
+        this with `True`; `/digest on` with `False`."""
+        self._conn.execute(
+            "INSERT INTO users (chat_id, digest_opt_out) VALUES (?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET digest_opt_out = excluded.digest_opt_out",
+            (user_id, int(value)),
+        )
+        self._conn.commit()

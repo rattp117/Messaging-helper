@@ -49,7 +49,7 @@ import pytest
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.line import LineChannel
 from habit_assistant.channels.telegram import TelegramChannel
-from habit_assistant.config import Config
+from habit_assistant.config import Config, LineConfig
 from habit_assistant.core import charts, i18n
 from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.core.review import compute_weekly_stats, render_weekly_review_charts, run_weekly_review
@@ -226,19 +226,25 @@ def test_channel_send_image_default_is_defined_on_the_abc_itself():
     assert "send_image" not in ImagelessChannel.__dict__
 
 
-def test_line_channel_stub_still_imports_and_is_a_valid_channel_subclass():
+async def test_line_channel_is_a_valid_channel_subclass_with_a_concrete_send_image(tmp_path):
     """Regression check on the ABC extension: adding a concrete (not
     @abstractmethod) send_image to Channel must not change whether
-    channels/line.py's documented stub is a valid, instantiable-in-principle
-    subclass. LineChannel only overrides send/run (not send_image) and its
-    __init__ deliberately raises NotImplementedError itself (documented
-    stub) -- so instantiating it must fail with THAT specific, intentional
-    error, not a TypeError from abc.ABCMeta complaining about an unimplemented
-    abstract method (which is what would happen if send_image had been added
-    as @abstractmethod instead of a default)."""
+    channels/line.py's LineChannel is a valid, instantiable subclass --
+    `abc.ABCMeta` must not complain about an unimplemented abstract method
+    (which is what would happen if send_image had been added as
+    @abstractmethod instead of a default). SPEC-LINE.md Module A replaced
+    the pre-LINE-branch documented stub with a real implementation
+    (tests/test_line_channel.py covers its own behavior); this file only
+    needs the ABC-shape guarantee `render_weekly_review_charts`'s own
+    `send_image` degrade path (below) relies on."""
     assert issubclass(LineChannel, Channel)
-    with pytest.raises(NotImplementedError):
-        LineChannel()
+    config = Config(line=LineConfig(media_dir=str(tmp_path / "media")))
+    db = Database(tmp_path / "line_abc_check.db")
+    channel = LineChannel("tok", "secret", "Uowner", config, db)
+    try:
+        assert isinstance(channel, Channel)
+    finally:
+        await channel.aclose()
 
 
 # ---------------------------------------------------------------------------

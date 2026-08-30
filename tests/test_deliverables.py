@@ -62,9 +62,17 @@ def test_config_toml_exists_at_repo_root():
     assert (REPO_ROOT / "config.toml").exists()
 
 
-def test_line_channel_stub_documents_webhook_requirement():
+def test_line_channel_is_implemented_via_the_webhook_server():
+    """SPEC-LINE.md Module A replaced the pre-LINE-branch documented stub
+    (which just asserted "webhook" in the docstring + a NotImplementedError
+    placeholder) with a real implementation -- channels/line.py now wires
+    an actual webhook server (channels/line_webhook.py) instead of raising.
+    tests/test_line_channel.py and tests/test_line_webhook.py cover the
+    real behavior in full; this deliverable-presence check just confirms
+    the file exists and is no longer a stub."""
     path = REPO_ROOT / "src" / "habit_assistant" / "channels" / "line.py"
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "webhook" in text.lower()
-    assert "NotImplementedError" in text
+    assert "class LineChannel" in text
+    assert "NotImplementedError" not in text

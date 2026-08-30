@@ -71,6 +71,18 @@ class OllamaConfig(BaseModel):
     # (module `preparse`'s own wiring point, not read by the shared
     # surface itself).
     probe_on_startup: bool = True
+    # SPEC-LINE.md §4 R-S1 (shared surface, branch `line-version`): the
+    # master no-LLM-mode switch (§5.2's normative call-site table). Default
+    # `True` preserves every pre-LINE install's behavior byte-for-byte (an
+    # absent `[ollama]` section, or one that doesn't set this key, keeps
+    # calling Ollama exactly as before); `config.toml.line` (module D's own
+    # deployment template) is the ONLY place this branch sets it `False` --
+    # this class default does not change what the repo's own `config.toml`
+    # (Telegram edition) does. `False` is the LINE branch's permanent,
+    # only-supported mode: `core/app.py` never constructs an `OllamaClient`
+    # (R-B9), the startup schema probe is skipped (R-B7), and every LLM
+    # call site in §5.2 short-circuits to a deterministic fallback (R-B1-B6).
+    enabled: bool = True
 
     @property
     def model_chain(self) -> list[str]:
@@ -85,6 +97,65 @@ class TelegramConfig(BaseModel):
     poll_timeout: int = 30
     backoff_initial_seconds: float = 1.0
     backoff_max_seconds: float = 60.0
+
+
+class ChannelConfig(BaseModel):
+    """SPEC-LINE.md §4 R-S2 (shared surface, branch `line-version`): which
+    concrete `Channel` `core/app.py` constructs at startup (module
+    Integration's own R-I1 wiring; not read anywhere in this shared-surface
+    pass). Default `"telegram"` preserves every pre-LINE install's
+    behavior byte-for-byte -- the repo's own `config.toml` never sets
+    `[channel]` at all, so it keeps constructing `TelegramChannel` exactly
+    as before (AC28's "Telegram path is byte-unchanged"). The LINE
+    deployment's own `config.toml.line` template (module D) is the only
+    place `type = "line"` is set."""
+
+    type: Literal["telegram", "line"] = "telegram"
+
+
+class LineConfig(BaseModel):
+    """SPEC-LINE.md §4 R-S2/§2.3 (shared surface): the LINE webhook/media
+    server's own tuning knobs (module A's own read path -- nothing in the
+    shared surface reads these). All defaulted so an absent `[line]`
+    section (every non-LINE install, including the repo's own
+    `config.toml`) never raises; `config.toml.line` fills in the real
+    `public_base_url` for a given VPS/tailnet."""
+
+    public_base_url: str = ""
+    bind_host: str = "127.0.0.1"
+    bind_port: int = 8080
+    media_dir: str = "data/media"
+    media_ttl_seconds: int = 3600
+    rich_menu_image: str = "assets/richmenu/richmenu.png"
+
+
+class DigestConfig(BaseModel):
+    """SPEC-LINE.md §4 R-S2/§2.3 (shared surface): the trimmed daily-digest
+    job's own tuning knobs (module C's own read path). `enabled = True` is
+    the locked user decision (2026-08-29, SPEC-LINE.md's own header):
+    per-user opt-out, not opt-in -- `users.digest_opt_out` (migration 014,
+    R-S4) is the per-user override, this flag is the job's own master
+    switch. `warn_cap` is the owner quota-warning threshold (R-C7, default
+    280 against LINE's free-plan ceiling of ~300/month)."""
+
+    enabled: bool = True
+    time: str = "20:00"
+    warn_cap: int = 280
+    include_weekly_review_day: bool = True
+
+    @field_validator("time")
+    @classmethod
+    def _time_is_hhmm(cls, v: str) -> str:
+        if not _HHMM_RE.match(v):
+            raise ValueError(f"digest.time {v!r} must match HH:MM")
+        return v
+
+    @field_validator("warn_cap")
+    @classmethod
+    def _warn_cap_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("digest.warn_cap must be a positive integer")
+        return v
 
 
 class WeeklyReviewConfig(BaseModel):
@@ -665,6 +736,14 @@ class Config(BaseModel):
     outage: OutageConfig = OutageConfig()
     clarify: ClarifyConfig = ClarifyConfig()
     reply_to_reminder: ReplyToReminderConfig = ReplyToReminderConfig()
+    # SPEC-LINE.md §4 R-S2/§6 (shared surface, branch `line-version`): three
+    # new sections, all defaulted -- an absent section in config.toml uses
+    # the class defaults above (`channel.type="telegram"`, so the repo's own
+    # `config.toml`, which never sets `[channel]`, is byte-unchanged), same
+    # posture as every prior config addition in this file.
+    channel: ChannelConfig = ChannelConfig()
+    line: LineConfig = LineConfig()
+    digest: DigestConfig = DigestConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")
@@ -678,7 +757,16 @@ class Config(BaseModel):
 
 
 class Secrets(BaseSettings):
-    """Loaded from environment variables / .env. Never persisted to config.toml."""
+    """Loaded from environment variables / .env. Never persisted to config.toml.
+
+    SPEC-LINE.md §2.2/§4 R-S3 (shared surface, branch `line-version`): every
+    field is now OPTIONAL at the pydantic level -- which ones are actually
+    REQUIRED depends on `config.channel.type` (Telegram needs
+    `telegram_bot_token`/`telegram_chat_id`; LINE needs the three
+    `line_*` fields below), a decision pydantic's own built-in
+    required-field validation has no way to make since it can't see
+    `channel.type`. `load_secrets` (below) does that check explicitly,
+    after construction."""
 
     model_config = SettingsConfigDict(
         env_file=str(DEFAULT_ENV_PATH),
@@ -686,8 +774,12 @@ class Secrets(BaseSettings):
         extra="ignore",
     )
 
-    telegram_bot_token: str
-    telegram_chat_id: str
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    # SPEC-LINE.md §2.2: required iff config.channel.type == "line".
+    line_channel_access_token: str | None = None
+    line_channel_secret: str | None = None
+    line_owner_user_id: str | None = None
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -707,18 +799,50 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError(f"Invalid config in {config_path}:\n{exc}") from exc
 
 
-def load_secrets(env_file: Path | None = None) -> Secrets:
-    """Load TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from .env / environment.
-    Raises ConfigError with a clear, actionable message if either is missing."""
+# SPEC-LINE.md §4 R-S3: which Secrets fields each channel type requires --
+# keyed by the same `config.channel.type` literal `ChannelConfig.type` uses.
+_REQUIRED_SECRETS_BY_CHANNEL: dict[str, tuple[str, ...]] = {
+    "telegram": ("telegram_bot_token", "telegram_chat_id"),
+    "line": ("line_channel_access_token", "line_channel_secret", "line_owner_user_id"),
+}
+
+
+def load_secrets(env_file: Path | None = None, *, channel_type: Literal["telegram", "line"] = "telegram") -> Secrets:
+    """Load the SELECTED channel's secrets from .env / environment. Raises
+    ConfigError with a clear, actionable message if any required field is
+    missing.
+
+    SPEC-LINE.md §4 R-S3 (shared surface, branch `line-version`):
+    `channel_type` is an additive, keyword-only, DEFAULTED param --
+    `"telegram"` is byte-identical to every pre-LINE caller (AC1's own
+    "no LINE var missing" success path is unaffected for the Telegram
+    edition; `core/app.py`'s three existing `load_secrets()` call sites
+    keep validating exactly `telegram_bot_token`/`telegram_chat_id` until
+    Integration passes `channel_type=config.channel.type`, R-I1). Every
+    `Secrets` field is optional now (see its own docstring above), so
+    pydantic's built-in required-field validation can no longer do this
+    check -- it moved here, where the selected channel is known."""
     try:
         if env_file is not None:
-            return Secrets(_env_file=str(env_file))  # type: ignore[call-arg]
-        return Secrets()
+            secrets = Secrets(_env_file=str(env_file))  # type: ignore[call-arg]
+        else:
+            secrets = Secrets()
     except ValidationError as exc:
-        missing = [str(e["loc"][0]) for e in exc.errors() if e["type"] == "missing"]
-        detail = f"missing: {', '.join(missing)}" if missing else str(exc)
+        raise ConfigError(f"Could not load secrets from .env: {exc}") from exc
+
+    required = _REQUIRED_SECRETS_BY_CHANNEL[channel_type]
+    missing = [name for name in required if getattr(secrets, name) is None]
+    if not missing:
+        return secrets
+
+    if channel_type == "line":
         raise ConfigError(
-            "Could not load Telegram credentials from .env "
-            f"({detail}). Copy .env.example to .env and fill in "
-            "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
-        ) from exc
+            "Could not load LINE credentials from .env "
+            f"(missing: {', '.join(missing)}). Copy .env.example to .env and fill in "
+            "LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, and LINE_OWNER_USER_ID."
+        )
+    raise ConfigError(
+        "Could not load Telegram credentials from .env "
+        f"(missing: {', '.join(missing)}). Copy .env.example to .env and fill in "
+        "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+    )

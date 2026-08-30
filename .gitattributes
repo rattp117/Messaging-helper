@@ -1,0 +1,16 @@
+# SPEC-LINE.md §4 R-D1/R-D2/R-D3 (Module D, branch line-version): these
+# files run on the Linux VPS (bash scripts a shell interprets by shebang,
+# systemd unit/timer files systemd parses line-by-line, a plain crontab).
+# core.autocrlf=true on a Windows dev box (the norm here) would otherwise
+# check these out with CRLF line endings on `git clone`/`checkout` --
+# `\r` in a shebang breaks exec, and stray `\r` in a systemd unit's value
+# lines is a documented source of "Invalid ... setting, ignoring" parse
+# failures. Force LF for this branch's deploy artifacts regardless of the
+# checking-out machine's core.autocrlf.
+deploy/*.sh text eol=lf
+deploy/*.service text eol=lf
+deploy/*.timer text eol=lf
+deploy/*.cron text eol=lf
+config.toml.line text eol=lf
+.env.example text eol=lf
+.env.line.example text eol=lf

@@ -65,11 +65,11 @@ def _insert_unparsed(db_: Database, raw: str = "500", unparsed_state: str | None
 
 
 def test_migration_count_is_13():
-    assert len(MIGRATIONS) == 13
+    assert len(MIGRATIONS) == 14
 
 
 def test_fresh_db_has_unparsed_state_column_default_null(db):
-    assert db.schema_version == 13
+    assert db.schema_version == 14
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)")}
     assert "unparsed_state" in cols
     log_id = _insert_unparsed(db)
@@ -102,6 +102,29 @@ def test_migration_013_upgrades_a_v19_db_and_preserves_the_existing_unparsed_row
         )
         """
     )
+    # SPEC-LINE.md §4 R-S4 (branch `line-version`): migration 014, applied
+    # right after 013 on THIS same fixture, ALTERs `users` -- a real v12 DB
+    # always has that table (migration 006 created it long before 012), so
+    # this synthetic seed needs it too for migration 014 to have something
+    # to ALTER, even though this test's own assertions below never touch it.
+    conn.execute(
+        """
+        CREATE TABLE users (
+          chat_id                 TEXT PRIMARY KEY,
+          role                    TEXT NOT NULL DEFAULT 'member',
+          status                  TEXT NOT NULL DEFAULT 'pending',
+          display_name            TEXT,
+          language_pref           TEXT NOT NULL DEFAULT 'auto',
+          quiet_hours_json        TEXT,
+          snooze_default_minutes  INTEGER,
+          checkin_window          TEXT NULL,
+          last_announced_version  TEXT NULL,
+          dashboard_msg_id        TEXT NULL,
+          created_at              TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    conn.execute("INSERT INTO users (chat_id, role, status) VALUES ('owner', 'owner', 'active')")
     conn.execute(
         "INSERT INTO logs (id, ts, category, value_num, value_text, raw_message, source, user_id) "
         "VALUES (13, '2026-08-25T10:00:00', 'unparsed', NULL, NULL, 'Streaching', 'reply', 'owner')"
@@ -113,7 +136,7 @@ def test_migration_013_upgrades_a_v19_db_and_preserves_the_existing_unparsed_row
     database = Database(path)
     try:
         assert database.schema_version_before == 12
-        assert database.schema_version == 13
+        assert database.schema_version == 14
         row = database.get_log(13)
         assert row["category"] == "unparsed"
         assert row["raw_message"] == "Streaching"
@@ -127,8 +150,8 @@ def test_migration_013_upgrades_a_v19_db_and_preserves_the_existing_unparsed_row
 
     reopened = Database(path)
     try:
-        assert reopened.schema_version_before == 13
-        assert reopened.schema_version == 13
+        assert reopened.schema_version_before == 14
+        assert reopened.schema_version == 14
     finally:
         reopened.close()
 

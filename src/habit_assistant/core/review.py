@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from habit_assistant.config import Config
 from habit_assistant.core import charts, garmin, i18n, pause, streaks, targets, timeutil, trends
@@ -27,6 +27,10 @@ from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import WEEKLY_REVIEW_SYSTEM_PROMPT, WEEKLY_REVIEW_USER_TEMPLATE
 from habit_assistant.storage.db import Database
+
+if TYPE_CHECKING:
+    from habit_assistant.channels.base import Channel
+    from habit_assistant.core.commands import Command
 
 logger = logging.getLogger(__name__)
 
@@ -278,9 +282,16 @@ async def run_weekly_review(
     stats = compute_weekly_stats(db, config, registry, end_date, user_id)
     summary = format_stats_summary(stats, registry, lang)
 
-    narrative = await llm.chat_text(
-        WEEKLY_REVIEW_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
-        WEEKLY_REVIEW_USER_TEMPLATE.format(stats_summary=summary),
+    # SPEC-LINE.md §4 R-B6, §5.2 row 6 (no-LLM mode, branch `line-version`):
+    # force the static fallback narrative, zero LLM calls, when
+    # `config.ollama.enabled` is False. Stats block + charts are unchanged.
+    narrative = (
+        await llm.chat_text(
+            WEEKLY_REVIEW_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
+            WEEKLY_REVIEW_USER_TEMPLATE.format(stats_summary=summary),
+        )
+        if config.ollama.enabled
+        else None
     )
     if not narrative:
         narrative = i18n.t("weekly_review_fallback_narrative", lang)
@@ -375,3 +386,73 @@ def render_weekly_review_charts(
             continue
         pairs.append((image, _chart_caption(hs, lang)))
     return pairs
+
+
+# ===========================================================================
+# execute_review -- SPEC-LINE.md §4 R-C5/AC25 (module C's own flagged gap,
+# built at the Integration pass -- IMPL-LINE-C.md "Known limitations": "the
+# new /review command itself ... is NOT built by this pass -- it needs a
+# media-URL delivery path that is Module A's/Integration's territory").
+# Renders the weekly review as a free REPLY -- the on-demand substitute for
+# the auto-pushed weekly review R-C2 suppresses on LINE (`core/jobs.py:
+# weekly_review_job`'s own early return for `config.channel.type=="line"`).
+# ===========================================================================
+
+# SPEC-LINE.md §7: LINE caps a reply at 5 message objects. `send_image`
+# (channels/line.py) emits TWO per call -- a caption `text` object plus the
+# `image` object itself -- so the review's own text summary (1 object) plus
+# at most `_REVIEW_MAX_IMAGES` charts (2 objects each) is the most this
+# function can ever emit in one reply: 1 + 2*2 = 5, exactly at the limit,
+# never over it. Capped HERE rather than left to `LineChannel._flush_reply`'s
+# own overflow-drop (R-A4) -- that drop is a blunt "keep the first 5
+# objects, discard the rest" rule that could just as easily strand a bare
+# caption with no image (or vice versa) if a 3rd chart's caption made it in
+# under the wire but its image didn't; capping the INPUT to at most 2 whole
+# (caption, image) pairs keeps every image this function does send
+# complete.
+_REVIEW_MAX_IMAGES = 2
+
+
+async def execute_review(
+    command: "Command",
+    *,
+    db: "Database",
+    channel: "Channel",
+    config: "Config",
+    registry: "HabitRegistry",
+    llm: "OllamaClient | None",
+    lang: i18n.Language,
+    user_id: str,
+    clock=datetime.now,
+) -> None:
+    """R-C5: sends the weekly review as ONE reply -- `run_weekly_review`'s
+    own text (stats + narrative + Garmin/trend sections, unchanged) first,
+    then up to `_REVIEW_MAX_IMAGES` chart images via `channel.send_image`
+    (module A's media-URL path on LINE; the base ABC default degrades to a
+    plain text send on any channel without real image support). Never
+    raises -- mirrors `execute_wrapped`/`execute_heatmap`'s identical
+    fail-open posture for the chart-render step; `run_weekly_review` itself
+    is already fail-open internally (a narrative-generation failure falls
+    back to the static `weekly_review_fallback_narrative`, per R-B6).
+
+    `llm=None` is the expected value in no-LLM mode (`config.ollama.
+    enabled=False`, this branch's own only-supported mode) -- `run_weekly_
+    review` already gates its own one `llm.chat_text(...)` call on that
+    same flag (module B) before ever touching `llm`, so passing `None`
+    here is safe by construction, exactly like every other `llm`-typed
+    parameter this integration pass threads through as `None`."""
+    end_date = timeutil.today_in_timezone(clock, config.app.timezone)
+    text = await run_weekly_review(db, config, registry, llm, lang, user_id, today=end_date)
+    await channel.send(user_id, text)
+
+    try:
+        image_captions = render_weekly_review_charts(db, config, registry, lang, user_id, today=end_date)
+    except Exception:
+        logger.exception("execute_review: chart rendering failed for user %r; text-only", user_id)
+        image_captions = []
+
+    for image, caption in image_captions[:_REVIEW_MAX_IMAGES]:
+        try:
+            await channel.send_image(user_id, image, caption)
+        except Exception:
+            logger.exception("execute_review: send_image failed for user %r; continuing", user_id)

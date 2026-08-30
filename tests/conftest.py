@@ -26,14 +26,17 @@ mechanism that makes this `conftest.py` itself discoverable with no
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Awaitable, Callable
 
 import pytest
 
 from habit_assistant.channels.base import Channel
+from habit_assistant.storage.db import Database
 
 
 @pytest.fixture(autouse=True)
@@ -152,3 +155,63 @@ def _reset_shared_doubles():
     yield
     FakeOllamaClient.responses = []
     FakeScheduler.last_instance = None
+
+
+class RecordingLineChannel(Channel):
+    """SPEC-LINE.md §4 R-A4/R-A6/R-C6 (shared surface, branch
+    `line-version`): a LINE-flavored double for modules OTHER than A
+    (module C's `core/digest.py`, Integration's end-to-end tests) that
+    need a `Channel` whose Reply-vs-Push distinction -- the one thing
+    that makes LINE's free/uncounted-reply vs quota-counted-push economics
+    observable -- is real enough to assert against, without pulling in
+    the real aiohttp webhook/HTTP machinery module A owns.
+
+    `reply_context(token)` mirrors `LineChannel`'s own per-event
+    `contextvars.ContextVar` (R-A4): every `send()` while a context is
+    active is BUFFERED into `.replies[token]` instead of sent immediately
+    (a real reply call batches up to 5 objects into one free API call --
+    this double doesn't cap at 5, since no test here asserts that limit;
+    module A's own tests do). Outside any active context -- a
+    scheduled/proactive send, e.g. the digest -- `send()` goes to
+    `.pushes` AND calls `db.increment_push(chat_id, yyyymm)` for the
+    current local month if a `db` was given (R-A6: "the channel's own
+    responsibility on the push path ... so the count is authoritative
+    regardless of caller", R-C6), exactly matching the real channel's
+    contract."""
+
+    def __init__(self, db: Database | None = None) -> None:
+        self.db = db
+        self.replies: dict[str, list[tuple[str, str]]] = {}
+        self.pushes: list[tuple[str, str]] = []
+        self._active_token: str | None = None
+
+    @contextlib.contextmanager
+    def reply_context(self, reply_token: str):
+        previous, self._active_token = self._active_token, reply_token
+        self.replies.setdefault(reply_token, [])
+        try:
+            yield
+        finally:
+            self._active_token = previous
+
+    async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
+        if self._active_token is not None:
+            self.replies[self._active_token].append((chat_id, text))
+            return None
+        self.pushes.append((chat_id, text))
+        if self.db is not None:
+            self.db.increment_push(chat_id, datetime.now().strftime("%Y-%m"))
+        return None
+
+    async def run(
+        self,
+        on_message: Callable[[str, str], Awaitable[None]],
+        on_callback=None,
+    ) -> None:
+        raise NotImplementedError
+
+    def pushes_to(self, chat_id: str) -> list[str]:
+        return [text for cid, text in self.pushes if cid == chat_id]
+
+    def replies_for(self, reply_token: str) -> list[str]:
+        return [text for _cid, text in self.replies.get(reply_token, [])]

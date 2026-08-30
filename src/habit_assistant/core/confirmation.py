@@ -94,9 +94,16 @@ async def generic_confirmation(
         )
 
     if habit.type == "text":
-        reflection = await llm.chat_text(
-            DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
-            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=value),
+        # SPEC-LINE.md §4 R-B5, §5.2 row 5 (no-LLM mode, branch
+        # `line-version`): force the static fallback, zero LLM calls, when
+        # `config.ollama.enabled` is False.
+        reflection = (
+            await llm.chat_text(
+                DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
+                DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=value),
+            )
+            if config.ollama.enabled
+            else None
         )
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)
@@ -137,9 +144,16 @@ async def confirmation_text(
 
     if habit.id == "diary":
         diary_text = str(value)
-        reflection = await llm.chat_text(
-            DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
-            DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=diary_text),
+        # SPEC-LINE.md §4 R-B5, §5.2 row 5 (no-LLM mode, branch
+        # `line-version`): force the static fallback, zero LLM calls, when
+        # `config.ollama.enabled` is False.
+        reflection = (
+            await llm.chat_text(
+                DIARY_REFLECTION_SYSTEM_PROMPT.format(language_instruction=i18n.language_instruction(lang)),
+                DIARY_REFLECTION_USER_TEMPLATE.format(diary_text=diary_text),
+            )
+            if config.ollama.enabled
+            else None
         )
         if not reflection:
             reflection = i18n.t("diary_reflection_fallback", lang)

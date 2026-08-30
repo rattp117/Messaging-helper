@@ -339,6 +339,24 @@ CommandKind = Literal[
     # `M2`) is where the actual card content lives, dispatched by
     # `core/routing.py`'s later integration pass.
     "guide",
+    # SPEC-LINE.md §4 R-C4/§9 OQ4 (module C, branch `line-version`): the
+    # `/digest on|off` opt-out toggle, Thai alias `สรุปรายวัน`. Reuses
+    # `Command.pref_value` (the lowercased tail -- "on"/"off", or `None`
+    # for a bare "/digest"/"สรุปรายวัน" -- same "empty = show" grammar as
+    # "checkin"/"dashboard" above), no new field needed.
+    "digest",
+    # SPEC-LINE.md §4 R-C5 (module C's own flagged gap, built at
+    # Integration -- IMPL-LINE-C.md "Known limitations"/AC25): a new
+    # `/review` that renders the weekly review as a free REPLY (text +
+    # up to a couple of chart images via module A's media-URL path) on
+    # demand -- the on-demand substitute for the auto-pushed weekly
+    # review R-C2 suppresses on LINE. English slash form only (mirrors
+    # `/guide`'s own "no bare-word alias" posture); `digest_review_
+    # ready_line`'s own copy already points users at the literal text
+    # "/review" in both languages, so no Thai alias is introduced here.
+    # No parsed payload of its own (`Command(kind="review")` is the
+    # whole of it, same shape as "help"/"habits"/"guide" above).
+    "review",
 ]
 
 
@@ -839,6 +857,21 @@ def _match_guide(stripped: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# review -- SPEC-LINE.md §4 R-C5 (module C's own flagged gap, built at
+# Integration). Anchored to the WHOLE stripped message, exactly the one
+# literal string `/review` -- same zero-false-positive conservatism as
+# `_GUIDE_RE`/`_HELP_RE`/`_HABITS_RE` just above. English slash form only;
+# see the `CommandKind` skeleton entry above for why no Thai alias exists.
+# ---------------------------------------------------------------------------
+
+_REVIEW_RE = re.compile(r"^/review$", re.IGNORECASE)
+
+
+def _match_review(stripped: str) -> bool:
+    return _REVIEW_RE.match(stripped) is not None
+
+
+# ---------------------------------------------------------------------------
 # onboarding + owner-only admin -- SPEC-v1.2.md §4 R-A1-R-A5 (module
 # `access`). English slash forms only -- SPEC-v1.2.md §2.3 gives Thai
 # aliases for `/lang`/`/quiet`/`/remind` (modules `preferences`/`schedules`)
@@ -1335,6 +1368,47 @@ def _match_dashboard(stripped: str) -> "Command | None":
     if tail not in _DASHBOARD_TAIL_WORDS:
         return None
     return Command(kind="dashboard", pref_value=tail)
+
+
+# ---------------------------------------------------------------------------
+# digest -- SPEC-LINE.md §4 R-C4/§9 OQ4 (module C, branch `line-version`).
+# `/digest on|off`, bare `/digest` = show (same "empty = show" grammar as
+# `/checkin`/`/dashboard` above), Thai alias `สรุปรายวัน`. Strictly binary
+# (`on`/`off` only, no `default`/window shape -- there's nothing else to
+# configure, unlike `/checkin`) -- `Command.pref_value` carries the
+# lowercased tail, no new `Command` field needed.
+#
+# `สรุปรายวัน` ("daily summary") is an ordinary Thai compound that COULD open
+# real prose (e.g. a report title), the same false-positive risk class
+# `เช็คอิน`/`แดชบอร์ด` before it were hardened against -- so it gets the
+# identical treatment: anchored to the WHOLE stripped message (a glued
+# continuation never matches), and when a tail IS present after a space it
+# must be exactly `on`/`off` or the match is rejected, falling through to
+# `None`. A bare "สรุปรายวัน" (nothing else) DOES match, same "show" meaning
+# as the slash form, mirroring `เช็คอิน`/`แดชบอร์ด`'s own precedent.
+# ---------------------------------------------------------------------------
+
+_DIGEST_SLASH_RE = re.compile(r"^/digest(?:\s+(?P<rest>\S.*))?$", re.IGNORECASE)
+_DIGEST_TH_RE = re.compile(r"^สรุปรายวัน(?:\s+(?P<rest>\S.*))?$")
+_DIGEST_TAIL_WORDS = {"on", "off"}
+
+
+def _match_digest(stripped: str) -> "Command | None":
+    slash_match = _DIGEST_SLASH_RE.match(stripped)
+    if slash_match is not None:
+        rest = slash_match.group("rest")
+        return Command(kind="digest", pref_value=rest.strip().lower() if rest else None)
+
+    th_match = _DIGEST_TH_RE.match(stripped)
+    if th_match is None:
+        return None
+    rest = th_match.group("rest")
+    if rest is None:
+        return Command(kind="digest", pref_value=None)  # bare -> show
+    tail = rest.strip().lower()
+    if tail not in _DIGEST_TAIL_WORDS:
+        return None
+    return Command(kind="digest", pref_value=tail)
 
 
 # ---------------------------------------------------------------------------
@@ -2206,22 +2280,30 @@ class _MatcherEntry:
     triggered: "Callable[[str], bool] | None" = None
 
 
-# The table itself: SAME 27 rows PLUS `guide` (SPEC-v1.10.md §4 R-SS8),
-# SAME order as the if-chain the original 27 replaced (ROADMAP.md v0.9.0 ->
-# SPEC-v1.9.md's own accreted routing brief, each insertion point documented
-# per-matcher above) -- undo -> edit -> snooze -> target -> remind -> access
-# -> audit -> lang -> quiet -> checkin -> dnd -> dashboard -> history ->
-# heatmap -> records -> trends -> wrapped -> addhabit -> delhabit -> log ->
+# The table itself: SAME 27 rows PLUS `guide` (SPEC-v1.10.md §4 R-SS8) PLUS
+# `digest` (SPEC-LINE.md §4 R-C4, branch `line-version`) PLUS `review`
+# (SPEC-LINE.md §4 R-C5, Integration pass), SAME order as the if-chain the
+# original 27 replaced (ROADMAP.md v0.9.0 -> SPEC-v1.9.md's own accreted
+# routing brief, each insertion point documented per-matcher above) --
+# undo -> edit -> snooze -> target -> remind -> access -> audit -> lang ->
+# quiet -> checkin -> dnd -> dashboard -> digest -> history -> heatmap ->
+# records -> trends -> wrapped -> review -> addhabit -> delhabit -> log ->
 # routine -> cadence -> pause -> resume -> help -> habits -> guide -> query.
 # `guide` is placed immediately before `query` (R-SS8's own stated
 # placement) -- it has no substring/interrogative-anchor overlap with any
 # query pattern, so its exact position among the rest (other than staying
 # ahead of the final `query` row) doesn't change behavior; grouped next to
 # `help`/`habits` for readability, same disjoint-trigger-text reasoning.
+# `digest` is grouped next to `dashboard` for the same reason -- disjoint
+# trigger text (`/digest`/`สรุปรายวัน` vs every other row) means its exact
+# position among the rest doesn't change behavior either. `review` is
+# grouped right after `wrapped` -- both are on-demand, reply-only "show me
+# X" commands with disjoint trigger text (`/review` vs every other row), so
+# its exact position among the rest doesn't change behavior either.
 # `_assert_dispatch_invariants` below proves the three rule-14 invariants
 # hold structurally; `tests/test_refactor_s3.py`'s golden precedence corpus
 # proves the pre-v1.10 27-row table reproduces the pre-conversion if-chain's
-# exact output (unaffected by this additive 28th row).
+# exact output (unaffected by these additive rows).
 _MATCHERS: list[_MatcherEntry] = [
     _MatcherEntry("undo", _bool_matcher(_match_undo, "undo")),
     _MatcherEntry("edit", _resolve_edit, triggered=_edit_triggered),
@@ -2235,11 +2317,13 @@ _MATCHERS: list[_MatcherEntry] = [
     _MatcherEntry("checkin", _ignore_registry(_match_checkin)),
     _MatcherEntry("dnd", _ignore_registry(_match_dnd)),
     _MatcherEntry("dashboard", _ignore_registry(_match_dashboard)),
+    _MatcherEntry("digest", _ignore_registry(_match_digest)),
     _MatcherEntry("history", _match_history),
     _MatcherEntry("heatmap", _match_heatmap),
     _MatcherEntry("records", _match_records),
     _MatcherEntry("trends", _match_trends),
     _MatcherEntry("wrapped", _ignore_registry(_match_wrapped)),
+    _MatcherEntry("review", _bool_matcher(_match_review, "review")),
     _MatcherEntry("addhabit", _ignore_registry(_match_addhabit)),
     _MatcherEntry("delhabit", _match_delhabit),
     _MatcherEntry("log", _ignore_registry(_match_log)),
@@ -2480,5 +2564,12 @@ def reserved_trigger_words() -> frozenset[str]:
             # `_GUIDE_RE`, line ~831 above.
             "guide",
             "คู่มือ",
+            # SPEC-LINE.md §4 R-C4/§9 OQ4 (module C, branch `line-version`):
+            # `_DIGEST_SLASH_RE`/`_DIGEST_TH_RE` above.
+            "digest",
+            "สรุปรายวัน",
+            # SPEC-LINE.md §4 R-C5 (Integration pass, branch `line-version`):
+            # `_REVIEW_RE` above.
+            "review",
         }
     )

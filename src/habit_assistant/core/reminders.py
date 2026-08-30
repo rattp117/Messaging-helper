@@ -371,6 +371,7 @@ async def send_reminder(
     db: Database | None = None,
     config: Config | None = None,
     state: ReminderState | None = None,
+    clock=datetime.now,
 ) -> None:
     """Unprompted send (SPEC.md §7/§8) to `chat_id` -- `language` is
     resolved by the caller (`run_due_reminders` passes
@@ -401,7 +402,22 @@ async def send_reminder(
     `config` is given (the real `run_due_reminders` caller always binds
     it), else `False` -- a bare `send_reminder(channel, chat_id, habit,
     lang)` call with no `config` (pre-v1.8 tests, direct callers) stays
-    byte-identical (AC-D4)."""
+    byte-identical (AC-D4).
+
+    PORT TO MAIN (pre-existing main-branch bug, root-caused on the LINE
+    branch by TEST-LINE-B.md's `tests/test_v110_m3_gaps.py::test_run_due_
+    reminders_actually_paused_user_suppressed_others_unaffected` flake):
+    `clock`, additive/keyword-only/defaulted `datetime.now` -- `run_due_
+    reminders` below threads its OWN injected `clock` through to the
+    pause-suppression date check just below (the ONLY site this fix
+    touches; the quiet-hours check just above stays on the REAL wall
+    clock, deliberately, per this function's own pre-existing design note
+    a few lines down). Before this fix, that date was computed via a bare
+    `datetime.now(...)` even when a caller (a test, or a future backfill/
+    catch-up run) supplied its own `clock=` to `run_due_reminders` -- so a
+    pause window pinned to a specific test date silently stopped applying
+    the moment the real wall-clock date moved past it, independent of
+    whatever date the test's OWN injected clock claimed "now" was."""
     if config is not None:
         windows = effective_quiet_windows(db, config, chat_id)
         if windows:
@@ -426,7 +442,11 @@ async def send_reminder(
     # and treated as "not paused", the reminder still sends), now shared
     # with the other 4 proactive sites instead of duplicated here.
     if db is not None and config is not None:
-        today_local = datetime.now(ZoneInfo(config.app.timezone)).date()
+        # PORT TO MAIN: `clock()`, not a bare `datetime.now()` -- see this
+        # function's own docstring note above for why.
+        now_for_pause = clock()
+        tz = ZoneInfo(config.app.timezone)
+        today_local = (now_for_pause.replace(tzinfo=tz) if now_for_pause.tzinfo is None else now_for_pause.astimezone(tz)).date()
         if pause.is_paused_safe(db, config, chat_id, habit.id, today_local):
             logger.info("Suppressing %s/%s reminder: habit is paused", chat_id, habit.id)
             return
@@ -521,4 +541,4 @@ async def run_due_reminders(
                 # user/habit whose reminder isn't actually firing this
                 # minute.
                 language = i18n.resolve_unprompted_language(config, user_pref=_user_language_pref(db, user_id))
-                await send_reminder(channel, user_id, habit, language, db, config, state)
+                await send_reminder(channel, user_id, habit, language, db, config, state, clock=clock)

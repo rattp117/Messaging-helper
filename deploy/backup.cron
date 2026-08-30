@@ -1,0 +1,13 @@
+# SPEC-LINE.md §4 R-D3 (Module D, branch line-version): nightly DB backup
+# via plain cron, as an ALTERNATIVE to
+# deploy/habit-assistant-line-backup.{service,timer} for a box that
+# doesn't want systemd user timers. Same schedule (03:30, matching the
+# Windows Task Scheduler job it mirrors, PROGRESS.md 2026-08-27) and same
+# `--backup` CLI flag either way -- pick one, not both, or you'll get two
+# backups a night (harmless, just redundant: storage/backup.py's own
+# timestamped filenames never collide).
+#
+# Install (as the habitbot service user; see docs/DEPLOY-LINE.md):
+#   sudo crontab -u habitbot deploy/backup.cron
+# or paste the one line below into `sudo crontab -u habitbot -e`.
+30 3 * * * cd /opt/habit-assistant && /opt/habit-assistant/.venv/bin/python -m habit_assistant.main --backup >> /opt/habit-assistant/data/backup-nightly.log 2>&1

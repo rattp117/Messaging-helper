@@ -43,11 +43,26 @@ logger = logging.getLogger(__name__)
 
 Access = Literal["owner", "active", "pending", "blocked", "unknown"]
 
-# A plausible Telegram chat id: optional leading "-" (group/channel ids are
-# negative), digits only. `commands.py:_match_access` hands `target_chat`
-# through raw/unvalidated (shape-only layer); this is where R-A4/§3.5's
-# "malformed ... chat id -> a friendly usage message" is actually enforced.
-_CHAT_ID_RE = re.compile(r"^-?\d+$")
+# SPEC-LINE.md §4 (release-gate Finding 1, branch `line-version`): a
+# STRICT whitelist of exactly the two chat-id shapes this app ever
+# actually hands to `execute_admin` -- not a general loosening.
+# `commands.py:_match_access` hands `target_chat` through raw/unvalidated
+# (shape-only layer); this is where R-A4/§3.5's "malformed ... chat id ->
+# a friendly usage message" is actually enforced, for BOTH channels this
+# core/ module is now reached from:
+#   - Telegram: optional leading "-" (group/channel ids are negative),
+#     digits only (unchanged, pre-LINE behavior).
+#   - LINE: a literal "U" prefix followed by an opaque alphanumeric
+#     token (SPEC-LINE.md §2.1's own example: `"U4af4980629..."`). Real
+#     LINE userIds are `U` + 32 lowercase-hex characters, but this check
+#     is deliberately NOT hex-restricted -- hex-strictness is an
+#     implementation detail of LINE's own id generator, not a security
+#     boundary this app can usefully enforce, and it would reject
+#     perfectly legitimate non-hex ids too (this app's own LINE test
+#     fixtures use readable placeholders like "Uowner..."/"Umember...").
+#     The "U" prefix + a plausible length bound is the real, meaningful
+#     shape check here.
+_CHAT_ID_RE = re.compile(r"^(?:-?\d+|U[0-9A-Za-z]{16,40})$")
 
 
 # ---------------------------------------------------------------------------

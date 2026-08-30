@@ -229,7 +229,15 @@ async def answer_question(
     answer, or the bilingual `query_cant_answer` fallback) -- never raises,
     never writes to the DB (AC8.5). SPEC-v1.2.md R-D3: `user_id` scopes
     every aggregation -- a query only ever answers from the asking user's
-    own data (AC-U-ISO)."""
+    own data (AC-U-ISO).
+
+    SPEC-LINE.md §4 R-B4, §5.2 row 4 (no-LLM mode, branch `line-version`):
+    `config.ollama.enabled == False` skips `classify_query_intent` entirely
+    -- a friendly bilingual pointer at the deterministic `/records`,
+    `/trends`, `/dashboard` commands, zero LLM calls, no writes (already
+    the fail-closed contract, AC17)."""
+    if not config.ollama.enabled:
+        return i18n.t("query_no_llm_pointer", lang)
     try:
         intent = await classify_query_intent(text, llm, registry)
         if intent is None:

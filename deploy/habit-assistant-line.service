@@ -1,0 +1,74 @@
+# SPEC-LINE.md §4 R-D1 (Module D, branch line-version): systemd unit for
+# the LINE-edition bot on a Linux VPS. Installed + enabled by deploy/setup.sh
+# (docs/DEPLOY-LINE.md has the full runbook). Assumes the standard install
+# layout that script creates: repo at /opt/habit-assistant, venv at
+# /opt/habit-assistant/.venv, secrets in /opt/habit-assistant/.env. Edit the
+# four /opt/habit-assistant paths below if you installed somewhere else.
+#
+# systemd owns the process end to end -- no orphan-killer / single-instance
+# guard is needed here (unlike start-assistant.ps1's Windows Task Scheduler
+# kill-sweep, R-D1): a `systemctl restart` cleanly stops the old cgroup
+# before starting the new one, and Restart=on-failure handles crashes.
+#
+# Integration pass, TEST-LINE-C.md Finding 2 (accepted ruling): the daily
+# digest job (core/app.py's "daily_digest" CronTrigger, core/digest.py:
+# run_daily_digest) relies on EXACTLY ONE instance of this unit ever
+# running at a time -- two concurrent instances would both compute the
+# identical next-fire instant and both actually push, double-spending
+# LINE's push quota for every active user that day (core/digest.py itself
+# has no internal dedup by design; only the in-process, module-level
+# `_DIGEST_DEFERRED_DATES` guard exists, and that guards the quiet-hours
+# DEFERRAL path only, not two independent processes). Type=simple (not
+# forking/oneshot) plus systemd's own default "don't start a second copy
+# of a unit that's already active" behavior for `systemctl start`/`enable`
+# is what provides that single-instance guarantee here -- deliberately NO
+# distributed lock (a flock/DB-row lock, a leader-election scheme) was
+# added for this, per Archi's explicit ruling: this app targets exactly
+# one VPS/one systemd unit, and a lock adds real complexity for a race
+# that only a misconfigured deploy (running the unit AND a manual
+# `python -m habit_assistant.main` at the same time, or two overlapping
+# units) would ever trigger. Don't run a second instance of this unit, a
+# manual `run.sh`, or a second VPS pointed at the same `.env`/`data/`
+# concurrently -- doing so silently breaks the "never exceed one push/
+# user/day" guarantee the whole LINE branch is designed around.
+
+[Unit]
+Description=Habit Assistant (LINE edition) - habit-tracking bot
+Documentation=file:/opt/habit-assistant/docs/DEPLOY-LINE.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+# Soft ordering only, not a hard Requires=: the process binds
+# [line].bind_host:bind_port locally (default 127.0.0.1:8080) regardless of
+# Tailscale's state -- if tailscaled/Funnel is briefly down, inbound LINE
+# webhooks just can't reach it until it's back, but the bot itself doesn't
+# need to crash-loop over it.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=habitbot
+Group=habitbot
+WorkingDirectory=/opt/habit-assistant
+# config.py's own DEFAULT_CONFIG_PATH/DEFAULT_ENV_PATH are REPO_ROOT-
+# relative, and db_path/media_dir/backup.dir are WorkingDirectory-relative
+# (storage/db.py, storage/backup.py) -- WorkingDirectory MUST be the repo
+# root for data/ to resolve where docs/DEPLOY-LINE.md documents it.
+EnvironmentFile=/opt/habit-assistant/.env
+ExecStart=/opt/habit-assistant/.venv/bin/python -m habit_assistant.main
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening basics (R-D1) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# data/ (SQLite + WAL + tokened media PNGs, §4 R-D4) is the only path this
+# unit needs to write; everything else under WorkingDirectory is read-only
+# at runtime under ProtectSystem=strict.
+ReadWritePaths=/opt/habit-assistant/data
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

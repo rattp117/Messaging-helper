@@ -303,21 +303,29 @@ async def test_bulk_and_fallback_agree_under_full_suppression_interplay(db):
     path send the exact same (chat_id, text) list, in the exact same
     order --
 
-    Both `pause.is_paused`'s date check AND `_goal_already_met`'s date
-    check (`_today_str`) read the REAL current date (`datetime.now()`),
-    NOT the injectable `clock` param `run_due_reminders` itself uses for
-    "is this minute due" -- a pre-existing (pre-Stage-1) design quirk, not
-    something this test is trying to prove; it just means the pause/log
-    rows below are seeded against `date.today()` rather than a fixed
-    historical date, so the suppression actually engages regardless of
-    which real day this suite happens to run on. Likewise the quiet-hours
-    window is built from `datetime.now()`'s own real wall-clock TIME, a
-    few minutes wide around "right now" (handles a midnight-crossing
-    "now" correctly too, via `_in_quiet_hours`'s own wraparound branch),
-    rather than a fixed clock-independent tautology.
+    PORT TO MAIN (updated for the reminders.py:429 wall-clock fix, branch
+    `line-version`, root-caused by TEST-LINE-B.md's `test_v110_m3_gaps.py`
+    flake investigation): `send_reminder`'s pause-suppression date check
+    now correctly reads the INJECTABLE `clock` param `run_due_reminders`
+    passes through (it used to read the real wall clock regardless of
+    `clock`, a pre-existing bug this test's own ORIGINAL version quietly
+    routed around by seeding the pause row against `date.today()`). The
+    pause row below is now seeded against `_fixed_clock`'s own date
+    (2026-08-19) instead, so the suppression engages against the SAME
+    date `run_due_reminders` actually evaluates it against -- correct
+    regardless of which real day this suite runs on, same as before, just
+    for the right reason now. `_goal_already_met`'s date check
+    (`_today_str`) is UNCHANGED -- still reads the real current date, not
+    `clock` (that fix was scoped to the pause-check site only, per its own
+    "minimal diff" instruction) -- so member-b's row below still needs to
+    be seeded against `date.today()`. Likewise the quiet-hours window is
+    built from `datetime.now()`'s own real wall-clock TIME, a few minutes
+    wide around "right now" (handles a midnight-crossing "now" correctly
+    too, via `_in_quiet_hours`'s own wraparound branch), rather than a
+    fixed clock-independent tautology.
 
-    - owner: custom override time, PAUSED for that habit (today) -> must
-      not send.
+    - owner: custom override time, PAUSED for that habit (on the
+      INJECTED clock's own date) -> must not send.
     - member-a: custom override time, a quiet-hours window covering the
       actual current moment -> must not send.
     - member-b: custom override time, already met today's REAL-date water
@@ -332,9 +340,10 @@ async def test_bulk_and_fallback_agree_under_full_suppression_interplay(db):
     config = Config()
     registry = _default_registry()
     real_today = date.today().isoformat()
+    clock_today = date(2026, 8, 19).isoformat()  # matches _fixed_clock's own default `day`
 
     db.set_reminder_times(OWNER, "water", ["09:00"])
-    db.insert_pause(OWNER, "water", real_today, real_today)
+    db.insert_pause(OWNER, "water", clock_today, clock_today)
 
     db.set_reminder_times("member-a", "water", ["09:00"])
     now_local = datetime.now(ZoneInfo(config.app.timezone))

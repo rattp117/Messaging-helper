@@ -1,7 +1,7 @@
 [project]
 name = "habit-assistant"
-version = "1.10.0"
-description = "Local-first Telegram habit-tracking assistant backed by a local Qwen model via Ollama"
+version = "1.0.0-line"
+description = "Local-first habit-tracking assistant (LINE Official Account edition, no-LLM, backed by a local Qwen model via Ollama on the Telegram edition)"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
@@ -9,6 +9,12 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "tzdata>=2024.1",
+    # SPEC-LINE.md §4 R-S8/§7: the one new runtime dependency this branch adds
+    # -- LINE has no long-poll, so inbound needs a public HTTPS webhook and
+    # images need an HTTPS media host, both requiring an HTTP *server* (httpx
+    # is client-only). Pure-asyncio, runs its AppRunner inside the existing
+    # event loop alongside APScheduler + the worker -- no thread bridging.
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]
@@ -51,3 +57,14 @@ packages = ["src/habit_assistant"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# SPEC-LINE.md §4 R-S7/§11 (shared surface): the LINE branch gate is
+# `pytest -m "not telegram_only and not llm_only"` -- Telegram-transport
+# tests (real channels/telegram.py wire behavior: HTTP request shapes,
+# long-poll loop, callback_query handling -- none of it runs on LINE) and
+# LLM-behavior tests (real llm/ollama_client.py extraction/classification --
+# dead code on this branch's permanent no-LLM mode, R-B1-R-B9) are marked,
+# not deleted, so they keep running unmodified on the Telegram/main branch.
+markers = [
+    "telegram_only: exercises channels/telegram.py's own wire behavior; not applicable on the LINE branch",
+    "llm_only: exercises llm/ollama_client.py's real model-backed extraction/classification; dead code in no-LLM mode",
+]

@@ -185,7 +185,7 @@ def test_migration_012_touches_no_existing_data(tmp_path):
 
     db_ = Database(db_path)
     assert db_.schema_version_before == 11
-    assert db_.schema_version == 13
+    assert db_.schema_version == 14
 
     after = {
         "logs": [

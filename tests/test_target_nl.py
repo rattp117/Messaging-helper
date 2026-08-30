@@ -41,6 +41,12 @@ from habit_assistant.llm.ollama_client import OllamaClient
 from habit_assistant.llm.prompts import build_target_intent_system_prompt, build_target_intent_user_prompt
 from habit_assistant.storage.db import Database
 
+# SPEC-LINE.md §4 R-S7/R-B3 (shared surface): `classify_target_intent` is
+# the whole-block LLM classifier R-B3 skips entirely in no-LLM mode (NL
+# target phrasing has no deterministic fallback; the reply points at the
+# explicit /target command instead). Branch-N/A, not deleted.
+pytestmark = pytest.mark.llm_only
+
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 OWNER = "owner"
 

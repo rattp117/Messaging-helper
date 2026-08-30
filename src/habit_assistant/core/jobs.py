@@ -52,7 +52,18 @@ async def minutely_tick(
     into all three, in the exact order the three jobs used to register in.
     Each call is wrapped in its own try/except (log + continue), restoring
     the pre-consolidation per-tick isolation an earlier round of testing
-    found this merge had dropped."""
+    found this merge had dropped.
+
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): on LINE, none
+    of `run_due_reminders`/`run_due_checkins`/`run_due_nudges` may send
+    independently -- their content is folded into the once-daily digest
+    (R-C1, `core/digest.py`) instead. None of the three has a write this
+    tick would otherwise be responsible for making (unlike `grace_tick`
+    below, whose `evaluate_grace` write the digest depends on the NEXT
+    day), so the whole tick is a no-op on LINE rather than gating each
+    call individually."""
+    if config.channel.type == "line":
+        return
     active_ids = db.active_user_ids()
     try:
         await run_due_reminders(
@@ -97,7 +108,16 @@ async def weekly_review_job(
 ) -> None:
     """The weekly-review TIME stays global, but the send fans out to every
     active user, each from their own data; a user with no logs in the
-    7-day window, or inside their own effective DND window, is skipped."""
+    7-day window, or inside their own effective DND window, is skipped.
+
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): the weekly
+    review send is suppressed on LINE -- it's available on-demand via
+    `/review` instead (R-C5), plus an optional one-line "ready" pointer
+    folded into that day's digest (`core/digest.py`'s own read of
+    `config.weekly_review.day_of_week`). No write here for the digest to
+    depend on later, so a plain no-op is correct."""
+    if config.channel.type == "line":
+        return
     today = date.today()
     week_start = (today - timedelta(days=6)).isoformat() + "T00:00:00"
     week_end = today.isoformat() + "T23:59:59"
@@ -128,7 +148,17 @@ async def daily_summary_job(db: "Database", channel: "Channel", config: "Config"
     (independent of `gamification.enabled`, which only affects milestone
     lines). Fans out to every active user, each from their own today's
     data; a user who logged nothing today, or is inside their own DND
-    window, is skipped."""
+    window, is skipped.
+
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): suppressed on
+    LINE -- its content is folded into the once-daily digest instead
+    (`core/digest.py:compose_digest` calls `streaks.compute_daily_summary`/
+    `format_daily_summary` itself), no write here for the digest to depend
+    on later, so a plain no-op is correct. Checked ALONGSIDE the existing
+    `gamification.daily_summary` gate, not instead of it -- either one
+    being false is independently sufficient to skip this job."""
+    if config.channel.type == "line":
+        return
     if not config.gamification.daily_summary:
         return
     today = date.today()
@@ -150,7 +180,15 @@ async def grace_tick(db: "Database", channel: "Channel", config: "Config", provi
     """The nightly 00:05 tick: fans out over every active user and, for
     whichever habits `evaluate_grace` just bridged, sends the one kind
     message -- always silent, and deliberately bypassing quiet-hours/DND
-    (it reports a decision that has ALREADY been made)."""
+    (it reports a decision that has ALREADY been made).
+
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): only the SEND
+    below is suppressed on LINE -- `evaluate_grace`'s own write (the
+    `grace_ledger` row `bridged` reflects) keeps running unconditionally,
+    every night, on every channel. `core/digest.py:compose_digest` reads
+    that same row the next evening (`db.grace_protected_dates`) to fold a
+    grace notification into the digest instead (R-C1(d)) -- suppressing
+    the WRITE here, not just the send, would silently break that."""
     today = date.today()
     for user_id in db.active_user_ids():
         user_registry = provider.for_user(user_id)
@@ -158,6 +196,8 @@ async def grace_tick(db: "Database", channel: "Channel", config: "Config", provi
             bridged = grace.evaluate_grace(db, config, user_registry, user_id, today)
         except Exception:
             logger.exception("evaluate_grace failed for %s; skipping (fail-open)", user_id)
+            continue
+        if config.channel.type == "line":
             continue
         if not bridged:
             continue
@@ -175,7 +215,14 @@ async def wrapped_auto_job(db: "Database", channel: "Channel", config: "Config",
     """The optional month-end auto-send, gated by `config.wrapped.
     auto_send` (default `false`). One silent card per active user,
     pause-aware (skipped for a user whose ENTIRE registry is currently
-    paused) and DND-aware."""
+    paused) and DND-aware.
+
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): suppressed on
+    LINE -- `/wrapped` is on-demand only there (R-C5), no auto-send of any
+    kind. No write here for anything else to depend on, so a plain no-op
+    is correct."""
+    if config.channel.type == "line":
+        return
     if not config.wrapped.auto_send:
         return
     today = date.today()

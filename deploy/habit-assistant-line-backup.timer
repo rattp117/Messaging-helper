@@ -1,0 +1,16 @@
+# Fires habit-assistant-line-backup.service daily at 03:30 -- same clock
+# time as the Windows Task Scheduler backup job this replaces (PROGRESS.md
+# 2026-08-27). Persistent=true catches up a missed run (e.g. the VPS was
+# rebooted at 03:30) on next boot instead of silently skipping a day.
+
+[Unit]
+Description=Nightly backup timer for Habit Assistant (LINE edition)
+Documentation=file:/opt/habit-assistant/docs/DEPLOY-LINE.md
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

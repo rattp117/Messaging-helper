@@ -1,0 +1,206 @@
+# SPEC-LINE.md §4 R-D2 (Module D, branch line-version): deployment template
+# for the LINE Official Account edition. deploy/setup.sh copies this file to
+# config.toml on a fresh VPS (never overwriting one that already exists).
+#
+# The two branch-wide behavior changes this template encodes (locked user
+# decisions, 2026-08-29, SPEC-LINE.md header):
+#   1. NO-LLM MODE      -- [ollama] enabled = false, permanently.
+#   2. TRIMMED DIGEST    -- at most one proactive push/user/day; see [digest].
+#
+# Before starting the service, edit [line].public_base_url below to your
+# own Tailscale Funnel hostname (docs/DEPLOY-LINE.md walks through getting
+# it). Secrets (LINE_CHANNEL_ACCESS_TOKEN etc.) do NOT live here -- they go
+# in .env (see .env.line.example), same telegram/secrets split as always.
+
+[app]
+timezone = "Asia/Bangkok"
+db_path = "data/habits.db"
+log_level = "INFO"
+
+# NO-LLM MODE (SPEC-LINE.md §4 R-S1/R-B1-R-B9): the permanent, only-
+# supported mode on this branch. core/app.py never constructs an
+# OllamaClient when this is false -- the rest of [ollama]'s fields below
+# are simply unused, kept only so this section loads with config.py's
+# familiar shape (no functional effect while enabled = false).
+[ollama]
+enabled = false
+
+# Which concrete Channel core/app.py constructs at startup (R-S2/R-I1).
+# This is the one line that makes this a LINE deployment instead of a
+# Telegram one.
+[channel]
+type = "line"
+
+# The LINE webhook/media server's own tuning knobs (R-S2/§2.3). REPLACE
+# public_base_url with your VPS's actual Tailscale Funnel hostname --
+# docs/DEPLOY-LINE.md §"Tailscale Funnel" shows how to get it
+# (`tailscale funnel --bg <bind_port>` prints it, or `tailscale status`).
+[line]
+public_base_url = "https://CHANGE-ME.tailnet-name.ts.net"
+bind_host = "127.0.0.1"
+bind_port = 8080
+media_dir = "data/media"
+media_ttl_seconds = 3600
+rich_menu_image = "assets/richmenu/richmenu.png"
+
+# The trimmed daily digest -- the ONE proactive push/user/day this branch
+# ever sends (R-C1/R-C2, LINE free-plan quota ≈300 push/month total).
+# enabled = true is opt-OUT (per-user override: `/digest off`, stored in
+# users.digest_opt_out) -- the locked decision, not opt-in. warn_cap is
+# the owner-only quota-warning threshold (R-C7); LINE's free ceiling is
+# ~300/month, so 280 leaves headroom to notice before the account is cut
+# off mid-month.
+[digest]
+enabled = true
+time = "20:00"
+warn_cap = 280
+include_weekly_review_day = true
+
+# Used by the digest's optional weekly-review-day line (R-C5/[digest]
+# include_weekly_review_day) and by the on-demand /review command itself
+# -- NOT auto-pushed on this branch (R-C5: reply-only).
+[weekly_review]
+day_of_week = "sun"
+time = "20:00"
+
+[backup]
+dir = "data/backups"
+retain = 14
+
+# HealthMonitor is not wired on this branch (R-B8: Ollama health/recovery
+# is meaningless in no-LLM mode, and LINE webhook connectivity has no
+# equivalent "liveness ping" concept the way Telegram long-poll does) --
+# this section is inert but kept for config.py load-shape parity.
+[health]
+interval_seconds = 300
+
+# Thai primary, matching this edition's whole reason for existing (per-
+# message auto-detection still switches to English when a message reads
+# as English -- see core/i18n.py).
+[i18n]
+language = "auto"
+primary_language = "th"
+
+[quiet_hours]
+windows = []
+
+# Opt-in, off by default. On LINE, check-ins produce NO independent pushes
+# (R-C3 -- quota-incompatible; up to 13/day would blow the digest's one-
+# push/day budget) -- the digest's due-reminders line is the substitute.
+# `/checkin on` still governs nudge-line eligibility in the digest (R-C1c
+# rides the same "checkin enabled" gate the Telegram edition uses).
+[checkin]
+enabled = false
+window = "08:00-20:00"
+
+# Folded into the digest (R-C1c), never sent as its own push on LINE.
+[nudge]
+threshold_pct = 80
+time = "20:00"
+
+[gamification]
+enabled = true
+milestones = [3, 7, 30]
+daily_summary = true
+daily_summary_time = "21:45"
+
+# Weekly-review + /wrapped + /heatmap charts (all reply-only on LINE,
+# R-C5) need matplotlib -- deploy/setup.sh installs it via the [charts]
+# extra. Missing matplotlib is never a hard error; the review/recap just
+# falls back to text-only.
+[charts]
+enabled = true
+
+[audit]
+retention_days = 365
+
+[notifications]
+# LINE has no notify/silent distinction on a push or a reply the way
+# Telegram's disable_notification does (§ Feature degradation table) --
+# this flag is accepted but has no observable effect on this branch. Left
+# at the codebase's existing default for load-shape parity.
+silent_proactive = true
+
+[quicklog]
+enabled = true
+max_buttons_per_habit = 3
+
+[reactions]
+# No LINE equivalent (base Channel's set_message_reaction no-op default,
+# R-A14) -- harmless to leave enabled, it just never does anything visible.
+enabled = true
+
+[backfill]
+max_days_back = 14
+
+[routines]
+max_per_user = 20
+
+[cadence]
+max_per_week = 7
+
+[grace]
+enabled = true
+
+[pause]
+max_days = 30
+
+# Auto-send is unrelated to R-C2's digest-only push rule (auto_send default
+# false already means no independent wrapped push) -- left false; /wrapped
+# stays purely on-demand either way (R-C5).
+[wrapped]
+auto_send = false
+celebrate_burst = true
+
+[outage]
+# No Ollama to be "down" in no-LLM mode -- this flag has no call site left
+# to gate (R-B7/R-B8 skip the paths that would ever consult it). Kept at
+# the codebase default for load-shape parity.
+honest_reply = true
+
+[clarify]
+# The zero-LLM tap-to-fix guesses ARE the no-LLM mode's primary fallback
+# (R-B2) -- keep this on.
+enabled = true
+max_guesses = 4
+plausibility_lower = 0.05
+plausibility_upper = 5.0
+
+[reply_to_reminder]
+# Inert on LINE: per-time reminders don't fire (R-C2, folded into the
+# digest instead), and LINE inbound events carry no reliable "replying to
+# this specific bot message" reference the way Telegram does (§9 Risk).
+# Left enabled for load-shape parity; it simply never has anything to match.
+enabled = true
+context_cap = 32
+
+# The base habit catalog -- same three habits as the Telegram edition
+# (SPEC-LINE.md's "thin channel swap": core/ behavior is unchanged, only
+# the channel + no-LLM + digest wrapping differ). Edit freely; users can
+# also layer their own with /addhabit (เพิ่มนิสัย) regardless of channel.
+[[habits]]
+id = "water"
+type = "numeric"
+goal = 2500
+reminder_times = ["08:00", "10:30", "13:00", "15:30", "18:00", "20:30"]
+label = { en = "water", th = "น้ำ" }
+unit  = { en = "ml",    th = "มล." }
+skip_if_goal_met = true
+[habits.unit_aliases]
+glass = 250
+"แก้ว" = 250
+bottle = 600
+"ขวด" = 600
+
+[[habits]]
+id = "stretch"
+type = "duration"
+reminder_times = ["11:00", "16:00"]
+label = { en = "stretch", th = "ยืดเส้น" }
+unit  = { en = "min",     th = "นาที" }
+
+[[habits]]
+id = "diary"
+type = "text"
+reminder_times = ["21:30"]
+label = { en = "diary", th = "ไดอารี่" }

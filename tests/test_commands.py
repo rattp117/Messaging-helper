@@ -879,12 +879,16 @@ def test_fresh_db_migrates_to_schema_version_10(tmp_path):
     CHANGED (v1.8.0): was `== 10` before migration 011 was added -- see
     IMPL-v1.8-routines.md.
     CHANGED (v1.9.0): was `== 11` before migration 012 was added -- see
-    IMPL-v1.9-shared.md."""
-    assert len(MIGRATIONS) == 13
+    IMPL-v1.9-shared.md.
+    CHANGED (v1.10.0): was `== 12` before migration 013 was added.
+    CHANGED (branch `line-version`): was `== 13` before migration 014
+    (`push_ledger` + `users.digest_opt_out`) was added -- see
+    IMPL-LINE-shared.md."""
+    assert len(MIGRATIONS) == 14
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 13
+    assert database.schema_version == 14
     database.close()
 
 
@@ -1011,6 +1015,11 @@ _RESERVED_WORD_EXPECTED_KIND = {
     "งดรบกวน": None,
     "dashboard": None,
     "แดชบอร์ด": "dashboard",
+    # SPEC-LINE.md §4 R-C4/§9 OQ4 (module C, branch `line-version`): same
+    # "slash-gated English / bare-word Thai" bucket split as
+    # "checkin"/"เช็คอิน" and "dashboard"/"แดชบอร์ด" above.
+    "digest": None,
+    "สรุปรายวัน": "digest",
     "records": None,
     "สถิติ": "records",
     "trends": None,
@@ -1074,6 +1083,12 @@ _RESERVED_WORD_EXPECTED_KIND = {
     # "/" needed), so it now dispatches to "guide".
     "guide": None,
     "คู่มือ": "guide",
+    # SPEC-LINE.md §4 R-C5 (Integration pass, branch `line-version`):
+    # "/review" only gives an English SLASH form -- no Thai alias exists
+    # (see `core/commands.py`'s own `CommandKind` skeleton comment for
+    # why) -- so bare "review" stays `None`, same "slash-gated" bucket as
+    # "target"/"heatmap"/"wrapped"/"guide" above.
+    "review": None,
 }
 
 

@@ -66,6 +66,7 @@ class HealthMonitor:
         channel: Channel | None = None,
         on_ollama_recovered: Callable[[], Awaitable[None]] | None = None,
         language: i18n.Language = "en",
+        ollama_enabled: bool = True,
     ):
         self._ollama_base_url = ollama_base_url.rstrip("/")
         self._telegram_base_url = f"https://api.telegram.org/bot{telegram_bot_token}"
@@ -76,6 +77,13 @@ class HealthMonitor:
         self._channel = channel
         self._on_ollama_recovered = on_ollama_recovered
         self._language = language
+        # SPEC-LINE.md §4 R-B8, §5.2 row 8 (no-LLM mode, branch
+        # `line-version`): default `True` preserves every pre-LINE caller's
+        # behavior byte-for-byte. `False` (this branch's own wiring, when
+        # the caller passes it) makes `check_ollama` a no-op that reports
+        # "up" without ever pinging Ollama -- no liveness ping, no
+        # `ollama_down` alert, no `on_ollama_recovered` firing, ever.
+        self._ollama_enabled = ollama_enabled
 
         # Optimistic initial state: a check must actually run and observe
         # a transition before anything is alerted -- a slow/failing first
@@ -87,6 +95,8 @@ class HealthMonitor:
         self.telegram_up: bool = True
 
     async def check_ollama(self) -> bool:
+        if not self._ollama_enabled:
+            return True
         try:
             resp = await self._client.get(f"{self._ollama_base_url}/api/version")
             resp.raise_for_status()

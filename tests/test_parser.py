@@ -31,6 +31,15 @@ from habit_assistant.core.habits import Habit, HabitRegistry
 from habit_assistant.core.parser import parse_message
 from habit_assistant.llm.ollama_client import ExtractionResult, OllamaClient, build_extraction_schema, strip_think_and_prose
 
+# SPEC-LINE.md §4 R-S7/R-B1 (shared surface): parse_message is the ONLY
+# model-backed extractor (§5.2 row 1) -- on the LINE branch's no-LLM mode a
+# preparse miss goes straight to clarify.tier1_guesses and parse_message is
+# never called at all. Every test in this file exercises parse_message's
+# real chat_json extraction behavior end to end, so the whole module is
+# branch-N/A -- excluded from the LINE gate (`pytest -m "not telegram_only
+# and not llm_only"`), not deleted (still exercised on the Telegram branch).
+pytestmark = pytest.mark.llm_only
+
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
 

@@ -35,6 +35,13 @@ from habit_assistant.llm.prompts import build_extraction_system_prompt, build_ex
 from habit_assistant.main import CLARIFYING_QUESTION, handle_inbound_message
 from habit_assistant.storage.db import Database
 
+# SPEC-LINE.md §4 R-S7/R-B1/R-B9 (shared surface): the model-chain fallback,
+# schema probe, and confidence-threshold gate this file covers are all part
+# of parse_message's/OllamaClient's real extraction path -- moot in no-LLM
+# mode (config.ollama.enabled=false skips the probe entirely, R-B7, and
+# never constructs an OllamaClient at all, R-B9). Branch-N/A, not deleted.
+pytestmark = pytest.mark.llm_only
+
 DEFAULT_REGISTRY = HabitRegistry.from_config(Config())
 
 # A fixed probe message/schema, built from the default registry, reused by
