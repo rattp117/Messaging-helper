@@ -32,6 +32,14 @@ dev = [
 # config.toml. Install with: pip install -e ".[charts]"
 charts = [
     "matplotlib>=3.8",
+    # Hotfix v1.0.2, found live on the VPS: numpy 2.x's manylinux wheels
+    # are built for the x86-64-v2 microarchitecture baseline (require
+    # SSE4.2+); a CPU without it (this VPS's) segfaults/RuntimeErrors on
+    # import at process startup -- a crash loop, not a chart-rendering
+    # bug. numpy 1.26.4 has no such baseline requirement and is what was
+    # verified working. Pin permanently rather than relying on whoever
+    # deploys next to remember `pip install 'numpy<2'` by hand.
+    "numpy>=1.26,<2",
 ]
 
 [project.scripts]

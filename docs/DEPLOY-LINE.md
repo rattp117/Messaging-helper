@@ -382,6 +382,22 @@ same as the Telegram edition — nothing LINE-specific about restore).
   root cause, then `sudo systemctl reset-failed
   habit-assistant-line && sudo systemctl start habit-assistant-line`.
 
+**`RuntimeError: ... NumPy 1.x cannot be run in ...` / `RuntimeError:
+Numpy baseline X86_V2` / crash-loop right after enabling `[charts]`**
+- The VPS's CPU predates the x86-64-v2 baseline (missing SSE4.2) that
+  numpy 2.x's manylinux wheels are compiled to require — numpy raises
+  (or segfaults) on import, which shows up as a crash loop the moment
+  `[charts]` is installed, not a chart-rendering bug.
+- Fixed permanently: `pyproject.toml`'s `[charts]` extra pins
+  `numpy>=1.26,<2`, which has no such baseline requirement. A normal
+  `pip install -e ".[charts]"` (what `deploy/setup.sh` step 4 runs)
+  already picks up the pin — nothing else to do on a fresh or re-run
+  deploy.
+- If you hit this on a box that already has a numpy 2.x wheel installed
+  (e.g. a venv built before this pin existed), force the downgrade
+  directly: `pip install 'numpy<2'` (or `1.26.4` specifically, the
+  version verified working), then restart the service.
+
 ---
 
 ## 10. Updating

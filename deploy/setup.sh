@@ -74,8 +74,22 @@ fi
 
 # --- 6. config.toml from the LINE template (never overwrite an existing,
 #     possibly hand-edited config.toml) --------------------------------------
+# config.toml is TRACKED in git (the repo's Telegram-flavored default,
+# R-S2's `channel.type` default of "telegram" -- it has no [channel]
+# section at all), so on a fresh clone the old `[ ! -f config.toml ]`
+# guard never fired and a LINE deploy silently kept running the Telegram
+# config (hotfix v1.0.2, found live on the VPS). A real LINE config
+# always has `type = "line"` under `[channel]` (config.toml.line sets
+# it, and it's the only place that string appears) -- its absence means
+# this config.toml is still Telegram-flavored and needs replacing; its
+# presence means an operator has already installed/hand-edited a real
+# LINE config, which must never be clobbered.
 if [ ! -f "$REPO_ROOT/config.toml" ]; then
     log "Copying config.toml.line -> config.toml."
+    cp "$REPO_ROOT/config.toml.line" "$REPO_ROOT/config.toml"
+elif [ -f "$REPO_ROOT/config.toml.line" ] && ! grep -q '^type = "line"' "$REPO_ROOT/config.toml"; then
+    log "config.toml exists but is still Telegram-flavored (no [channel] type = \"line\") -- backing it up to config.toml.telegram.bak and installing config.toml.line."
+    cp "$REPO_ROOT/config.toml" "$REPO_ROOT/config.toml.telegram.bak"
     cp "$REPO_ROOT/config.toml.line" "$REPO_ROOT/config.toml"
 else
     log "config.toml already exists -- leaving it untouched."

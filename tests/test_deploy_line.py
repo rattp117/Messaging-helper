@@ -242,6 +242,104 @@ def test_shell_scripts_start_with_a_shebang_and_set_euo_pipefail(script):
     assert "set -euo pipefail" in text
 
 
+# --- setup.sh step 6: config.toml guard (hotfix v1.0.2) ------------------------
+#
+# config.toml is a TRACKED file in git (the repo's Telegram-flavored
+# default -- `channel.type` defaults to "telegram" and it has no
+# `[channel]` section at all), so on a fresh clone the OLD `if [ ! -f
+# config.toml ]` guard never fired: `-f` was always true, and a LINE
+# deploy silently kept running the Telegram config until someone manually
+# `cp`'d config.toml.line over it. Step 6 alone is pure file I/O (no
+# sudo/apt/systemd, unlike the rest of setup.sh), so these tests actually
+# EXECUTE the real guard logic -- extracted verbatim from deploy/setup.sh
+# between its own "# --- 6." / "# --- 7." markers -- against a throwaway
+# REPO_ROOT, rather than just asserting on the script's text.
+
+
+def _extract_step_6() -> str:
+    text = (DEPLOY_DIR / "setup.sh").read_text(encoding="utf-8")
+    start = text.index("# --- 6.")
+    end = text.index("# --- 7.")
+    return text[start:end]
+
+
+def _run_step_6(repo_root: Path) -> str:
+    script_path = repo_root / "_step6.sh"
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'REPO_ROOT="$1"\n'
+        'log() { echo "[setup.sh] $*"; }\n'
+        + _extract_step_6()
+    )
+    # newline="\n" is deliberate (not the platform default): a CRLF-mangled
+    # script here would fail with spurious "command not found: fi\r"-style
+    # errors that have nothing to do with the guard logic under test.
+    script_path.write_text(script, encoding="utf-8", newline="\n")
+    result = subprocess.run([_REAL_BASH, str(script_path), str(repo_root)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+_LINE_CONFIG_STUB = '[channel]\ntype = "line"\n'
+
+
+@pytest.mark.skipif(_REAL_BASH is None, reason="no functional bash found (only a non-functional WSL launcher stub, or none at all) -- e.g. a Windows box without Git Bash/WSL installed")
+def test_setup_step6_fresh_repo_with_no_config_toml_installs_line_config(tmp_path):
+    (tmp_path / "config.toml.line").write_text(_LINE_CONFIG_STUB, encoding="utf-8", newline="\n")
+
+    stdout = _run_step_6(tmp_path)
+
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == _LINE_CONFIG_STUB
+    assert not (tmp_path / "config.toml.telegram.bak").exists()
+    assert "Copying config.toml.line" in stdout
+
+
+@pytest.mark.skipif(_REAL_BASH is None, reason="no functional bash found (only a non-functional WSL launcher stub, or none at all) -- e.g. a Windows box without Git Bash/WSL installed")
+def test_setup_step6_fresh_clone_telegram_flavored_config_toml_gets_replaced(tmp_path):
+    """The actual production bug: a fresh `git clone` always has
+    config.toml present (it's tracked) and Telegram-flavored (no
+    `type = "line"` anywhere). The old guard left it in place; the fix
+    must back it up and install the real LINE config."""
+    (tmp_path / "config.toml").write_text('[telegram]\npoll_timeout = 30\n', encoding="utf-8", newline="\n")
+    (tmp_path / "config.toml.line").write_text(_LINE_CONFIG_STUB, encoding="utf-8", newline="\n")
+
+    stdout = _run_step_6(tmp_path)
+
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == _LINE_CONFIG_STUB
+    assert (tmp_path / "config.toml.telegram.bak").read_text(encoding="utf-8") == "[telegram]\npoll_timeout = 30\n"
+    assert "Telegram-flavored" in stdout
+    assert "backing it up" in stdout
+
+
+@pytest.mark.skipif(_REAL_BASH is None, reason="no functional bash found (only a non-functional WSL launcher stub, or none at all) -- e.g. a Windows box without Git Bash/WSL installed")
+def test_setup_step6_hand_edited_line_config_is_never_clobbered(tmp_path):
+    hand_edited = '[channel]\ntype = "line"\n\n[line]\npublic_base_url = "https://my-real-host.ts.net"\n'
+    (tmp_path / "config.toml").write_text(hand_edited, encoding="utf-8", newline="\n")
+    (tmp_path / "config.toml.line").write_text(_LINE_CONFIG_STUB, encoding="utf-8", newline="\n")
+
+    stdout = _run_step_6(tmp_path)
+
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == hand_edited
+    assert not (tmp_path / "config.toml.telegram.bak").exists()
+    assert "leaving it untouched" in stdout
+
+
+@pytest.mark.skipif(_REAL_BASH is None, reason="no functional bash found (only a non-functional WSL launcher stub, or none at all) -- e.g. a Windows box without Git Bash/WSL installed")
+def test_setup_step6_is_idempotent_once_the_line_config_is_installed(tmp_path):
+    """docs/DEPLOY-LINE.md §10 "Updating" re-runs setup.sh after every
+    `git pull` -- once config.toml is already the real LINE config, a
+    second run must not re-trigger the backup path."""
+    (tmp_path / "config.toml.line").write_text(_LINE_CONFIG_STUB, encoding="utf-8", newline="\n")
+    _run_step_6(tmp_path)
+    assert not (tmp_path / "config.toml.telegram.bak").exists()
+
+    stdout = _run_step_6(tmp_path)
+
+    assert not (tmp_path / "config.toml.telegram.bak").exists()
+    assert "leaving it untouched" in stdout
+
+
 # --- rich menu placeholder asset ----------------------------------------------
 
 _LINE_RICH_MENU_VALID_SIZES = {(2500, 1686), (2500, 843)}

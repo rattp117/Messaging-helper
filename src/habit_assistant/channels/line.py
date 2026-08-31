@@ -38,6 +38,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LINE_API_ROOT = "https://api.line.me"
+# LINE splits its API surface across two hosts: JSON management calls
+# (create/set-default rich menu, push/reply, ...) stay on api.line.me,
+# but any call that moves BINARY content (upload/download of rich-menu
+# images, message-content download) lives on api-data.line.me instead --
+# hitting api.line.me for those 404s in production (hotfix v1.0.2, found
+# live on the VPS: register_rich_menu's content upload was on the wrong
+# host). Currently the only binary-content call this file makes.
+LINE_API_DATA_ROOT = "https://api-data.line.me"
 
 # LINE Messaging API hard limits (SPEC-LINE.md §7): at most 5 message
 # objects per reply/push, at most 13 quickReply items, postback `data`
@@ -273,7 +281,7 @@ class LineChannel(Channel):
 
             content_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
             upload_resp = await self._client.post(
-                f"{LINE_API_ROOT}/v2/bot/richmenu/{rich_menu_id}/content",
+                f"{LINE_API_DATA_ROOT}/v2/bot/richmenu/{rich_menu_id}/content",
                 headers={**self._auth_headers(), "Content-Type": content_type},
                 content=image_path.read_bytes(),
             )

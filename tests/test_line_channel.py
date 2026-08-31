@@ -390,6 +390,13 @@ async def test_register_rich_menu_missing_image_is_fail_open_no_api_calls(tmp_pa
 
 
 async def test_register_rich_menu_creates_uploads_and_sets_default(tmp_path):
+    """Pins the exact host each of the three registration calls goes to --
+    not just the path. LINE splits JSON management calls (create, set-
+    default) onto api.line.me from binary-content calls (the image
+    upload) onto api-data.line.me; hitting api.line.me for the upload
+    404s in production (hotfix v1.0.2). A bare MockTransport doesn't
+    reject a wrong host on its own, so these host assertions are the only
+    thing that would have caught the regression."""
     image_path = tmp_path / "richmenu.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfakepng")
     captured: list[httpx.Request] = []
@@ -397,9 +404,13 @@ async def test_register_rich_menu_creates_uploads_and_sets_default(tmp_path):
 
     await channel.register_rich_menu()
 
+    hosts = [r.url.host for r in captured]
     paths = [r.url.path for r in captured]
+    assert hosts[0] == "api.line.me"
     assert paths[0] == "/v2/bot/richmenu"
+    assert hosts[1] == "api-data.line.me"  # binary content upload -- the wrong-host bug
     assert paths[1] == "/v2/bot/richmenu/richmenu-1/content"
+    assert hosts[2] == "api.line.me"
     assert paths[2] == "/v2/bot/user/all/richmenu/richmenu-1"
     assert captured[1].headers["Content-Type"] == "image/png"
 
