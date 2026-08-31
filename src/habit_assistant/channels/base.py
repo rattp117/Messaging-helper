@@ -228,3 +228,18 @@ class Channel(ABC):
         """Set one emoji reaction on a previously-sent message. Default:
         no-op (no reaction capability)."""
         return None
+
+    # SPEC-LINE-1.2.md §4 R-S3 (shared surface, Feature A "dashboard-in-
+    # reply"): same concrete-default degradation pattern as `send_image`/
+    # `send_and_pin`/etc. above -- a channel with a LIVE PINNED dashboard
+    # (Telegram, `core/dashboard.py`'s own `refresh`/`send_and_pin`/
+    # `edit_message` machinery) already shows the "Today" board that way
+    # and needs nothing here; the default is a plain no-op, never called
+    # for anything on Telegram (R-A10). `channels/line.py:LineChannel`
+    # overrides this to append the board to the active reply buffer
+    # instead (R-A3/R-A6) -- LINE can't pin/edit, so the board rides the
+    # free reply the triggering log/undo/edit/etc. already sent.
+    async def append_board(self, chat_id: str, text: str) -> None:
+        """Append a compact "Today" board to the CURRENT reply, if any.
+        Default: no-op (no reply-buffer concept on this channel)."""
+        return None

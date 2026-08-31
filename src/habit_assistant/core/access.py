@@ -1,10 +1,10 @@
-"""Access control & onboarding (SPEC-v1.2.md Â§4 "Access control &
+"""Access control & onboarding (SPEC-v1.2.md §4 "Access control &
 onboarding (module `access`)", R-A1-R-A5): the gate every inbound update
 passes through before any logging/LLM/command work, plus the owner-only
 admin commands (`/approve`, `/block`, `/users`, `/invite`) and `/start`
-that this module owns per SPEC-v1.2.md Â§11's module table (AC-A1-AC-A7).
+that this module owns per SPEC-v1.2.md §11's module table (AC-A1-AC-A7).
 
-Three public entry points (SPEC-v1.2.md Â§5):
+Three public entry points (SPEC-v1.2.md §5):
 - `classify(db, chat_id) -> Access` -- a pure read, fail-safe on any DB
   error (R-A1: "a lookup error classifies as not active (deny)").
 - `handle_gate(...)` -- the seam `main.py`'s integration step calls FIRST,
@@ -43,17 +43,17 @@ logger = logging.getLogger(__name__)
 
 Access = Literal["owner", "active", "pending", "blocked", "unknown"]
 
-# SPEC-LINE.md Â§4 (release-gate Finding 1, branch `line-version`): a
+# SPEC-LINE.md §4 (release-gate Finding 1, branch `line-version`): a
 # STRICT whitelist of exactly the two chat-id shapes this app ever
 # actually hands to `execute_admin` -- not a general loosening.
 # `commands.py:_match_access` hands `target_chat` through raw/unvalidated
-# (shape-only layer); this is where R-A4/Â§3.5's "malformed ... chat id ->
+# (shape-only layer); this is where R-A4/§3.5's "malformed ... chat id ->
 # a friendly usage message" is actually enforced, for BOTH channels this
 # core/ module is now reached from:
 #   - Telegram: optional leading "-" (group/channel ids are negative),
 #     digits only (unchanged, pre-LINE behavior).
 #   - LINE: a literal "U" prefix followed by an opaque alphanumeric
-#     token (SPEC-LINE.md Â§2.1's own example: `"U4af4980629..."`). Real
+#     token (SPEC-LINE.md §2.1's own example: `"U4af4980629..."`). Real
 #     LINE userIds are `U` + 32 lowercase-hex characters, but this check
 #     is deliberately NOT hex-restricted -- hex-strictness is an
 #     implementation detail of LINE's own id generator, not a security
@@ -71,7 +71,7 @@ _CHAT_ID_RE = re.compile(r"^(?:-?\d+|U[0-9A-Za-z]{16,40})$")
 
 
 def classify(db: "Database", chat_id: str) -> Access:
-    """owner âŠ‚ active (R-A1): a `role="owner"` row classifies as `"owner"`
+    """owner ⊂ active (R-A1): a `role="owner"` row classifies as `"owner"`
     outright, regardless of its `status` (attribute_legacy_to_owner always
     stamps it `active`, but this doesn't re-derive that -- the role alone
     is authoritative for the owner). Otherwise `status` decides:
@@ -140,12 +140,12 @@ async def handle_gate(
     call the LLM for a `False` result (R-A2).
 
     `text` is accepted but not used to decide anything here (SPEC-v1.2.md
-    Â§2.3: `/start` is not special-cased inside the gate itself -- see
+    §2.3: `/start` is not special-cased inside the gate itself -- see
     `execute_admin`'s docstring for why the R-A5 "active user runs
     `/start` -> welcome" branch lives there instead); it exists in the
-    signature per SPEC-v1.2.md Â§5's own interface listing, kept for a
+    signature per SPEC-v1.2.md §5's own interface listing, kept for a
     future gate rule that DOES need to inspect the message (e.g. a
-    future one-tap approve reply, Â§10) without another signature change.
+    future one-tap approve reply, §10) without another signature change.
 
     `lang` is `chat_id`'s OWN resolved reply language (a response to the
     message `chat_id` just sent) -- already resolved by the caller.
@@ -216,11 +216,11 @@ _USERS_NAME_MAX_CHARS = 24
 
 
 def _render_users_list(db: "Database", lang: i18n.Language) -> str:
-    """SPEC-v1.2.md Â§3.3: one line per user, in `list_users`'s own order
+    """SPEC-v1.2.md §3.3: one line per user, in `list_users`'s own order
     (first-contacted-first). `role`/`status` render as their raw stored
     values (not localized -- this is an owner-only technical/admin view,
-    and the spec's own Â§3.3 example never shows a Thai role/status word);
-    the `Â· lang {pref}` suffix is shown only for an `active` row, matching
+    and the spec's own §3.3 example never shows a Thai role/status word);
+    the `· lang {pref}` suffix is shown only for an `active` row, matching
     the example (a `pending` row shows no lang suffix).
 
     Readable-approval feature (branch line-version): a row whose
@@ -230,7 +230,7 @@ def _render_users_list(db: "Database", lang: i18n.Language) -> str:
     before, no empty parens."""
     lines = [i18n.t("users_list_header", lang)]
     for row in db.list_users():
-        lang_suffix = f" Â· lang {row['language_pref']}" if row["status"] == "active" else ""
+        lang_suffix = f" · lang {row['language_pref']}" if row["status"] == "active" else ""
         name = row["display_name"]
         name_suffix = f" ({render_budget.truncate(name, max_chars=_USERS_NAME_MAX_CHARS)})" if name else ""
         lines.append(
@@ -486,8 +486,8 @@ async def execute_admin(
     active too), and this is the one check that must never be skippable
     by a future caller that forgets it. A non-owner gets no reply at all
     (a silent no-op) -- `execute_admin` is declared `-> None` (SPEC-v1.2.md
-    Â§5), so there is no "handled" signal back to the caller to fall
-    through to the parser; a plain no-op is what "reveals nothing" (Â§3.5)
+    §5), so there is no "handled" signal back to the caller to fall
+    through to the parser; a plain no-op is what "reveals nothing" (§3.5)
     means here (see IMPL-v1.2-access.md's "Known limitations" for this
     call).
 
@@ -497,7 +497,7 @@ async def execute_admin(
     display name / id prefix among PENDING users (see that function's
     own docstring for the full resolution order and its PENDING-only
     safety constraint); missing, malformed, or unresolvable -> `admin_
-    usage` (Â§3.5). A DB write failure is caught and reported via `admin_
+    usage` (§3.5). A DB write failure is caught and reported via `admin_
     save_failed`, never a traceback (mirrors `core/targets_command.py`'s
     own try/except-around-the-write convention). `/approve`/`/invite`
     are the same action (R-A4: "`/invite <chat_id>` -- alias of

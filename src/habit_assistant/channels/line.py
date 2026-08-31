@@ -7,14 +7,31 @@ uncounted; **Push API** sends count against the account's monthly quota.
 directly -- they append a LINE message object to a per-event reply buffer
 (a `contextvars.ContextVar`, R-A4) that `channels/line_webhook.py`'s worker
 sets before `await`-ing the inbound handler and flushes as ONE reply call
-after. Outside any active reply context (only the daily digest, module C)
-a send goes out via Push and increments `push_ledger` (R-A6/R-C6) -- the
-channel is the single, authoritative place that quota spend is counted,
-regardless of caller.
+after. Outside any active reply context (the daily digest, module C; every
+re-enabled realtime sender, SPEC-LINE-1.2.md Feature B) a send goes out
+via Push and increments `push_ledger` (R-A6/R-C6) -- the channel is the
+single, authoritative place that quota spend is counted, regardless of
+caller.
+
+SPEC-LINE-1.2.md §4 R-S4 (branch `line-version`, v1.2.0): the push path
+is now two methods -- `_send_push` (the raw `POST /message/push` +
+`db.increment_push` on success, this file's pre-1.2.0 `_push` body
+verbatim) and `_push` (the gated entry point `_emit` funnels every
+no-reply-context send through, applying the realtime monthly-cap gate,
+R-Q2-R-Q7, before delegating to `_send_push`). In digest mode (the
+default) `_push` is a pure pass-through, byte-identical to pre-1.2.0
+(R-I5). `append_board` (R-A3/R-A6, Feature A "dashboard-in-reply")
+overrides the base `Channel` no-op default to append the compact
+"Today" board onto the active reply buffer -- never a push, per its own
+docstring.
 
 `LineChannel` still satisfies `channels.base.Channel` exactly, so
 `core/`/`storage/` are unaffected (verified: neither package imports this
-module, tests/test_channels.py's own AST scan enforces it)."""
+module, tests/test_channels.py's own AST scan enforces it). This file
+DOES import `habit_assistant.core.i18n`/`core.user_prefs` (the quota
+alerts' and the CHANGE-ME-degradation reply's own language resolution)
+-- a one-way dependency the AST scan doesn't forbid; only the reverse
+(core/storage importing a concrete channel) is disallowed."""
 
 from __future__ import annotations
 
@@ -30,6 +47,7 @@ import httpx
 
 from habit_assistant.channels.base import Button, Channel
 from habit_assistant.channels.line_webhook import LineWebhookServer
+from habit_assistant.core import i18n, user_prefs
 
 if TYPE_CHECKING:
     from habit_assistant.config import Config
@@ -117,6 +135,14 @@ class LineChannel(Channel):
         # `message.from.first_name` does, so fetching it is a real API
         # call that must not fire on every single inbound message).
         self._profile_fetch_attempted: set[str] = set()
+        # SPEC-LINE-1.2.md §4 R-Q6 (Feature B, realtime push-quota cap):
+        # once-per-`yyyymm` owner-alert guards -- process-lifetime,
+        # in-memory only, same posture as `core/digest.py:
+        # _DIGEST_DEFERRED_DATES`/`core/routing.py:_sweep_in_progress`. A
+        # mid-month restart may re-warn/re-alert once (acceptable,
+        # informational, rare) -- no migration, no persisted flag.
+        self._quota_warned_months: set[str] = set()
+        self._quota_stopped_months: set[str] = set()
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
@@ -233,11 +259,18 @@ class LineChannel(Channel):
             return
         await self._push(chat_id, message_objs)
 
-    async def _push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
-        """R-A6/R-C6: the Push API call, and the ONLY place `push_ledger`
-        is incremented -- authoritative regardless of caller. Only counted
-        on success; a failed push (raise_for_status) never inflates the
-        ledger."""
+    async def _send_push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
+        """R-A6/R-C6/R-Q1: the raw Push API call, and the ONLY place
+        `push_ledger` is incremented -- authoritative regardless of
+        caller. Only counted on success; a failed push (raise_for_status)
+        never inflates the ledger.
+
+        SPEC-LINE-1.2.md §4 R-S4: this is `_push`'s pre-1.2.0 body, split
+        out verbatim so `_push` itself can host the realtime quota gate
+        (R-Q2) in front of it without duplicating the raw send/increment
+        logic. Also the direct send used for the owner's own quota-warn/
+        quota-stop alerts (R-Q4/R-Q5) -- those must never re-enter the
+        gate they themselves are reporting on."""
         resp = await self._client.post(
             f"{LINE_API_ROOT}/v2/bot/message/push",
             headers=self._auth_headers(),
@@ -247,11 +280,133 @@ class LineChannel(Channel):
         yyyymm = datetime.now().strftime("%Y-%m")
         self.db.increment_push(chat_id, yyyymm)
 
+    def _monthly_push_total_fail_closed(self, yyyymm: str) -> int | None:
+        """R-Q7 (Archi ruling 2026-08-31, OVERRIDING SPEC-LINE-1.2.md's
+        written §4 R-Q7/§9 OQ3 text, which specifies fail-open -- see
+        IMPL-LINE-1.2.0.md's iteration log for the full account): the
+        realtime quota gate's own `db.monthly_push_total` read. Returns
+        `None` (never a guessed count) on any exception, logged LOUDLY at
+        ERROR -- the caller (`_push`/`_quota_allows`) treats `None` as
+        "cannot confirm we're under cap", so a NON-OWNER push is dropped
+        rather than risking an overspend. Rationale (the ruling's own
+        words): "the bill can never surprise me" -- on a ledger read
+        error, non-owner proactive pushes stop; the owner's own pushes
+        and every reply (`_flush_reply`, never gated at all, R-Q8) are
+        completely unaffected, since this method is only ever consulted
+        for a non-owner chat_id in the first place."""
+        try:
+            return self.db.monthly_push_total(yyyymm)
+        except Exception:
+            logger.error(
+                "monthly_push_total read failed in the realtime quota gate; failing CLOSED -- dropping this "
+                "non-owner push (Archi ruling 2026-08-31, R-Q7/§9 OQ3 override: 'the bill can never surprise "
+                "me'; replies and the owner's own pushes are unaffected)",
+                exc_info=True,
+            )
+            return None
+
+    def _quota_allows(self, chat_id: str, yyyymm: str) -> bool:
+        """R-Q3/R-Q7: would a realtime proactive push to `chat_id` be
+        allowed right now? Always True for the owner (the owner keeps
+        receiving regardless of the running total -- "the owner is the
+        operator"); for anyone else, False if this month's total can't
+        even be read (fail CLOSED, Archi ruling 2026-08-31 -- see
+        `_monthly_push_total_fail_closed`), otherwise True iff the
+        running total hasn't yet reached `config.digest.push_cap`."""
+        if chat_id == self.owner_user_id:
+            return True
+        total = self._monthly_push_total_fail_closed(yyyymm)
+        if total is None:
+            return False
+        return total < self._config.digest.push_cap
+
+    async def _maybe_alert_quota_warn(self, yyyymm: str, total: int, cap: int) -> None:
+        """R-Q4: once per `yyyymm`, tell the owner this month's realtime
+        push total just crossed 80% of `push_cap` (but hasn't reached it
+        yet) -- sent via `_send_push` directly, NOT `_push`, so this alert
+        itself never re-enters the gate it's reporting on."""
+        if yyyymm in self._quota_warned_months:
+            return
+        self._quota_warned_months.add(yyyymm)
+        lang = i18n.resolve_unprompted_language(
+            self._config, user_pref=user_prefs.stored_language_pref(self.db, self.owner_user_id)
+        )
+        pct = round(100 * total / cap) if cap else 100
+        text = i18n.t("push_quota_warn", lang, total=total, cap=cap, pct=pct)
+        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}])
+
+    async def _maybe_alert_quota_stop(self, yyyymm: str) -> None:
+        """R-Q5: the FIRST time R-Q3 drops a non-owner push in `yyyymm`,
+        tell the owner the cap is reached -- once per `yyyymm`, via
+        `_send_push` directly (never re-enters the gate)."""
+        if yyyymm in self._quota_stopped_months:
+            return
+        self._quota_stopped_months.add(yyyymm)
+        lang = i18n.resolve_unprompted_language(
+            self._config, user_pref=user_prefs.stored_language_pref(self.db, self.owner_user_id)
+        )
+        text = i18n.t("push_quota_stop", lang, cap=self._config.digest.push_cap)
+        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}])
+
+    async def _push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
+        """R-S4/R-Q2: the gated proactive-push entry point -- `_emit`
+        funnels every no-reply-context send through here, so this covers
+        every realtime surface uniformly regardless of caller. In digest
+        mode (default) this is a pure pass-through to `_send_push`,
+        byte-identical to pre-1.2.0's own `_push` body (AC20/R-I5). In
+        realtime mode, R-Q3's hard monthly cap gate applies before every
+        NON-owner send; the owner always gets through."""
+        if self._config.digest.mode != "realtime":
+            await self._send_push(chat_id, messages)
+            return
+
+        if chat_id == self.owner_user_id:
+            await self._send_push(chat_id, messages)
+            return
+
+        yyyymm = datetime.now().strftime("%Y-%m")
+        cap = self._config.digest.push_cap
+        total = self._monthly_push_total_fail_closed(yyyymm)
+
+        if total is None:
+            # R-Q7 (Archi ruling 2026-08-31, fail-closed): the read
+            # failure itself was already logged loudly by
+            # `_monthly_push_total_fail_closed` -- drop this non-owner
+            # push (no send, no increment), no owner alert of its own
+            # (distinct from the R-Q5 cap-reached alert below, which
+            # requires an actual confirmed total).
+            return
+
+        if total >= cap:
+            logger.info(
+                "Realtime push quota cap reached (%d/%d this month); dropping a non-owner push to %s (R-Q3)",
+                total, cap, chat_id,
+            )
+            await self._maybe_alert_quota_stop(yyyymm)
+            return
+
+        await self._send_push(chat_id, messages)
+
+        if total >= int(cap * 0.8):
+            await self._maybe_alert_quota_warn(yyyymm, total, cap)
+
     async def _flush_reply(self, reply_token: str, messages: list[dict[str, Any]]) -> None:
         """R-A5: the reply uses `reply_token` exactly once. A rejected
         token (expired/already used) is logged and dropped -- NEVER falls
         back to a push, which would spend quota for output the user didn't
-        get anyway (they can just re-send)."""
+        get anyway (they can just re-send).
+
+        SPEC-LINE-1.2.md §4 R-A5 (Feature A, dashboard-in-reply):
+        AFTER the ≤5 truncation below, consolidate `quickReply` onto the
+        LAST surviving message object -- LINE displays only the FINAL
+        object's own `quickReply` (rendered as one bottom-of-screen row,
+        not bound to any one bubble), so appending the "Today" board after
+        a confirmation that carries an `undo` quickReply would otherwise
+        silently swallow that button. If the last object already has one
+        (every pre-1.2.0 LINE flow, and any flow where the board itself
+        got dropped by the truncation above, R-A4), this is a no-op --
+        which is exactly what keeps `dashboard_in_reply=false` byte-
+        identical to 1.1.0 (R-A7)."""
         if not messages:
             return
         if len(messages) > _MAX_REPLY_MESSAGES:
@@ -262,6 +417,12 @@ class LineChannel(Channel):
                 _MAX_REPLY_MESSAGES,
             )
             messages = messages[:_MAX_REPLY_MESSAGES]
+
+        if "quickReply" not in messages[-1]:
+            for earlier in reversed(messages[:-1]):
+                if "quickReply" in earlier:
+                    messages[-1]["quickReply"] = earlier.pop("quickReply")
+                    break
         try:
             resp = await self._client.post(
                 f"{LINE_API_ROOT}/v2/bot/message/reply",
@@ -307,7 +468,54 @@ class LineChannel(Channel):
             message_obj["quickReply"] = {"items": items}
         await self._emit(chat_id, [message_obj])
 
+    # SPEC-LINE-1.2.md §4 R-A3/R-A6 (Feature A, dashboard-in-reply):
+    # overrides the base `Channel.append_board` no-op default.
+    async def append_board(self, chat_id: str, text: str) -> None:
+        """R-A3: append (or, on a second call within the same event,
+        update in place -- R-A6) the compact "Today" board as an extra
+        object onto the ACTIVE reply buffer only. No active reply context
+        (a scheduled call, e.g. `dashboard_day_rollover_job`) -> return
+        immediately, nothing sent, never a push (R-A3's own explicit
+        "never spends quota"). Same owner-match as `_emit` (a board is
+        never appended onto some OTHER user's in-flight reply). Never
+        appended to an empty buffer -- R-A3's own "never emit a
+        board-only reply"."""
+        ctx = _REPLY_CONTEXT.get()
+        if ctx is None or not (ctx["ownerChatId"] is None or ctx["ownerChatId"] == chat_id):
+            return
+        if not ctx["buffer"]:
+            return
+        board_obj = ctx.get("boardObj")
+        if board_obj is not None:
+            board_obj["text"] = text
+            return
+        board_obj = {"type": "text", "text": text}
+        ctx["buffer"].append(board_obj)
+        ctx["boardObj"] = board_obj
+
     async def send_image(self, chat_id: str, image: bytes, caption: str, *, disable_notification: bool = False) -> None:
+        # Archi rider (2026-08-31, live incident): public_base_url is a
+        # deliberate "CHANGE-ME" placeholder in config.toml.line until an
+        # operator sets the real Tailscale Funnel hostname
+        # (deploy/setup.sh's own step 10 auto-fills it when possible, but
+        # fails soft and leaves the placeholder when it can't). Sending an
+        # image built from an unconfigured base URL produces a link LINE
+        # can never fetch -- a silently broken image, discovered live in
+        # production for /wrapped and /heatmap. Degrade to an honest,
+        # bilingual text reply instead: never a broken image message.
+        if "CHANGE-ME" in self._config.line.public_base_url:
+            logger.error(
+                "send_image called for %s with an unconfigured [line].public_base_url (still the CHANGE-ME "
+                "placeholder) -- degrading to a text-only reply instead of a broken image link",
+                chat_id,
+            )
+            lang = i18n.resolve_unprompted_language(
+                self._config, user_pref=user_prefs.stored_language_pref(self.db, chat_id)
+            )
+            note = i18n.t("line_public_url_unconfigured", lang)
+            await self._emit(chat_id, [{"type": "text", "text": caption}, {"type": "text", "text": note}])
+            return
+
         # R-A11: write the PNG under a random unguessable token, build the
         # public media URL, and emit a text (caption) + image message pair
         # as one unit. Any failure here (disk write, ...) propagates -- the
@@ -325,14 +533,51 @@ class LineChannel(Channel):
             ],
         )
 
+    async def _cleanup_stale_rich_menus(self) -> None:
+        """Archi rider (2026-08-31): `register_rich_menu` creates a brand
+        new rich menu every restart and never deleted the old ones -- 5+
+        orphans had already accumulated on LINE's own side before this
+        fix. Lists every rich menu currently registered to this channel
+        (`GET /v2/bot/richmenu/list`) and deletes each one -- called right
+        before a fresh replacement is created+uploaded+set-default below,
+        so there is never a moment with zero menus registered. Fail-open
+        throughout, same posture as `register_rich_menu` itself: a
+        listing/delete failure here must never block the registration
+        that follows it."""
+        try:
+            list_resp = await self._client.get(f"{LINE_API_ROOT}/v2/bot/richmenu/list", headers=self._auth_headers())
+            list_resp.raise_for_status()
+            existing = list_resp.json().get("richmenus", [])
+        except Exception:
+            logger.exception("Listing existing LINE rich menus failed; skipping orphan cleanup (fail-open)")
+            return
+
+        for menu in existing:
+            menu_id = menu.get("richMenuId")
+            if not menu_id:
+                continue
+            try:
+                delete_resp = await self._client.delete(
+                    f"{LINE_API_ROOT}/v2/bot/richmenu/{menu_id}", headers=self._auth_headers()
+                )
+                delete_resp.raise_for_status()
+                logger.info("Deleted stale LINE rich menu %s", menu_id)
+            except Exception:
+                logger.exception("Failed to delete stale LINE rich menu %s; continuing (fail-open)", menu_id)
+
     async def register_rich_menu(self) -> None:
         """R-A10/AC14: create + upload + set-as-default the one static rich
         menu, fail-open throughout -- a missing image asset or any API
-        failure is logged and startup continues."""
+        failure is logged and startup continues.
+
+        Archi rider (2026-08-31): cleans up every previously-registered
+        rich menu first (`_cleanup_stale_rich_menus`) so restarting the
+        service no longer accumulates orphans on LINE's own side."""
         image_path = Path(self._config.line.rich_menu_image)
         if not image_path.is_file():
             logger.warning("Rich menu image %s not found; skipping rich menu registration", image_path)
             return
+        await self._cleanup_stale_rich_menus()
         try:
             create_resp = await self._client.post(
                 f"{LINE_API_ROOT}/v2/bot/richmenu",

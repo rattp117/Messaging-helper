@@ -463,17 +463,13 @@ async def async_main(
     # --seed/--dry-run/--test-reminder CLI branches above (all of which
     # already returned by this point).
     #
-    # SPEC-LINE.md §4 R-C2 (branch `line-version`): this is a proactive
-    # PUSH send (no reply context ever active at startup), and it is fired
-    # directly from here rather than through `core/jobs.py` -- the ONE
-    # proactive-send call site R-C2's own suppression list doesn't cover,
-    # since module C only gates functions living in `jobs.py`. Skipped
-    # entirely on LINE: the release note is instead folded into the daily
-    # digest (R-C1 item (e), `core/digest.py`'s own `_pending_announcement_
-    # version` read of this SAME `RELEASE_NOTES`/`last_announced_version`
-    # state), so nothing here needs a channel-type branch beyond this one
-    # early skip -- the Telegram path is unaffected (AC28).
-    if config.channel.type != "line":
+    # SPEC-LINE.md §4 R-C2: skipped on LINE in digest mode (folded into
+    # the daily digest instead, R-C1(e)/`core/digest.py`). SPEC-LINE-
+    # 1.2.md §4 R-I3/R-R6: `mode == "realtime"` re-enables this fan-out on
+    # LINE too (digest fold is inert in realtime, R-I2) -- asserts no
+    # observable push yet (no `RELEASE_NOTES` key for this version, §9
+    # OQ2). Telegram unaffected either way (AC28).
+    if config.channel.type != "line" or config.digest.mode == "realtime":
         await announce.announce_release(db, channel, config, version)
 
     # Register the bot command menu once at startup -- 23 public commands

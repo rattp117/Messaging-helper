@@ -310,3 +310,22 @@ plausibility_upper = 5.0
 [reply_to_reminder]
 enabled = true
 context_cap = 32
+
+# SPEC-LINE-1.2.md §4 R-S1/R-S2: three LINE-edition-only knobs, N/A to this
+# (Telegram-flavored) config.toml -- [line]/[digest] only ever load on the
+# `line-version` branch's own deployment template, config.toml.line (which
+# documents/sets them for real). Left here, commented out, purely as living
+# documentation of what exists, same convention as [audit]/[custom_habits]
+# above. [line] dashboard_in_reply (default true): append a compact "Today"
+# board to every log confirmation's own reply -- LINE-only, no-op on
+# Telegram (which already has a live pinned dashboard via /dashboard).
+# [digest] mode (default "digest"): "digest" keeps the once-a-day digest;
+# "realtime" re-enables per-time proactive pushes -- a paid-LINE-plan
+# choice, meaningless on Telegram (which already sends per-time). [digest]
+# push_cap (default 15000): realtime mode's own hard monthly cap on total
+# proactive pushes across every user.
+# [line]
+# dashboard_in_reply = true
+# [digest]
+# mode = "digest"
+# push_cap = 15000

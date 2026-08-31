@@ -2387,4 +2387,58 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🤔 I can't answer free-form questions right now — try /records, /trends, or /dashboard instead.",
         "th": "🤔 ตอนนี้ยังตอบคำถามแบบข้อความอิสระไม่ได้ ลองใช้ /records, /trends หรือ /dashboard แทนนะ",
     },
+
+    # ===================================================================
+    # SPEC-LINE-1.2.md §4 R-S5 (shared surface, branch `line-version`,
+    # v1.2.0): dashboard-in-reply (Feature A) + real-time proactive mode
+    # (Feature B). `dashboard_line_auto` replaces `dashboard_unsupported`
+    # on LINE for `/dashboard on|off|<bare>` (R-A9) -- the board already
+    # rides every reply automatically, so the old "this chat can't pin"
+    # framing would be actively misleading. `push_quota_warn`/
+    # `push_quota_stop` are the owner-only realtime quota alerts
+    # (R-Q4/R-Q5, `channels/line.py`).
+    # -----------------------------------------------------------------
+    "dashboard_line_auto": {
+        "en": (
+            "📌 Your Today board rides along automatically with every log here on LINE — "
+            "no pinning needed (or possible)."
+        ),
+        "th": (
+            "📌 บอร์ด \"วันนี้\" ของคุณจะแสดงต่อท้ายทุกครั้งที่บันทึกบน LINE โดยอัตโนมัติอยู่แล้ว "
+            "— ไม่ต้องปักหมุด (และปักไม่ได้ด้วย)"
+        ),
+    },
+    "push_quota_warn": {
+        "en": (
+            "⚠️ Owner note: this month's realtime push total is {total}/{cap} ({pct}%). "
+            "Approaching the monthly cap — non-owner pushes will stop once it's reached (replies keep working)."
+        ),
+        "th": (
+            "⚠️ ข้อความถึงเจ้าของบอท: ยอดพุชแบบเรียลไทม์เดือนนี้อยู่ที่ {total}/{cap} ({pct}%) "
+            "ใกล้ถึงเพดานรายเดือนแล้ว — การพุชถึงผู้ใช้อื่น (ที่ไม่ใช่เจ้าของ) จะหยุดเมื่อถึงเพดาน (การตอบกลับยังทำงานปกติ)"
+        ),
+    },
+    "push_quota_stop": {
+        "en": (
+            "🛑 Owner note: this month's realtime push cap ({cap}) has been reached. Non-owner proactive "
+            "pushes are paused until next month — replies keep working normally, and you'll keep receiving "
+            "your own pushes."
+        ),
+        "th": (
+            "🛑 ข้อความถึงเจ้าของบอท: ถึงเพดานพุชแบบเรียลไทม์เดือนนี้แล้ว ({cap}) "
+            "การพุชเชิงรุกถึงผู้ใช้อื่น (ที่ไม่ใช่เจ้าของ) จะหยุดชั่วคราวจนถึงเดือนถัดไป "
+            "— การตอบกลับยังทำงานปกติ และคุณจะยังได้รับพุชของตัวเองตามเดิม"
+        ),
+    },
+
+    # -----------------------------------------------------------------
+    # Archi rider (2026-08-31, live incident): `send_image`'s own
+    # CHANGE-ME degradation (`channels/line.py`) -- a bilingual honest
+    # reply used in place of a broken image link when `[line].
+    # public_base_url` is still the deployment-template placeholder.
+    # -----------------------------------------------------------------
+    "line_public_url_unconfigured": {
+        "en": "🖼️ Image ready, but the server's public URL isn't configured — admin: set [line] public_base_url.",
+        "th": "🖼️ รูปพร้อมแล้ว แต่ยังไม่ได้ตั้งค่า URL สาธารณะของเซิร์ฟเวอร์ — แอดมิน: ตั้งค่า [line] public_base_url",
+    },
 }

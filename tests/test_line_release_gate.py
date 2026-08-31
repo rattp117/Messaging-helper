@@ -84,10 +84,16 @@ async def test_full_journey_log_undo_and_tapfix_clarify_no_llm_end_to_end(monkey
         )
         (reply_body,) = reply_bodies
         messages = reply_body["messages"]
-        assert len(messages) == 1, "one confirmation message, batched into the one free reply (R-A4)"
+        # SPEC-LINE-1.2.md §4 R-A1/R-A5 (Feature A "dashboard-in-reply",
+        # default ON): confirmation + a trailing "Today" board, batched
+        # into the one free reply (R-A4 still holds -- ONE reply call);
+        # the undo quickReply relocates onto the last (board) object.
+        assert len(messages) == 2, "confirmation + trailing board, batched into the one free reply (R-A1/R-A4)"
         msg = messages[0]
         assert "500" in msg["text"]
-        actions = [item["action"] for item in msg["quickReply"]["items"]]
+        assert "quickReply" not in msg
+        board_msg = messages[-1]
+        actions = [item["action"] for item in board_msg["quickReply"]["items"]]
         undo_actions = [a for a in actions if a["type"] == "postback" and a["data"].startswith("undo:")]
         assert len(undo_actions) == 1
         undo_data = undo_actions[0]["data"]
@@ -801,11 +807,11 @@ def test_version_consistent_across_files_and_release_note_posture():
     from habit_assistant.core.release_notes import RELEASE_NOTES
 
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    # readable-approval feature (line/v1.1.0): version literal bumped
-    # alongside VERSION/pyproject.toml/__init__.py -- this test still
-    # pins whatever the CURRENT release actually is, so a future bump
-    # must update this literal too, same as this one did.
-    assert version_file == "1.1.0+line"
+    # dashboard-in-reply + real-time proactive mode (line/v1.2.0): version
+    # literal bumped alongside VERSION/pyproject.toml/__init__.py -- this
+    # test still pins whatever the CURRENT release actually is, so a
+    # future bump must update this literal too, same as this one did.
+    assert version_file == "1.2.0+line"
     assert __version__ == version_file, "src/habit_assistant/__init__.py:__version__ must match VERSION"
     assert re.match(r"^\d+\.\d+\.\d+\+line$", __version__), (
         "PEP 440 local-version shape X.Y.Z+line (SPEC-LINE.md §7 recommended "
@@ -815,7 +821,7 @@ def test_version_consistent_across_files_and_release_note_posture():
     )
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"1.1.0+line"' in pyproject_text or "1.1.0+line" in pyproject_text
+    assert '"1.2.0+line"' in pyproject_text or "1.2.0+line" in pyproject_text
 
     # By design (not a gap, posture unchanged by line/v1.1.0): this
     # branch's own RELEASE_NOTES catalog is never populated on LINE (no

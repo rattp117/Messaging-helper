@@ -125,5 +125,48 @@ fi
 log "    sudo tailscale funnel --bg $BIND_PORT"
 log "This makes https://<host>.<tailnet>.ts.net/ publicly reachable, forwarding to 127.0.0.1:$BIND_PORT."
 log ""
+
+# --- 10. Auto-fill [line].public_base_url from Tailscale (Archi rider,
+#     live incident 2026-08-31: the CHANGE-ME placeholder shipped once and
+#     /wrapped + /heatmap silently sent images LINE could never fetch) ----
+# config.toml.line ships a literal "CHANGE-ME" placeholder for
+# public_base_url on purpose (test_config_toml_line_public_base_url_is_a_
+# placeholder_to_edit's own intentional contract) -- an obvious, unmistakable
+# value so a forgotten step stands out. "Obvious" only helps if someone's
+# actually watching, though, so this step fills it in automatically from the
+# box's own Tailscale identity when it can. Fail-soft throughout: any
+# missing piece (no tailscale, `status --json` failing, no DNS name yet, no
+# python to parse JSON with) leaves the placeholder exactly as-is and logs
+# LOUDLY instead of guessing or crashing setup. Runs after step 9 so
+# `tailscale status` reflects whatever the operator already ran `tailscale
+# up`/`tailscale funnel` with, if anything -- this step never runs either.
+if [ -f "$REPO_ROOT/config.toml" ] && grep -q 'public_base_url = "https://CHANGE-ME' "$REPO_ROOT/config.toml" 2>/dev/null; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+    if [ ! -x "$PYTHON_BIN" ]; then
+        PYTHON_BIN="$(command -v python3 || true)"
+    fi
+    if command -v tailscale >/dev/null 2>&1 && [ -n "$PYTHON_BIN" ]; then
+        DNS_NAME="$(tailscale status --json 2>/dev/null | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get("Self", {}).get("DNSName", "").rstrip("."))
+except Exception:
+    print("")
+' 2>/dev/null || true)"
+        if [ -n "$DNS_NAME" ]; then
+            NEW_URL="https://$DNS_NAME"
+            sed -i "s#^public_base_url = \"https://CHANGE-ME.*\$#public_base_url = \"$NEW_URL\"#" "$REPO_ROOT/config.toml"
+            log "Auto-filled [line].public_base_url = $NEW_URL (from tailscale status --json)."
+        else
+            log "WARNING: [line].public_base_url in config.toml is STILL the CHANGE-ME placeholder -- 'tailscale status --json' didn't return a usable DNS name. Set it by hand (docs/DEPLOY-LINE.md) before starting the service, or media links (heatmap/wrapped) will silently break."
+        fi
+    else
+        log "WARNING: [line].public_base_url in config.toml is STILL the CHANGE-ME placeholder -- tailscale (or python3) isn't available to auto-fill it. Set it by hand (docs/DEPLOY-LINE.md) before starting the service, or media links (heatmap/wrapped) will silently break."
+    fi
+else
+    log "[line].public_base_url is already configured (not the CHANGE-ME placeholder) -- leaving config.toml untouched."
+fi
+
 log "Full runbook (LINE console webhook registration, rich-menu image, verification checklist): docs/DEPLOY-LINE.md"
 log "setup.sh done."

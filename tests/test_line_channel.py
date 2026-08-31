@@ -390,13 +390,19 @@ async def test_register_rich_menu_missing_image_is_fail_open_no_api_calls(tmp_pa
 
 
 async def test_register_rich_menu_creates_uploads_and_sets_default(tmp_path):
-    """Pins the exact host each of the three registration calls goes to --
-    not just the path. LINE splits JSON management calls (create, set-
-    default) onto api.line.me from binary-content calls (the image
-    upload) onto api-data.line.me; hitting api.line.me for the upload
-    404s in production (hotfix v1.0.2). A bare MockTransport doesn't
-    reject a wrong host on its own, so these host assertions are the only
-    thing that would have caught the regression."""
+    """Pins the exact host each registration call goes to -- not just the
+    path. LINE splits JSON management calls (list, create, set-default)
+    onto api.line.me from binary-content calls (the image upload) onto
+    api-data.line.me; hitting api.line.me for the upload 404s in
+    production (hotfix v1.0.2). A bare MockTransport doesn't reject a
+    wrong host on its own, so these host assertions are the only thing
+    that would have caught the regression.
+
+    Archi rider (2026-08-31, orphan cleanup): the very first call is now
+    the `/v2/bot/richmenu/list` orphan-cleanup listing (this handler's own
+    default -- `_default_handler` -- returns an empty `{}` body for it, so
+    `existing == []` and no DELETE call follows), shifting the create/
+    upload/set-default sequence down by one index."""
     image_path = tmp_path / "richmenu.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfakepng")
     captured: list[httpx.Request] = []
@@ -407,14 +413,16 @@ async def test_register_rich_menu_creates_uploads_and_sets_default(tmp_path):
     hosts = [r.url.host for r in captured]
     paths = [r.url.path for r in captured]
     assert hosts[0] == "api.line.me"
-    assert paths[0] == "/v2/bot/richmenu"
-    assert hosts[1] == "api-data.line.me"  # binary content upload -- the wrong-host bug
-    assert paths[1] == "/v2/bot/richmenu/richmenu-1/content"
-    assert hosts[2] == "api.line.me"
-    assert paths[2] == "/v2/bot/user/all/richmenu/richmenu-1"
-    assert captured[1].headers["Content-Type"] == "image/png"
+    assert paths[0] == "/v2/bot/richmenu/list"
+    assert hosts[1] == "api.line.me"
+    assert paths[1] == "/v2/bot/richmenu"
+    assert hosts[2] == "api-data.line.me"  # binary content upload -- the wrong-host bug
+    assert paths[2] == "/v2/bot/richmenu/richmenu-1/content"
+    assert hosts[3] == "api.line.me"
+    assert paths[3] == "/v2/bot/user/all/richmenu/richmenu-1"
+    assert captured[2].headers["Content-Type"] == "image/png"
 
-    create_body = json.loads(captured[0].content)
+    create_body = json.loads(captured[1].content)
     assert create_body == _default_rich_menu_payload()
     assert len(create_body["areas"]) == 6
 

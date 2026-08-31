@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "1.1.0+line"
+version = "1.2.0+line"
 description = "Local-first habit-tracking assistant (LINE Official Account edition, no-LLM, backed by a local Qwen model via Ollama on the Telegram edition)"
 requires-python = ">=3.11"
 dependencies = [

@@ -54,15 +54,24 @@ async def minutely_tick(
     the pre-consolidation per-tick isolation an earlier round of testing
     found this merge had dropped.
 
-    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): on LINE, none
-    of `run_due_reminders`/`run_due_checkins`/`run_due_nudges` may send
-    independently -- their content is folded into the once-daily digest
-    (R-C1, `core/digest.py`) instead. None of the three has a write this
-    tick would otherwise be responsible for making (unlike `grace_tick`
-    below, whose `evaluate_grace` write the digest depends on the NEXT
-    day), so the whole tick is a no-op on LINE rather than gating each
-    call individually."""
-    if config.channel.type == "line":
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): on LINE in
+    digest mode (the default), none of `run_due_reminders`/`run_due_
+    checkins`/`run_due_nudges` may send independently -- their content is
+    folded into the once-daily digest (R-C1, `core/digest.py`) instead.
+    None of the three has a write this tick would otherwise be
+    responsible for making (unlike `grace_tick` below, whose `evaluate_
+    grace` write the digest depends on the NEXT day), so the whole tick
+    is a no-op on LINE rather than gating each call individually.
+
+    SPEC-LINE-1.2.md §4 R-I1/R-R1-R-R3 (Feature B "real-time proactive
+    mode"): `config.digest.mode == "realtime"` re-enables this tick on
+    LINE -- each of the three calls below re-applies its own existing
+    DND/goal-met/pause suppression per user, so a reminder/check-in/
+    nudge now pushes at its configured time exactly like the Telegram
+    edition does, gated only by realtime's own quota cap
+    (`LineChannel._push`, R-Q2). Telegram (`type != "line"`) is untouched
+    either way."""
+    if config.channel.type == "line" and config.digest.mode != "realtime":
         return
     active_ids = db.active_user_ids()
     try:
@@ -110,13 +119,19 @@ async def weekly_review_job(
     active user, each from their own data; a user with no logs in the
     7-day window, or inside their own effective DND window, is skipped.
 
-    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): the weekly
-    review send is suppressed on LINE -- it's available on-demand via
-    `/review` instead (R-C5), plus an optional one-line "ready" pointer
-    folded into that day's digest (`core/digest.py`'s own read of
-    `config.weekly_review.day_of_week`). No write here for the digest to
-    depend on later, so a plain no-op is correct."""
-    if config.channel.type == "line":
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): in digest
+    mode (the default), the weekly review send is suppressed on LINE --
+    it's available on-demand via `/review` instead (R-C5), plus an
+    optional one-line "ready" pointer folded into that day's digest
+    (`core/digest.py`'s own read of `config.weekly_review.day_of_week`).
+    No write here for the digest to depend on later, so a plain no-op is
+    correct.
+
+    SPEC-LINE-1.2.md §4 R-I1/R-R5 (Feature B "real-time proactive mode"):
+    `config.digest.mode == "realtime"` re-enables the push (text + one
+    push per chart image) on the configured review day, DND-gated per
+    user -- `/review` on-demand stays available either way."""
+    if config.channel.type == "line" and config.digest.mode != "realtime":
         return
     today = date.today()
     week_start = (today - timedelta(days=6)).isoformat() + "T00:00:00"
@@ -150,14 +165,19 @@ async def daily_summary_job(db: "Database", channel: "Channel", config: "Config"
     data; a user who logged nothing today, or is inside their own DND
     window, is skipped.
 
-    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): suppressed on
-    LINE -- its content is folded into the once-daily digest instead
-    (`core/digest.py:compose_digest` calls `streaks.compute_daily_summary`/
-    `format_daily_summary` itself), no write here for the digest to depend
-    on later, so a plain no-op is correct. Checked ALONGSIDE the existing
-    `gamification.daily_summary` gate, not instead of it -- either one
-    being false is independently sufficient to skip this job."""
-    if config.channel.type == "line":
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): in digest mode
+    (the default), suppressed on LINE -- its content is folded into the
+    once-daily digest instead (`core/digest.py:compose_digest` calls
+    `streaks.compute_daily_summary`/`format_daily_summary` itself), no
+    write here for the digest to depend on later, so a plain no-op is
+    correct. Checked ALONGSIDE the existing `gamification.daily_summary`
+    gate, not instead of it -- either one being false is independently
+    sufficient to skip this job.
+
+    SPEC-LINE-1.2.md §4 R-I1/R-R4 (Feature B "real-time proactive mode"):
+    `config.digest.mode == "realtime"` re-enables the push at `[gamification]
+    daily_summary_time`, DND-gated per user."""
+    if config.channel.type == "line" and config.digest.mode != "realtime":
         return
     if not config.gamification.daily_summary:
         return
@@ -188,7 +208,15 @@ async def grace_tick(db: "Database", channel: "Channel", config: "Config", provi
     every night, on every channel. `core/digest.py:compose_digest` reads
     that same row the next evening (`db.grace_protected_dates`) to fold a
     grace notification into the digest instead (R-C1(d)) -- suppressing
-    the WRITE here, not just the send, would silently break that."""
+    the WRITE here, not just the send, would silently break that.
+
+    SPEC-LINE-1.2.md §4 R-R8 (Feature B "real-time proactive mode"):
+    deliberately UNCHANGED here, mode-independent -- the send stays
+    suppressed even in realtime (a 00:05 push would buzz the user at
+    midnight and cost quota for the lowest-value moment; the protected
+    streak surfaces for free via the dashboard-in-reply board and the
+    next reminder/summary instead). Every other gate in this file flips
+    on `mode == "realtime"`; this one is the one exception, by design."""
     today = date.today()
     for user_id in db.active_user_ids():
         user_registry = provider.for_user(user_id)
@@ -217,11 +245,18 @@ async def wrapped_auto_job(db: "Database", channel: "Channel", config: "Config",
     pause-aware (skipped for a user whose ENTIRE registry is currently
     paused) and DND-aware.
 
-    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): suppressed on
-    LINE -- `/wrapped` is on-demand only there (R-C5), no auto-send of any
-    kind. No write here for anything else to depend on, so a plain no-op
-    is correct."""
-    if config.channel.type == "line":
+    SPEC-LINE.md §4 R-C2 (module C, branch `line-version`): in digest mode
+    (the default), suppressed on LINE -- `/wrapped` is on-demand only
+    there (R-C5), no auto-send of any kind. No write here for anything
+    else to depend on, so a plain no-op is correct.
+
+    SPEC-LINE-1.2.md §4 R-I1/R-R9 (Feature B "real-time proactive mode"):
+    `config.digest.mode == "realtime"` re-enables this job on LINE too,
+    still fully gated by `config.wrapped.auto_send` (default false, so
+    realtime alone doesn't turn auto-send on) -- when the operator sets
+    `auto_send=true`, the month-end card pushes, DND-gated per user, same
+    as it already does on Telegram."""
+    if config.channel.type == "line" and config.digest.mode != "realtime":
         return
     if not config.wrapped.auto_send:
         return

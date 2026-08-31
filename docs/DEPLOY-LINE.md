@@ -88,6 +88,13 @@ list):
    `habit-assistant-line-backup.{service,timer}`).
 8. Prints the exact `tailscale funnel` command for your configured
    `bind_port` — it does not run Tailscale commands itself (see §4).
+9. Tries to auto-fill `[line].public_base_url` in `config.toml` from this
+   box's own `tailscale status --json` (only if `tailscale up` has
+   already been run — Funnel itself doesn't need to be on yet, just the
+   node's own DNS name). Fail-soft: if Tailscale isn't set up yet, it
+   leaves the `CHANGE-ME` placeholder and logs a loud warning instead of
+   guessing — you'll fill it in by hand in §6 either way if this step
+   couldn't.
 
 Stop here and do **not** start the service yet — it needs the LINE
 secrets (§3) and your Funnel hostname (§4) filled in first.
@@ -207,12 +214,19 @@ LINE_OWNER_USER_ID=...          # can leave the placeholder for now, see §3 ste
 sudo -u habitbot nano /opt/habit-assistant/config.toml
 ```
 
-Edit `[line].public_base_url` to your Funnel hostname from §4:
+Check `[line].public_base_url` — step 9 of `setup.sh` (§2) may have
+already auto-filled it from `tailscale status`. If it's still the
+`CHANGE-ME` placeholder, set it by hand to your Funnel hostname from §4:
 
 ```toml
 [line]
 public_base_url = "https://<host>.<tailnet>.ts.net"
 ```
+
+A forgotten/wrong `public_base_url` doesn't crash the bot — `/heatmap`
+and `/wrapped` degrade to an honest text note instead of sending a
+broken image link (checked at send time, every time), but it's still
+worth getting right before you start relying on those commands.
 
 Everything else in `config.toml.line`'s defaults (digest time, habit
 catalog, timezone, etc.) is a reasonable starting point — see the file's

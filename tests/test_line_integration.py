@@ -285,8 +285,15 @@ async def test_webhook_signed_text_message_dispatches_and_replies_with_undo_quic
         (reply_body,) = reply_bodies
         assert reply_body["replyToken"] == "rt-log"
         messages = reply_body["messages"]
-        assert len(messages) == 1
-        msg = messages[0]
+        # SPEC-LINE-1.2.md §4 R-A1/R-A5 (Feature A "dashboard-in-reply",
+        # default ON): the compact "Today" board now rides along as a
+        # trailing second object, and the undo quickReply relocates onto
+        # it (LINE only displays the LAST object's own quickReply) --
+        # confirmation-only single-object replies are v1.1.0's shape,
+        # only reproduced with `[line] dashboard_in_reply = false`.
+        assert len(messages) == 2
+        assert "quickReply" not in messages[0]
+        msg = messages[-1]
         assert "quickReply" in msg
         actions = [item["action"] for item in msg["quickReply"]["items"]]
         assert any(a["type"] == "postback" and a["data"].startswith("undo:") for a in actions), (
@@ -313,7 +320,11 @@ async def test_postback_undo_flows_through_callback_and_removes_the_log(monkeypa
         await _post_events(app.port, [_text_event(MEMBER, "300ml", reply_token="rt-log-2")])
         reply_bodies = await _wait_until(lambda: app.api.calls_matching("/message/reply") or None)
         undo_data = None
-        for item in reply_bodies[0]["messages"][0]["quickReply"]["items"]:
+        # SPEC-LINE-1.2.md §4 R-A5 (Feature A, default ON): the undo
+        # quickReply now rides the LAST object (the trailing "Today"
+        # board), not the confirmation object at index 0 -- see the
+        # sibling test above for the full R-A1/R-A5 rationale.
+        for item in reply_bodies[0]["messages"][-1]["quickReply"]["items"]:
             if item["action"]["data"].startswith("undo:"):
                 undo_data = item["action"]["data"]
         assert undo_data is not None

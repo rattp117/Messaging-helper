@@ -502,8 +502,17 @@ async def run_daily_digest(
     separate from the composition one just below -- the two failure
     classes have genuinely different dispositions (fail-CLOSED here,
     fail-open below) and now log distinctly labeled messages, not the one
-    shared "(fail-open)" line both used to share."""
+    shared "(fail-open)" line both used to share.
+
+    SPEC-LINE-1.2.md §4 R-I2/R-R10 (Feature B "real-time proactive mode"):
+    `config.digest.mode == "realtime"` makes the digest a no-op, checked
+    BEFORE any read/send -- realtime and digest are mode-EXCLUSIVE (never
+    double-report, never double-spend quota for the same content). The
+    job stays registered unconditionally on LINE (`core/app.py` makes no
+    registration change); this guard alone is what makes it inert."""
     if not config.digest.enabled:
+        return
+    if config.digest.mode == "realtime":
         return
 
     now = _local_now(config, clock)

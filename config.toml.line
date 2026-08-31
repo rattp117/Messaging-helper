@@ -35,6 +35,15 @@ type = "line"
 # public_base_url with your VPS's actual Tailscale Funnel hostname --
 # docs/DEPLOY-LINE.md §"Tailscale Funnel" shows how to get it
 # (`tailscale funnel --bg <bind_port>` prints it, or `tailscale status`).
+# deploy/setup.sh's own step 10 tries to auto-fill this for you (fail-soft
+# -- it leaves the placeholder and logs loudly if it can't).
+#
+# SPEC-LINE-1.2.md §4 R-S1 (v1.2.0, Feature A "dashboard-in-reply"):
+# dashboard_in_reply = true (default) appends a compact "Today" board to
+# every successful log confirmation's own free reply -- the always-visible-
+# progress benefit of the Telegram edition's live pinned dashboard, without
+# any pinning (LINE can't) and without spending push quota (replies are
+# free). false reproduces 1.1.0's reply shape byte-for-byte.
 [line]
 public_base_url = "https://CHANGE-ME.tailnet-name.ts.net"
 bind_host = "127.0.0.1"
@@ -42,6 +51,7 @@ bind_port = 8080
 media_dir = "data/media"
 media_ttl_seconds = 3600
 rich_menu_image = "assets/richmenu/richmenu.png"
+dashboard_in_reply = true
 
 # The trimmed daily digest -- the ONE proactive push/user/day this branch
 # ever sends (R-C1/R-C2, LINE free-plan quota ≈300 push/month total).
@@ -50,11 +60,26 @@ rich_menu_image = "assets/richmenu/richmenu.png"
 # the owner-only quota-warning threshold (R-C7); LINE's free ceiling is
 # ~300/month, so 280 leaves headroom to notice before the account is cut
 # off mid-month.
+#
+# SPEC-LINE-1.2.md §4 R-S2 (v1.2.0, Feature B "real-time proactive mode"):
+# mode = "digest" (default, this file's own setting) keeps the trimmed
+# once-a-day digest above; mode = "realtime" instead re-enables per-time
+# pushes (reminders, hourly check-ins, the almost-there nudge, the daily
+# summary, the weekly review, release announcements) -- each a real LINE
+# Push, so this is a PAID-PLAN choice, not a free-tier one. push_cap is
+# realtime's own hard monthly cap on TOTAL proactive pushes across every
+# user (unrelated to warn_cap above, which stays digest-only) -- size it to
+# whatever LINE message quota you've actually purchased; the owner gets a
+# push warning at 80% and a push alert (once/month) at 100%, after which
+# every NON-owner proactive push is dropped until the month rolls over
+# (replies, and the owner's own pushes, are never gated).
 [digest]
 enabled = true
 time = "20:00"
 warn_cap = 280
 include_weekly_review_day = true
+mode = "digest"
+push_cap = 15000
 
 # Used by the digest's optional weekly-review-day line (R-C5/[digest]
 # include_weekly_review_day) and by the on-demand /review command itself

@@ -127,6 +127,12 @@ class LineConfig(BaseModel):
     media_dir: str = "data/media"
     media_ttl_seconds: int = 3600
     rich_menu_image: str = "assets/richmenu/richmenu.png"
+    # SPEC-LINE-1.2.md §4 R-S1 (shared surface, Feature A "dashboard-in-
+    # reply"): default True -- every log confirmation gets the compact
+    # "Today" board appended to the same free reply (core/dashboard.py:
+    # refresh's own R-A1 hook). False reproduces 1.1.0's reply shape
+    # byte-for-byte (R-A7/AC6).
+    dashboard_in_reply: bool = True
 
 
 class DigestConfig(BaseModel):
@@ -136,12 +142,23 @@ class DigestConfig(BaseModel):
     per-user opt-out, not opt-in -- `users.digest_opt_out` (migration 014,
     R-S4) is the per-user override, this flag is the job's own master
     switch. `warn_cap` is the owner quota-warning threshold (R-C7, default
-    280 against LINE's free-plan ceiling of ~300/month)."""
+    280 against LINE's free-plan ceiling of ~300/month).
+
+    SPEC-LINE-1.2.md §4 R-S2 (shared surface, Feature B "real-time
+    proactive mode"): `mode` is the master switch between the trimmed
+    digest (default, current v1.1.0 behavior) and re-enabled per-time
+    proactive pushes (`core/jobs.py`'s five suppression gates, R-I1).
+    `push_cap` is realtime's own hard monthly cap on TOTAL proactive
+    pushes across every user (`LineChannel._push`'s quota gate, R-Q2) --
+    unrelated to `warn_cap`, which keeps its digest-only meaning (§2.1:
+    "the two knobs match two different economics")."""
 
     enabled: bool = True
     time: str = "20:00"
     warn_cap: int = 280
     include_weekly_review_day: bool = True
+    mode: Literal["digest", "realtime"] = "digest"
+    push_cap: int = 15000
 
     @field_validator("time")
     @classmethod
@@ -155,6 +172,13 @@ class DigestConfig(BaseModel):
     def _warn_cap_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("digest.warn_cap must be a positive integer")
+        return v
+
+    @field_validator("push_cap")
+    @classmethod
+    def _push_cap_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("digest.push_cap must be a positive integer")
         return v
 
 

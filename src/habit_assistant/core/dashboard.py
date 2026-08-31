@@ -281,8 +281,29 @@ async def refresh(
     a `False` edit, and the "entire body is one try" fail-open shape
     (R-D4's own "never blocks the triggering log/undo"). R-D6: no DND
     check -- dashboard edits are silent by construction and explicitly
-    exempt."""
+    exempt.
+
+    SPEC-LINE-1.2.md §4 R-A1 (Feature A "dashboard-in-reply", branch
+    `line-version`): on LINE, with `[line] dashboard_in_reply` on, append
+    the compact board to the active reply buffer (`channel.append_board`,
+    R-A3/R-A6) BEFORE the pin/edit machinery below, which is permanently
+    inert on LINE (`dashboard_msg_id` is always `NULL` there -- no
+    per-user opt-out, R-A9/§9 OQ1). `append_board`'s own contract makes
+    this hook safe everywhere it's reached: a no-op with no active reply
+    context (a scheduled call, e.g. `dashboard_day_rollover_job`, R-A3)
+    and a no-op on every other channel (base `Channel.append_board`,
+    R-S3/R-A10). One hook here reaches EVERY state-changing reactive site
+    because they all already call `refresh` after confirming (the four
+    enumerated log-confirmation sites, plus undo/edit/target/cadence/
+    pause/resume, R-A1's own enumeration) -- and falls out naturally for
+    a backfilled log (R-A2), since the typed-log site already skips this
+    whole call for a backfill."""
     try:
+        if config.channel.type == "line" and config.line.dashboard_in_reply:
+            board_lang = _board_language(db, config, user_id)
+            board_text = render(db, config, registry, board_lang, user_id, clock)
+            await channel.append_board(user_id, board_text)
+
         msg_id = db.get_dashboard_msg_id(user_id)
         if msg_id is None:
             return  # R-D3: disabled, nothing to do.
@@ -347,7 +368,19 @@ async def execute_dashboard(
     """R-D1: see this module's own docstring above for the full on/off/
     bare-show contract. Never raises -- mirrors `execute_checkin`'s
     identical "a DB/send failure is caught, logged, and reported via a
-    friendly reply, not a traceback" contract."""
+    friendly reply, not a traceback" contract.
+
+    SPEC-LINE-1.2.md §4 R-A9 (Feature A "dashboard-in-reply", branch
+    `line-version`): on LINE, `/dashboard on|off|<bare>` never reaches the
+    on/off/bare-show machinery below at all -- the board already rides
+    every reply automatically (Feature A's own `refresh` hook, R-A1), so
+    every trigger short-circuits to one honest explanatory note
+    (`dashboard_line_auto`), replacing the misleading `dashboard_
+    unsupported` reply this branch used pre-1.2.0. No per-user state, no
+    write (§9 OQ1: per-user opt-out is out of scope, deferred)."""
+    if config.channel.type == "line":
+        return i18n.t("dashboard_line_auto", lang)
+
     raw = (command.pref_value or "").strip().lower()
 
     if not raw:
