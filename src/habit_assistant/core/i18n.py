@@ -812,8 +812,45 @@ CATALOG: dict[str, dict[Language, str]] = {
         "th": "👥 รายชื่อผู้ใช้:",
     },
     "users_list_line": {
-        "en": "• {chat_id} — {role} · {status}{lang_suffix}",
-        "th": "• {chat_id} — {role} · {status}{lang_suffix}",
+        "en": "• {chat_id}{name_suffix} — {role} · {status}{lang_suffix}",
+        "th": "• {chat_id}{name_suffix} — {role} · {status}{lang_suffix}",
+    },
+
+    # Readable-approval feature (branch line-version, core/access.py's own
+    # `_resolve_admin_target_chat`): the "which one?" reply for an
+    # ambiguous name/prefix/id-collision match, and the safety reply for
+    # a token that only matches an ACTIVE user's name (never
+    # auto-resolved -- see that function's own docstring).
+    #
+    # Archi ruling (line/v1.1.0 hardening, F2/F5): the candidate pool
+    # behind an ambiguous reply is no longer guaranteed to be
+    # pending-only (an id-prefix collision, F2, or a pending/active name
+    # collision on /block, F5, can both surface a non-pending row) -- the
+    # header stays status-neutral, and `admin_ambiguous_line` grew a
+    # `{status}` suffix so each candidate is self-describing.
+    "admin_ambiguous_header": {
+        "en": "🤔 More than one user matches — which one?",
+        "th": "🤔 มีผู้ใช้ที่ตรงกันมากกว่าหนึ่งคน — คนไหนคะ?",
+    },
+    "admin_ambiguous_line": {
+        "en": "• {name} — {chat_id} ({status})",
+        "th": "• {name} — {chat_id} ({status})",
+    },
+    "admin_block_name_is_active": {
+        "en": '⚠️ "{name}" matches an ACTIVE user ({chat_id}), not a pending one. For safety, targeting an '
+        "active user requires the full id — /approve {chat_id} or /block {chat_id}.",
+        "th": '⚠️ "{name}" ตรงกับผู้ใช้ที่ใช้งานอยู่แล้ว ({chat_id}) ไม่ใช่ผู้ที่รอดำเนินการ '
+        "เพื่อความปลอดภัย การดำเนินการกับผู้ใช้ที่ใช้งานอยู่ต้องระบุไอดีแบบเต็มเท่านั้น — /approve {chat_id} หรือ /block {chat_id}",
+    },
+    # Archi ruling (line/v1.1.0 hardening, F1/F2): a token that already
+    # has a plausible id SHAPE (`_CHAT_ID_RE`) but isn't long enough to
+    # be trusted as a real, complete id (and matched no pending/active
+    # user by name or prefix either) -- replaces what used to be a
+    # silent phantom-row creation with an honest "I don't know who this
+    # is" reply.
+    "admin_no_match": {
+        "en": "🤔 No match for that — please paste the full id.",
+        "th": "🤔 ไม่พบผู้ใช้ที่ตรงกัน — กรุณาวางไอดีแบบเต็ม",
     },
 
     # -----------------------------------------------------------------

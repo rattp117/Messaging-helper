@@ -1100,21 +1100,22 @@ async def test_owner_autodetect_unaffected_when_no_lang_pref_ever_set(tmp_path, 
 
 
 # ---------------------------------------------------------------------------
-# 6. display_name: /users deliberately does NOT show it (a finding worth
-# recording -- only `access_request` does; SPEC-v1.2.md §3.3's own example
-# is chat-id-only, so this matches spec, not a gap); a genuinely 2-arg
+# 6. display_name: /users USED TO deliberately not show it (SPEC-v1.2.md
+# §3.3's own example was chat-id-only) -- superseded by the
+# readable-approval feature (branch line-version, line/v1.1.0): /users
+# now shows a captured display_name next to its chat id too, alongside
+# `access_request`'s own pre-existing use of it. A genuinely 2-arg
 # `on_message` call (pre-integration-shaped caller) still works and falls
-# back to the bare chat id.
+# back to the bare chat id either way.
 # ---------------------------------------------------------------------------
 
 
-async def test_users_listing_never_includes_display_name(tmp_path, monkeypatch):
-    """Documents actual behavior against the coordinator's point 6: only
-    the owner's `access_request` NOTIFICATION carries `display_name`
-    (R-A2) -- `/users` (`core/access.py:_render_users_list`) has never
-    rendered it, in this pass or any prior one, and SPEC-v1.2.md §3.3's own
-    illustrative example is chat-id-only too. Not a gap; recorded here so
-    the assumption doesn't silently drift into the release notes."""
+async def test_users_listing_now_includes_display_name(tmp_path, monkeypatch):
+    """Updated for the readable-approval feature (branch line-version,
+    core/access.py:_render_users_list): `/users` now shows a captured
+    display_name next to its chat id -- this test used to pin the
+    opposite ("never includes it") as intentional, pre-feature behavior;
+    updated rather than deleted so the coverage isn't silently lost."""
     config = Config.model_validate({"app": {"db_path": str(tmp_path / "habits.db")}})
     script = [
         ("message", "7777", "hi", "Charlie"),
@@ -1124,9 +1125,8 @@ async def test_users_listing_never_includes_display_name(tmp_path, monkeypatch):
     channel = await _run(monkeypatch, config, script)
 
     users_reply = next(t for t in channel.sent_to(OWNER) if i18n.t("users_list_header", "en") in t)
-    assert "Charlie" not in users_reply
-    assert "7777" in users_reply
-    # The access_request notification (a DIFFERENT message) did carry it.
+    assert "7777 (Charlie)" in users_reply
+    # The access_request notification (a DIFFERENT message) also carries it.
     assert any("Charlie" in t for t in channel.sent_to(OWNER))
 
 

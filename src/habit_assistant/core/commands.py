@@ -878,13 +878,36 @@ def _match_review(stripped: str) -> bool:
 # but none for `/start`/`/approve`/`/block`/`/users`/`/invite`, so none are
 # added here. Each is anchored to the whole stripped message, same
 # conservatism as `/help`/`/habits` above -- none of these five literal
-# words can appear as a real habit log. `/approve`/`/block`/`/invite`
-# capture the FIRST whitespace-delimited token after the command word as
-# `target_chat` (raw, unvalidated -- `core/access.py:execute_admin` is
-# where a malformed/missing token becomes the R-A4/§3.5 usage reply, not
-# this shape-only layer); a bare `/approve` with no token still produces a
-# Command (target_chat=None), never a silent None fall-through, mirroring
-# `_match_target_slash`'s own "recognized shape -> always a Command" rule.
+# words can appear as a real habit log.
+#
+# Archi ruling (line/v1.1.0 readable-approval HARDENING pass, finding F4
+# in TEST-LINE-1.1.0.md): `/approve` and `/block` now capture the FULL,
+# outer-trimmed TAIL after the command word as `target_chat` -- NOT just
+# its first whitespace-delimited token. A multi-word display name
+# ("Som Chai") must name-match the WHOLE typed string
+# (`core/access.py:_resolve_admin_target_chat`'s own name-match step) --
+# capturing only the first word ("Som") could silently exact-match a
+# DIFFERENT, unrelated pending user whose name happens to share that
+# first word, approving/blocking the wrong person (F4's own CRITICAL
+# repro: pending "Som" + pending "Som Chai", typing the full correct name
+# "Som Chai" used to resolve to "Som" instead). This SUPERSEDES the
+# previous "trailing garbage after the first token is silently discarded"
+# contract for THESE TWO COMMANDS ONLY (see `tests/test_access.py`'s own
+# updated test for the pinned-and-now-changed contract).
+#
+# `/invite` is UNCHANGED -- still the FIRST whitespace-delimited token
+# only. It targets a chat id that has never contacted the bot (by
+# definition no pending row exists to name-match against), so the F4
+# fix doesn't apply to it, and Archi's ruling scopes the capture change
+# to `/approve`/`/block` only.
+#
+# `target_chat` is raw/unvalidated either way (`core/access.py:
+# execute_admin`/`_resolve_admin_target_chat` is where a malformed/
+# missing/unresolvable token becomes the R-A4/§3.5 usage-style reply,
+# not this shape-only layer); a bare `/approve` with no token still
+# produces a Command (target_chat=None), never a silent None
+# fall-through, mirroring `_match_target_slash`'s own "recognized shape
+# -> always a Command" rule.
 # ---------------------------------------------------------------------------
 
 _START_RE = re.compile(r"^/start$", re.IGNORECASE)
@@ -901,6 +924,16 @@ def _first_token(rest: str | None) -> str | None:
     return parts[0] if parts else None
 
 
+def _full_tail(rest: str | None) -> str | None:
+    """Archi ruling (F4): the FULL, outer-trimmed tail -- see this
+    section's own comment block above for why /approve and /block use
+    this instead of `_first_token` now."""
+    if rest is None:
+        return None
+    trimmed = rest.strip()
+    return trimmed if trimmed else None
+
+
 def _match_access(stripped: str) -> "Command | None":
     if _START_RE.match(stripped):
         return Command(kind="start")
@@ -908,10 +941,10 @@ def _match_access(stripped: str) -> "Command | None":
         return Command(kind="users")
     match = _APPROVE_RE.match(stripped)
     if match is not None:
-        return Command(kind="approve", target_chat=_first_token(match.group("rest")))
+        return Command(kind="approve", target_chat=_full_tail(match.group("rest")))
     match = _BLOCK_RE.match(stripped)
     if match is not None:
-        return Command(kind="block", target_chat=_first_token(match.group("rest")))
+        return Command(kind="block", target_chat=_full_tail(match.group("rest")))
     match = _INVITE_RE.match(stripped)
     if match is not None:
         return Command(kind="invite", target_chat=_first_token(match.group("rest")))

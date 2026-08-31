@@ -97,9 +97,36 @@ def test_dispatch_invite_with_chat_id(registry):
     assert cmd == commands.Command(kind="invite", target_chat="88899900")
 
 
-def test_dispatch_approve_extra_garbage_takes_first_token(registry):
+def test_dispatch_approve_captures_full_tail_not_just_first_token(registry):
+    """Archi ruling (line/v1.1.0 readable-approval hardening, finding F4
+    in TEST-LINE-1.1.0.md): SUPERSEDES this test's own original name/
+    assertion -- /approve (and /block) now capture the FULL,
+    outer-trimmed tail as `target_chat`, not just the first
+    whitespace-delimited token. `core/access.py:_resolve_admin_target_
+    chat`'s name-match step needs the WHOLE typed string to correctly
+    name-match a multi-word display name ("Som Chai") -- capturing only
+    the first word ("Som") could silently exact-match a different,
+    unrelated pending user sharing that first word (F4's own CRITICAL
+    repro). /invite is UNCHANGED (still first-token only, see
+    `core/commands.py:_match_access`'s own comment) since it targets a
+    chat id that's never contacted the bot -- no pending row to
+    name-match against, so no equivalent risk."""
     cmd = commands.dispatch("/approve 88899900 please", registry)
-    assert cmd == commands.Command(kind="approve", target_chat="88899900")
+    assert cmd == commands.Command(kind="approve", target_chat="88899900 please")
+
+
+def test_dispatch_block_captures_full_tail_not_just_first_token(registry):
+    """Archi ruling (F4) -- the /block mirror of the test above."""
+    cmd = commands.dispatch("/block Som Chai", registry)
+    assert cmd == commands.Command(kind="block", target_chat="Som Chai")
+
+
+def test_dispatch_invite_extra_garbage_still_takes_first_token(registry):
+    """Pins the deliberate asymmetry: /invite's capture is UNCHANGED by
+    the F4 ruling above (still `_first_token`, not `_full_tail`) --
+    see `core/commands.py:_match_access`'s own comment for why."""
+    cmd = commands.dispatch("/invite 88899900 please", registry)
+    assert cmd == commands.Command(kind="invite", target_chat="88899900")
 
 
 @pytest.mark.parametrize(
@@ -324,7 +351,13 @@ async def test_execute_admin_block_revokes_access(db, channel, config):
 async def test_execute_admin_users_lists_everyone(db, channel, config):
     """AC-A5: /users lists every user with role + status, matching
     SPEC-v1.2.md §3.3's shape (an active row shows its language, a
-    pending row doesn't)."""
+    pending row doesn't).
+
+    Readable-approval feature (branch line-version): a row WITH a
+    captured display_name shows it, parenthesized, right after the chat
+    id (STRANGER/"Charlie" below); a row with none (OWNER, MEMBER --
+    neither is given a display_name in this test) renders exactly as
+    before, no empty parens."""
     db.upsert_user(MEMBER, status="active")
     db.set_user_language(MEMBER, "th")
     db.upsert_user(STRANGER, status="pending", display_name="Charlie")
@@ -337,9 +370,26 @@ async def test_execute_admin_users_lists_everyone(db, channel, config):
     assert lines[0] == i18n.t("users_list_header", "en")
     assert f"• {OWNER} — owner · active · lang auto" in lines
     assert f"• {MEMBER} — member · active · lang th" in lines
-    assert f"• {STRANGER} — member · pending" in lines
+    assert f"• {STRANGER} (Charlie) — member · pending" in lines
     # a pending row must not carry a "· lang" suffix
     assert not any(line.startswith(f"• {STRANGER}") and "lang" in line for line in lines)
+
+
+async def test_execute_admin_users_list_truncates_long_display_name(db, channel, config):
+    """Readable-approval feature: a very long display name is truncated
+    (render-budget discipline, `core/render_budget.py:truncate`, reused
+    not reimplemented) so a handful of long names can never blow one
+    `/users` reply past the sendMessage budget."""
+    long_name = "A" * 100
+    db.upsert_user(STRANGER, status="pending", display_name=long_name)
+
+    await access.execute_admin(
+        commands.Command(kind="users"), db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en"
+    )
+    [reply] = channel.sent_to(OWNER)
+    line = next(l for l in reply.splitlines() if l.startswith(f"• {STRANGER}"))
+    assert long_name not in line
+    assert "…" in line
 
 
 async def test_execute_admin_admin_commands_invisible_to_non_owner(db, channel, config):
@@ -391,6 +441,144 @@ async def test_execute_admin_approve_malformed_chat_id_gets_usage_reply(db, chan
     )
     assert channel.sent_to(OWNER) == [i18n.t("admin_usage", "en")]
     assert db.get_user("not-a-chat-id") is None
+
+
+# ---------------------------------------------------------------------------
+# Readable-approval feature (branch line-version): /approve and /block
+# resolving a name or id-prefix among PENDING users, not just the full
+# opaque chat id -- core/access.py:_resolve_admin_target_chat.
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_admin_approve_by_exact_pending_display_name(db, channel, config):
+    """An unambiguous, case-insensitive exact display-name match among
+    pending users resolves -- the typed case need not match the stored
+    one."""
+    db.upsert_user(STRANGER, status="pending", display_name="Alice")
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat="alice"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(STRANGER)["status"] == "active"
+
+
+async def test_execute_admin_approve_by_ambiguous_pending_display_name_takes_no_action(db, channel, config):
+    """Two pending users share the same (case-insensitive) display name
+    -- no action is taken for either, and the reply lists both
+    candidates' name + id so the owner can retype the full id."""
+    OTHER = "77766655"
+    db.upsert_user(STRANGER, status="pending", display_name="Alice")
+    db.upsert_user(OTHER, status="pending", display_name="ALICE")
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat="alice"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(STRANGER)["status"] == "pending"
+    assert db.get_user(OTHER)["status"] == "pending"
+    [reply] = channel.sent_to(OWNER)
+    assert STRANGER in reply and OTHER in reply
+
+
+async def test_execute_admin_approve_by_unique_pending_id_prefix(db, channel, config):
+    """A >=6-char id prefix that's unique among pending users resolves,
+    even though it fails the full `_CHAT_ID_RE` shape on its own."""
+    LINE_USER = "Ubrandnew0000000000000000000000000"
+    db.upsert_user(LINE_USER, status="pending")
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat="Ubrand"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(LINE_USER)["status"] == "active"
+
+
+async def test_execute_admin_approve_short_prefix_rejected_even_if_unique(db, channel, config):
+    """A prefix under the 6-char floor is rejected even when it would be
+    unique among pending users today -- falls through to the usage
+    message, never a silent resolve."""
+    LINE_USER = "Ubrandnew0000000000000000000000000"
+    db.upsert_user(LINE_USER, status="pending")
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat="Ubran"),  # 5 chars, below the floor
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(LINE_USER)["status"] == "pending"
+    assert channel.sent_to(OWNER) == [i18n.t("admin_usage", "en")]
+
+
+async def test_execute_admin_block_by_exact_pending_display_name(db, channel, config):
+    """/block resolves an unambiguous PENDING display name too -- the
+    same machinery /approve uses -- so a pending request can be rejected
+    by name."""
+    db.upsert_user(STRANGER, status="pending", display_name="Alice")
+    await access.execute_admin(
+        commands.Command(kind="block", target_chat="Alice"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(STRANGER)["status"] == "blocked"
+
+
+async def test_execute_admin_block_by_active_user_name_is_never_auto_resolved(db, channel, config):
+    """Safety asymmetry (this feature's own explicit design constraint):
+    a token that matches only an ACTIVE user's display name must NEVER
+    auto-resolve for /block -- the active user stays untouched, and the
+    reply explains that blocking an active user requires the full id
+    (so a name typo can never silently block the wrong family member)."""
+    db.upsert_user(MEMBER, status="active", display_name="Bob")
+    await access.execute_admin(
+        commands.Command(kind="block", target_chat="bob"),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(MEMBER)["status"] == "active"
+    [reply] = channel.sent_to(OWNER)
+    assert MEMBER in reply
+    assert "Bob" in reply
+    assert reply != i18n.t("admin_usage", "en")
+
+
+async def test_execute_admin_block_by_full_id_still_works_for_active_user(db, channel, config):
+    """The full-id path is unaffected by this feature -- /block <full
+    id> still blocks an active user directly, no name/prefix involved."""
+    db.upsert_user(MEMBER, status="active", display_name="Bob")
+    await access.execute_admin(
+        commands.Command(kind="block", target_chat=MEMBER),
+        db=db,
+        channel=channel,
+        config=config,
+        owner_chat_id=OWNER,
+        chat_id=OWNER,
+        lang="en",
+    )
+    assert db.get_user(MEMBER)["status"] == "blocked"
 
 
 # ---------------------------------------------------------------------------

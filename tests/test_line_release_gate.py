@@ -801,7 +801,11 @@ def test_version_consistent_across_files_and_release_note_posture():
     from habit_assistant.core.release_notes import RELEASE_NOTES
 
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    assert version_file == "1.0.0+line"
+    # readable-approval feature (line/v1.1.0): version literal bumped
+    # alongside VERSION/pyproject.toml/__init__.py -- this test still
+    # pins whatever the CURRENT release actually is, so a future bump
+    # must update this literal too, same as this one did.
+    assert version_file == "1.1.0+line"
     assert __version__ == version_file, "src/habit_assistant/__init__.py:__version__ must match VERSION"
     assert re.match(r"^\d+\.\d+\.\d+\+line$", __version__), (
         "PEP 440 local-version shape X.Y.Z+line (SPEC-LINE.md §7 recommended "
@@ -811,15 +815,14 @@ def test_version_consistent_across_files_and_release_note_posture():
     )
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"1.0.0+line"' in pyproject_text or "1.0.0+line" in pyproject_text
+    assert '"1.1.0+line"' in pyproject_text or "1.1.0+line" in pyproject_text
 
-    # By design (not a gap): a brand-new product edition's first version
-    # has nothing to announce an upgrade FROM, so RELEASE_NOTES carries
-    # no "1.0.0+line" entry -- core/digest.py's own
-    # `_pending_announcement_version` therefore never fires a phantom
-    # "what's new" line on a fresh v1.0.0+line install; onboarding is
-    # instead the /start welcome (core/access.py, unaffected by this
-    # branch) once a user is approved.
+    # By design (not a gap, posture unchanged by line/v1.1.0): this
+    # branch's own RELEASE_NOTES catalog is never populated on LINE (no
+    # announce catalog -- core/digest.py's `_pending_announcement_
+    # version` therefore never fires a phantom "what's new" line on
+    # ANY LINE version, not just the first). Still true after the
+    # readable-approval bump -- no "1.1.0+line" entry was added either.
     assert __version__ not in RELEASE_NOTES
 
 

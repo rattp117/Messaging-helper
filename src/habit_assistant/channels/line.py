@@ -110,9 +110,72 @@ class LineChannel(Channel):
         self._client = client or httpx.AsyncClient(timeout=30.0)
         self._media_dir = Path(config.line.media_dir)
         self._media_dir.mkdir(parents=True, exist_ok=True)
+        # Readable-approval feature (branch line-version): per-process
+        # "already tried a profile fetch for this user" set -- see
+        # `_display_name_for`'s own docstring below for why this cap
+        # exists (LINE gives no inline display name the way Telegram's
+        # `message.from.first_name` does, so fetching it is a real API
+        # call that must not fire on every single inbound message).
+        self._profile_fetch_attempted: set[str] = set()
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
+
+    # -- profile lookup (readable-approval feature, branch line-version) ----
+
+    async def get_profile(self, user_id: str) -> str | None:
+        """LINE's Get Profile API -- a JSON management call, so it stays on
+        `api.line.me` (never `api-data.line.me`, reserved for binary
+        content per this module's own host-split rationale above).
+        Returns the account's `displayName`, or `None` on ANY failure
+        (network error, non-2xx, missing/blank field) -- fail-open by
+        design, never raises: a profile lookup is a readability
+        nice-to-have (making the owner's approval flow show a name
+        instead of an opaque `U...` id), never allowed to block or crash
+        onboarding, mirroring `register_rich_menu`'s own fail-open
+        posture."""
+        try:
+            resp = await self._client.get(
+                f"{LINE_API_ROOT}/v2/bot/profile/{user_id}",
+                headers=self._auth_headers(),
+            )
+            resp.raise_for_status()
+            name = resp.json().get("displayName")
+            return name or None
+        except Exception:
+            logger.warning(
+                "LINE get_profile failed for user_id=%r; continuing without a display name", user_id, exc_info=True
+            )
+            return None
+
+    async def _display_name_for(self, user_id: str) -> str | None:
+        """Resolves `user_id`'s display name for `run`'s own wrapped
+        `on_message` below, fetching `get_profile` AT MOST ONCE per
+        process lifetime per user -- the wrapper calls this for every
+        inbound message, but the actual network call must be capped, not
+        made on every one.
+
+        A `users` row that already carries a `display_name` (persisted
+        by a previous call this process, or from an earlier process run)
+        short-circuits without even touching `_profile_fetch_attempted`
+        -- covers a process restart mid-onboarding, and every
+        already-onboarded user, neither of which should ever re-fetch.
+        Otherwise `user_id` is fetched (and marked attempted, success OR
+        fail) only the FIRST time this is called for it within this
+        process's lifetime -- a still-pending/still-unknown user's every
+        subsequent message reuses that one outcome (including a `None`
+        from a failed fetch -- not retried per-message, only on the next
+        process start)."""
+        try:
+            existing = self.db.get_user(user_id)
+        except Exception:
+            existing = None
+        if existing is not None and existing["display_name"]:
+            return existing["display_name"]
+        if user_id in self._profile_fetch_attempted:
+            return None
+        self._profile_fetch_attempted.add(user_id)
+        return await self.get_profile(user_id)
 
     # -- reply-buffer plumbing (R-A4) ---------------------------------------
 
@@ -305,6 +368,26 @@ class LineChannel(Channel):
         # calls on_message with 5 positional args (userId, text, None,
         # message_id, None) -- see channels/base.py's module docstring for
         # why the ABC's own type hint stays the conservative 2-arg shape.
+        #
+        # Readable-approval feature (branch line-version): wraps the
+        # caller's `on_message` so the 3rd positional arg (`display_name`,
+        # always `None` from `LineWebhookServer.process_event` -- LINE
+        # never includes it inline) is resolved via `_display_name_for`
+        # right here, at the channel boundary -- exactly where Telegram's
+        # own `_display_name_of` (channels/telegram.py) fills the same
+        # slot from its update payload instead. `LineWebhookServer` itself
+        # stays DB/profile-fetch-free (its own docstring's "independently
+        # testable with fake callables" contract, unchanged).
+        async def _on_message_with_profile(
+            user_id: str,
+            text: str,
+            _display_name: str | None,
+            message_id: str | None,
+            reply_to_message_id: str | None,
+        ) -> None:
+            name = await self._display_name_for(user_id)
+            await on_message(user_id, text, name, message_id, reply_to_message_id)
+
         server = LineWebhookServer(
             channel_secret=self._channel_secret,
             bind_host=self._config.line.bind_host,
@@ -314,7 +397,7 @@ class LineChannel(Channel):
             reply_scope=self._reply_scope,
             flush_reply=self._flush_reply,
         )
-        await server.serve(on_message, on_callback)
+        await server.serve(_on_message_with_profile, on_callback)
 
     async def aclose(self) -> None:
         await self._client.aclose()

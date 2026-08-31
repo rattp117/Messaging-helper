@@ -476,12 +476,26 @@ async def test_start_welcome_in_thai(db, channel, config):
     "access_pending", "access_denied", "access_request", "access_granted",
     "start_welcome", "admin_usage", "admin_save_failed", "admin_approved_ack",
     "admin_blocked_ack", "users_list_header", "users_list_line",
+    # Readable-approval feature (branch line-version): the /approve|/block
+    # name/id-prefix resolver's own two new catalog ids.
+    "admin_ambiguous_header", "admin_ambiguous_line", "admin_block_name_is_active",
 ])
 def test_every_access_catalog_key_formats_cleanly_both_languages(msg_id):
     """No KeyError formatting either language variant with a representative
     kwarg set -- covers every id this module owns, independent of any
     particular code path exercising it."""
-    kwargs = {"name": "Alice", "chat_id": STRANGER, "role": "member", "status": "active", "lang_suffix": " · lang th"}
+    kwargs = {
+        "name": "Alice",
+        "chat_id": STRANGER,
+        "role": "member",
+        "status": "active",
+        "lang_suffix": " · lang th",
+        # Readable-approval feature: users_list_line's own new placeholder
+        # (empty string is the "no display_name" shape, the common case);
+        # str.format ignores every kwarg a given template doesn't reference,
+        # so this is a no-op for every other id in the list above.
+        "name_suffix": " (Alice)",
+    }
     for lang in ("en", "th"):
         text = i18n.t(msg_id, lang, **kwargs)
         assert isinstance(text, str) and text  # non-empty, no raw "{...}" left unformatted

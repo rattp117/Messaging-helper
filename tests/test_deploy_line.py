@@ -363,10 +363,48 @@ def test_richmenu_placeholder_is_under_lines_1mb_limit():
     assert png_path.stat().st_size < 1_000_000
 
 
-def test_richmenu_readme_exists_and_flags_the_placeholder_status():
+def test_richmenu_readme_documents_the_current_design_tokens_cells_and_regeneration():
+    """Repaired (line/v1.1.0 hardening pass, Archi-sanctioned mechanical
+    fix): renamed from `test_richmenu_readme_exists_and_flags_the_
+    placeholder_status`. That test asserted the README contains the
+    literal strings "placeholder" and "OQ3" -- true when the rich menu
+    WAS the SPEC-LINE.md §9 OQ3 grey-and-blue placeholder, but Iris's
+    "Modern & Clean rich-menu artwork" commit (`0f4e310`) replaced it
+    with the finished design. The test kept passing anyway -- not
+    because the guard still means anything, but because Iris's own
+    README (see its "Status" section and its explicit "Editing note",
+    lines ~11-24) deliberately preserved a historical reference to OQ3
+    and the word "placeholder" specifically to keep this test green
+    without rewriting it. That note itself flags this as unfinished
+    business, not a stealth workaround.
+
+    Rewritten to assert what the README actually needs to guarantee
+    NOW: it documents (1) the design tokens the artwork is generated
+    from (colour/type/geometry, so a future redesign has real numbers to
+    start from, not just a picture), (2) the six cells table (so the
+    button-to-command mapping `test_richmenu_button_commands_are_real_
+    dispatchable_commands` also checks is human-readable, not just
+    code-verified), and (3) how to regenerate the asset (the actual
+    operational need this doc exists to serve). No longer asserts
+    anything about "placeholder"/"OQ3" -- that status is now historical
+    narrative, not a live contract this test should pin."""
     readme = (REPO_ROOT / "assets" / "richmenu" / "README.md").read_text(encoding="utf-8")
-    assert "placeholder" in readme.lower()
-    assert "OQ3" in readme
+
+    assert "## Design tokens" in readme, "README no longer documents the design-token system the artwork is built from"
+    assert "## The six cells" in readme, "README no longer documents the button/command/label table"
+    assert "## Regenerating it" in readme, "README no longer documents how to regenerate the asset"
+    assert "generate_richmenu.py" in readme, "README no longer names the actual regeneration script"
+
+    # Cross-check against the real payload (same source of truth
+    # `test_richmenu_button_commands_are_real_dispatchable_commands` in
+    # tests/test_line_d_gaps.py uses) rather than hardcoding the six
+    # command names a second time -- stays in sync automatically if the
+    # button set ever changes.
+    from habit_assistant.channels.line import _default_rich_menu_payload
+
+    for area in _default_rich_menu_payload()["areas"]:
+        cmd = area["action"]["text"]
+        assert f"`{cmd}`" in readme, f"README's cell table no longer documents rich-menu button {cmd!r}"
 
 
 # --- docs/DEPLOY-LINE.md ------------------------------------------------------

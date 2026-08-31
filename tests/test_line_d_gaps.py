@@ -200,19 +200,53 @@ def test_service_user_override_is_consistent_with_the_static_unit_files():
 
 # --- Gap 3: rich-menu buttons vs. real dispatchable commands --------------------
 
+
 def test_richmenu_button_commands_are_real_dispatchable_commands():
-    readme = (REPO_ROOT / "assets" / "richmenu" / "README.md").read_text(encoding="utf-8")
-    button_commands = re.findall(r"\|\s*\d\s*\|\s*`(/\w+)`", readme)
-    assert len(button_commands) == 6, f"expected 6 button rows in the README table, found {button_commands}"
+    """Repaired (line/v1.1.0 hardening pass, Archi-sanctioned mechanical
+    fix): this test's own README-table regex broke when Iris's rich-menu
+    artwork commit (`0f4e310`, `assets/richmenu/*` only -- disjoint from
+    every file this dispatch touches, confirmed via `git show --stat`)
+    rewrote "The six cells" table to add a "Tap area" column and drop
+    the backtick-wrapped command shape the old
+    `r"\\|\\s*\\d\\s*\\|\\s*`(/\\w+)`"` regex depended on -- 0 rows matched,
+    not a real regression in the rich menu itself.
+
+    Rather than re-deriving a new regex for the new table shape (fragile
+    again the next time Iris/Luna reformat the doc), this now asserts
+    against `channels/line.py:_default_rich_menu_payload()` directly --
+    the actual, authoritative runtime source LINE calls at startup
+    (`register_rich_menu`), not a markdown transcription of it that can
+    drift out of sync with the code. This is strictly stronger (it would
+    catch a code-side command typo the README never would) and
+    format-proof (no README table shape to keep in sync with a regex).
+
+    The README is still spot-checked, format-tolerantly (a plain
+    substring search, not a table-shape regex), so a genuine doc/code
+    drift -- the README describing a button the code no longer sends --
+    is still caught without depending on the table's exact markdown
+    shape."""
+    from habit_assistant.channels.line import _default_rich_menu_payload
+
+    payload = _default_rich_menu_payload()
+    button_commands = [area["action"]["text"] for area in payload["areas"]]
+    assert len(button_commands) == 6, f"expected 6 rich-menu areas, found {button_commands}"
 
     routing_text = (REPO_ROOT / "src" / "habit_assistant" / "core" / "routing.py").read_text(encoding="utf-8")
     dispatched_kinds = set(re.findall(r'command\.kind\s*==\s*"(\w+)"', routing_text))
 
     for cmd in button_commands:
+        assert cmd.startswith("/"), f"rich-menu button action {cmd!r} is not a slash command"
         kind = cmd.lstrip("/")
         assert kind in dispatched_kinds, (
-            f"rich-menu button {cmd!r} has no matching `command.kind == {kind!r}` "
-            f"dispatch in core/routing.py (found kinds: {sorted(dispatched_kinds)})"
+            f"rich-menu button {cmd!r} (from _default_rich_menu_payload()) has no matching "
+            f"`command.kind == {kind!r}` dispatch in core/routing.py (found kinds: {sorted(dispatched_kinds)})"
+        )
+
+    readme = (REPO_ROOT / "assets" / "richmenu" / "README.md").read_text(encoding="utf-8")
+    for cmd in button_commands:
+        assert f"`{cmd}`" in readme, (
+            f"README no longer documents rich-menu button {cmd!r} anywhere -- doc/code drift "
+            f"(format-tolerant substring check, not a table-shape regex)"
         )
 
 
