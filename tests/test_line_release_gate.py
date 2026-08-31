@@ -801,20 +801,23 @@ def test_version_consistent_across_files_and_release_note_posture():
     from habit_assistant.core.release_notes import RELEASE_NOTES
 
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    assert version_file == "1.0.0-line"
+    assert version_file == "1.0.0+line"
     assert __version__ == version_file, "src/habit_assistant/__init__.py:__version__ must match VERSION"
-    assert re.match(r"^\d+\.\d+\.\d+-line$", __version__), (
-        "SPEC-LINE.md §7's own recommended, SemVer-tolerant shape: X.Y.Z-line"
+    assert re.match(r"^\d+\.\d+\.\d+\+line$", __version__), (
+        "PEP 440 local-version shape X.Y.Z+line (SPEC-LINE.md §7 recommended "
+        "X.Y.Z-line, but hatchling rejects it as non-PEP-440 — found at first "
+        "real pip install on the VPS, 2026-08-31; '+line' is the compliant "
+        "equivalent, spec updated by deployment erratum)"
     )
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"1.0.0-line"' in pyproject_text or "1.0.0-line" in pyproject_text
+    assert '"1.0.0+line"' in pyproject_text or "1.0.0+line" in pyproject_text
 
     # By design (not a gap): a brand-new product edition's first version
     # has nothing to announce an upgrade FROM, so RELEASE_NOTES carries
-    # no "1.0.0-line" entry -- core/digest.py's own
+    # no "1.0.0+line" entry -- core/digest.py's own
     # `_pending_announcement_version` therefore never fires a phantom
-    # "what's new" line on a fresh v1.0.0-line install; onboarding is
+    # "what's new" line on a fresh v1.0.0+line install; onboarding is
     # instead the /start welcome (core/access.py, unaffected by this
     # branch) once a user is approved.
     assert __version__ not in RELEASE_NOTES
