@@ -38,6 +38,24 @@ ALICE = "alice-c-gaps"
 BOB = "bob-c-gaps"
 
 
+def _current_yyyymm() -> str:
+    """TEST-LEDGER-TRIAGE.md (2026-09-01 date-rollover triage, the 4th
+    member of the date-drift class): `channels/line.py`'s real
+    `_send_push`/`_push` key `push_ledger` off the REAL wall clock
+    (`datetime.now()`), never off `run_daily_digest`'s own injected
+    `clock=` -- so does `RecordingLineChannel.send()` (conftest.py), which
+    deliberately mirrors that real behavior byte-for-byte (its own
+    docstring: "exactly matching the real channel's contract"). A test
+    that sends through `RecordingLineChannel(db=db)` must therefore assert
+    against the REAL current month, never a literal tied to the fixed
+    `clock=` used to compose the digest's own content -- exactly the
+    convention `test_line_a_gaps.py`/`test_line_channel.py`/
+    `test_line_v12_gaps.py` already use (each with its own identically-
+    named helper) for the same reason, one level up, against the real
+    channel instead of this double."""
+    return datetime.now().strftime("%Y-%m")
+
+
 def _habit(id_: str, *, goal: float = 1000.0, label_th: str | None = None) -> Habit:
     return Habit(
         id=id_,
@@ -468,8 +486,11 @@ async def test_push_ledger_increments_exactly_once_per_successful_push_not_per_c
     provider = _PerUserProvider({ALICE: registry_with_habit, BOB: empty_registry}, default=empty_registry)
     channel = RecordingLineChannel(db=db)
     await digest.run_daily_digest(db, channel, config, provider, clock=lambda: datetime(2026, 8, 26, 20, 0, 0))
-    assert db.push_count(ALICE, "2026-08") == 1
-    assert db.push_count(BOB, "2026-08") == 0
+    # NOT the fixed clock's own month: RecordingLineChannel.send() keys
+    # push_ledger off the real wall clock, mirroring channels/line.py's
+    # own `_send_push` -- see `_current_yyyymm`'s docstring above.
+    assert db.push_count(ALICE, _current_yyyymm()) == 1
+    assert db.push_count(BOB, _current_yyyymm()) == 0
 
 
 async def test_push_ledger_not_incremented_when_the_send_itself_fails(db, config):

@@ -115,15 +115,43 @@ async def test_undo_button_path_records_button_source(db, config):
     assert entry["old_value"] == "500"
 
 
-async def test_undo_diary_records_text_value(db, config):
-    db.insert_log(LogEntry(None, OWNER, "2026-08-22T09:00:00", "diary", None, "had a good day", "had a good day"))
+async def test_undo_diary_records_redacted_marker_not_the_text_value(db, config):
+    """RULING (integration pass, MAJOR FINDING, TEST-PORTAL-audit.md):
+    this test used to pin the OLD (leaky) contract -- `old_value` held
+    the raw diary text verbatim, which the admin portal's `/audit` page
+    then rendered unredacted for any owner to read (a pre-existing,
+    pre-portal capture-site bug the portal only made materially more
+    exposed -- see `core/undo_ui.py:_redacted_text_marker`'s own
+    docstring for the full account). Flipped to pin the FIXED contract: a
+    text habit's undo records a bilingual-neutral marker + a character
+    count derived from the actual removed text, never the text itself."""
+    db.insert_log(
+        LogEntry(None, OWNER, "2026-08-22T09:00:00", "diary", None, "had a good day", "had a good day", habit_type="text")
+    )
     row = db.last_log(OWNER)
     await undo_ui.send_undo_confirmation(
         db, FakeChannel(), config, lambda: datetime(2026, 8, 22, 9, 5), DEFAULT_REGISTRY,
         "en", row,
     )
     entry = _only_row(db)
-    assert entry["old_value"] == "had a good day"
+    assert entry["old_value"] == "[text entry removed] (14 chars)"  # len("had a good day") == 14
+    assert "had a good day" not in entry["old_value"]
+
+
+async def test_undo_diary_records_redacted_marker_even_when_habit_type_not_stamped(db, config):
+    """Defense-in-depth companion to the test above: `category == "diary"`
+    alone (habit_type NULL/unstamped -- a legacy or edge-case write path)
+    still redacts, matching `describe_log`'s own explicit `category ==
+    "diary"` special-case just below in this file."""
+    db.insert_log(LogEntry(None, OWNER, "2026-08-22T09:00:00", "diary", None, "had a good day", "had a good day"))
+    row = db.last_log(OWNER)
+    assert row["habit_type"] is None  # this test's own precondition
+    await undo_ui.send_undo_confirmation(
+        db, FakeChannel(), config, lambda: datetime(2026, 8, 22, 9, 5), DEFAULT_REGISTRY,
+        "en", row,
+    )
+    entry = _only_row(db)
+    assert entry["old_value"] == "[text entry removed] (14 chars)"
 
 
 async def test_undo_fail_open_when_recorder_raises(db, config, monkeypatch):

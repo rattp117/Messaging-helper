@@ -102,6 +102,24 @@ def _fixed_now(y=2026, m=8, d=26, hh=20, mm=0) -> datetime:
     return datetime(y, m, d, hh, mm, 0)  # 2026-08-26 is a Wednesday
 
 
+def _current_yyyymm() -> str:
+    """TEST-LEDGER-TRIAGE.md (2026-09-01 date-rollover triage, the 4th
+    member of the date-drift class): `channels/line.py`'s real
+    `_send_push`/`_push` key `push_ledger` off the REAL wall clock
+    (`datetime.now()`), never off `run_daily_digest`'s own injected
+    `clock=` -- so does `RecordingLineChannel.send()` (conftest.py), which
+    deliberately mirrors that real behavior byte-for-byte (its own
+    docstring: "exactly matching the real channel's contract"). A test
+    that sends through `RecordingLineChannel(db=db)` must therefore assert
+    against the REAL current month, never a literal tied to the fixed
+    `clock=` used to compose the digest's own content -- exactly the
+    convention `test_line_a_gaps.py`/`test_line_channel.py`/
+    `test_line_v12_gaps.py` already use (each with its own identically-
+    named helper) for the same reason, one level up, against the real
+    channel instead of this double."""
+    return datetime.now().strftime("%Y-%m")
+
+
 # ===========================================================================
 # AC20 -- composition: each section present/absent correctly, both languages.
 # ===========================================================================
@@ -362,7 +380,10 @@ async def test_run_daily_digest_increments_push_ledger_exactly_once_per_user(db,
     channel = RecordingLineChannel(db=db)
     provider = _FixedProvider()
     await digest.run_daily_digest(db, channel, config, provider, clock=_fixed_now)
-    yyyymm = "2026-08"
+    # NOT the fixed clock's own month: RecordingLineChannel.send() keys
+    # push_ledger off the real wall clock, mirroring channels/line.py's
+    # own `_send_push` -- see `_current_yyyymm`'s docstring above.
+    yyyymm = _current_yyyymm()
     assert db.push_count(OWNER, yyyymm) == 1
     assert db.push_count(MEMBER, yyyymm) == 1
 

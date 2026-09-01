@@ -475,6 +475,9 @@ async def test_start_welcome_in_thai(db, channel, config):
 @pytest.mark.parametrize("msg_id", [
     "access_pending", "access_denied", "access_request", "access_granted",
     "start_welcome", "admin_usage", "admin_save_failed", "admin_approved_ack",
+    # Integration item 4 (TEST-PORTAL-users.md Finding 1): the chat
+    # `/approve` ack's own honest variant.
+    "admin_approved_ack_nopush",
     "admin_blocked_ack", "users_list_header", "users_list_line",
     # Readable-approval feature (branch line-version): the /approve|/block
     # name/id-prefix resolver's own two new catalog ids.

@@ -1233,7 +1233,7 @@ async def test_migration_009_rehearsal_on_a_v1_5_shaped_scratch_db(tmp_path, mon
 
     db = Database(db_path)
     try:
-        assert db.schema_version == 14
+        assert db.schema_version == 15
         cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
         assert "dashboard_msg_id" in cols
         tables = {row[0] for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

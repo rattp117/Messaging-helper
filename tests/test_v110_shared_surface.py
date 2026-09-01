@@ -65,11 +65,11 @@ def _insert_unparsed(db_: Database, raw: str = "500", unparsed_state: str | None
 
 
 def test_migration_count_is_13():
-    assert len(MIGRATIONS) == 14
+    assert len(MIGRATIONS) == 15
 
 
 def test_fresh_db_has_unparsed_state_column_default_null(db):
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(logs)")}
     assert "unparsed_state" in cols
     log_id = _insert_unparsed(db)
@@ -136,7 +136,7 @@ def test_migration_013_upgrades_a_v19_db_and_preserves_the_existing_unparsed_row
     database = Database(path)
     try:
         assert database.schema_version_before == 12
-        assert database.schema_version == 14
+        assert database.schema_version == 15
         row = database.get_log(13)
         assert row["category"] == "unparsed"
         assert row["raw_message"] == "Streaching"
@@ -150,8 +150,8 @@ def test_migration_013_upgrades_a_v19_db_and_preserves_the_existing_unparsed_row
 
     reopened = Database(path)
     try:
-        assert reopened.schema_version_before == 14
-        assert reopened.schema_version == 14
+        assert reopened.schema_version_before == 15
+        assert reopened.schema_version == 15
     finally:
         reopened.close()
 

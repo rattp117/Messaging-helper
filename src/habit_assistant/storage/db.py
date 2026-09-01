@@ -833,12 +833,78 @@ class Database:
         self._conn.commit()
         return cursor.lastrowid
 
-    def recent_audit(self, limit: int) -> list[sqlite3.Row]:
+    def recent_audit(self, limit: int, offset: int = 0) -> list[sqlite3.Row]:
         """SPEC-v1.3.md R-V2: newest-first (`ORDER BY id DESC`, not `ts` --
         `id` is a strictly monotonic insert order even when two rows
         share the same second-resolution `ts`, which `ts` alone can't
-        guarantee)."""
-        return self._conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        guarantee).
+
+        SPEC-LINE-PORTAL.md §4 R-AUDIT-1/AC22 (shared surface, admin web
+        portal, branch `line-version`): `offset` is additive and defaults
+        to 0 -- every pre-portal call site (`core/audit_view.py:
+        render_recent`'s own `db.recent_audit(effective)`) is
+        byte-identical. The portal's `GET /audit?page=N` uses it for
+        page-2-and-beyond reads; `audit_total()` below is the paired
+        "how many pages exist" helper."""
+        return self._conn.execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+        ).fetchall()
+
+    def audit_total(self) -> int:
+        """SPEC-LINE-PORTAL.md §4 R-AUDIT-1/AC22/AC25 (shared surface):
+        total row count in `audit_log`, for the portal Audit page's
+        prev/next pager bounds (module AUDIT clamps an out-of-range
+        `page` against this, AC25)."""
+        row = self._conn.execute("SELECT COUNT(*) AS total FROM audit_log").fetchone()
+        return int(row["total"])
+
+    def recent_logs_metadata(self, limit: int, offset: int = 0) -> list[sqlite3.Row]:
+        """SPEC-LINE-PORTAL.md §4 R-AUDIT-3/AC24 (shared surface, admin
+        web portal, branch `line-version`): metadata-only rows for `GET
+        /activity`. NEVER selects `raw_message` (the literal typed text)
+        at all, and NEVER surfaces `value_text` for a `habit_type ==
+        'text'` row -- a text/diary habit's parsed `value_text` IS the
+        diary content, so it is exactly as private as `raw_message` for
+        that row. §9 OQ2's own resolved default ("omit ... everywhere;
+        render structured fields only, strictly safe") is enforced HERE,
+        in SQL, rather than left to the AUDIT module's own rendering
+        discipline -- a future caller structurally cannot leak diary text
+        by forgetting a `habit_type` check, since the column is already
+        `NULL` by the time a row leaves this method.
+
+        `deleted_at IS NULL` mirrors every other aggregation query's own
+        convention (a soft-deleted/undone log never appears). Newest-first
+        (`id DESC`), same monotonic-order rationale as `recent_audit`."""
+        return self._conn.execute(
+            "SELECT id, ts, user_id, category, habit_type, value_num, "
+            "CASE WHEN habit_type = 'text' THEN NULL ELSE value_text END AS value_text, "
+            "source FROM logs WHERE deleted_at IS NULL ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+
+    def monthly_push_history(self, months: int = 12) -> list[sqlite3.Row]:
+        """SPEC-LINE-PORTAL.md §4 R-QUOTA-1/AC26 (shared surface, admin
+        web portal, branch `line-version`): per-`yyyymm` push totals
+        across every user, newest month first, limited to the most
+        recent `months` (default 12) `yyyymm`s that actually HAVE a
+        `push_ledger` row -- a brand-new deployment with no pushes yet
+        returns `[]` (module QUOTA's own "no push history yet" empty
+        state, not this method's concern)."""
+        return self._conn.execute(
+            "SELECT yyyymm, COALESCE(SUM(count), 0) AS total FROM push_ledger "
+            "GROUP BY yyyymm ORDER BY yyyymm DESC LIMIT ?",
+            (months,),
+        ).fetchall()
+
+    def push_by_user(self, yyyymm: str) -> list[sqlite3.Row]:
+        """SPEC-LINE-PORTAL.md §4 R-QUOTA-1/AC26 (shared surface): one
+        `yyyymm`'s per-user push counts, highest first -- UX Flow C step
+        3's own "the culprit is row 1 by construction, no sorting UI
+        needed"."""
+        return self._conn.execute(
+            "SELECT user_id, count FROM push_ledger WHERE yyyymm = ? ORDER BY count DESC",
+            (yyyymm,),
+        ).fetchall()
 
     def prune_audit(self, cutoff_ts: str) -> int:
         """SPEC-v1.3.md R-W3: delete every row strictly older than

@@ -36,6 +36,7 @@ from typing import Awaitable, Callable
 import pytest
 
 from habit_assistant.channels.base import Channel
+from habit_assistant.core import digest
 from habit_assistant.storage.db import Database
 
 
@@ -157,6 +158,24 @@ def _reset_shared_doubles():
     FakeScheduler.last_instance = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_daily_digest_claim():
+    """Integration item 5 (TEST-PORTAL-quota.md Finding F3): `core/
+    digest.py:_DAILY_RUN_CLAIMED` is process-lifetime, module-level state
+    consulted by BOTH `core/app.py`'s real scheduled `daily_digest` job
+    AND `core/portal/quota.py`'s manual trigger (`run_daily_digest_
+    guarded`) -- any test that exercises either real call site (not just
+    the portal-quota test files) can leave today's date claimed behind
+    it, silently no-op-ing a LATER, unrelated test's own scheduled-job
+    assertion in the same worker process. Global, not file-local (unlike
+    `tests/test_portal_quota.py`'s own narrower reset), since production
+    code -- not just this test suite -- shares this state across both
+    call sites by design."""
+    digest._DAILY_RUN_CLAIMED.clear()
+    yield
+    digest._DAILY_RUN_CLAIMED.clear()
+
+
 class RecordingLineChannel(Channel):
     """SPEC-LINE.md §4 R-A4/R-A6/R-C6 (shared surface, branch
     `line-version`): a LINE-flavored double for modules OTHER than A
@@ -174,16 +193,33 @@ class RecordingLineChannel(Channel):
     module A's own tests do). Outside any active context -- a
     scheduled/proactive send, e.g. the digest -- `send()` goes to
     `.pushes` AND calls `db.increment_push(chat_id, yyyymm)` for the
-    current local month if a `db` was given (R-A6: "the channel's own
-    responsibility on the push path ... so the count is authoritative
-    regardless of caller", R-C6), exactly matching the real channel's
-    contract."""
+    current month (per `clock`) if a `db` was given (R-A6: "the channel's
+    own responsibility on the push path ... so the count is authoritative
+    regardless of caller", R-C6).
 
-    def __init__(self, db: Database | None = None) -> None:
+    `clock`, additive/keyword-only/defaulted `datetime.now` (line-clock
+    fix, TEST-LEDGER-TRIAGE.md): mirrors the injectable-clock seam
+    `channels/line.py:LineChannel` itself now carries
+    (`LineChannel._clock`/`_now_yyyymm`), so a test can point this double
+    at a fixed instant too. Deliberately does NOT reproduce
+    `LineChannel._now_yyyymm`'s `ZoneInfo(config.app.timezone)`
+    normalization -- this double takes no `config`, and every consumer of
+    it (module C's digest tests, integration) only ever needs an
+    injectable "what month is it", not tz-conversion behavior of its own;
+    that behavior is covered directly against the real `LineChannel` in
+    `tests/test_line_channel.py`. Defaults to the real wall clock, same as
+    `LineChannel`, so this is NOT a "deliberately mirrors the real bug"
+    double any more -- the bug it used to (accidentally) mirror is fixed
+    in production; this double's un-injected default simply matches
+    `LineChannel`'s own un-injected default (the real wall clock,
+    `Asia/Bangkok`-normalized in production, un-normalized here)."""
+
+    def __init__(self, db: Database | None = None, *, clock: Callable[[], datetime] = datetime.now) -> None:
         self.db = db
         self.replies: dict[str, list[tuple[str, str]]] = {}
         self.pushes: list[tuple[str, str]] = []
         self._active_token: str | None = None
+        self._clock = clock
 
     @contextlib.contextmanager
     def reply_context(self, reply_token: str):
@@ -195,13 +231,18 @@ class RecordingLineChannel(Channel):
             self._active_token = previous
 
     async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
+        # Integration item 4 (TEST-PORTAL-users.md Finding 1): this double
+        # doesn't model the realtime quota gate at all (it always
+        # succeeds), so it always returns a non-None confirmation sentinel
+        # -- matching `LineChannel.send`'s own updated contract for its
+        # "confirmed sent" case (see that method's docstring).
         if self._active_token is not None:
             self.replies[self._active_token].append((chat_id, text))
-            return None
+            return "buffered"
         self.pushes.append((chat_id, text))
         if self.db is not None:
-            self.db.increment_push(chat_id, datetime.now().strftime("%Y-%m"))
-        return None
+            self.db.increment_push(chat_id, self._clock().strftime("%Y-%m"))
+        return "pushed"
 
     async def run(
         self,

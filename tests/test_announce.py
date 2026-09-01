@@ -46,10 +46,15 @@ class FakeChannel(Channel):
         self.sent: list[tuple[str, str]] = []
         self._fail_for = fail_for or set()
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> str | None:
         if chat_id in self._fail_for:
             raise RuntimeError(f"simulated send failure for {chat_id}")
         self.sent.append((chat_id, text))
+        # Integration item 4 (TEST-PORTAL-users.md Finding 1): a non-None
+        # return signals a confirmed send (`LineChannel.send`'s own
+        # updated contract) -- this double always succeeds unless in
+        # `_fail_for`, so it always confirms.
+        return "sent"
 
     async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")

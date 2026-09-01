@@ -884,11 +884,11 @@ def test_fresh_db_migrates_to_schema_version_10(tmp_path):
     CHANGED (branch `line-version`): was `== 13` before migration 014
     (`push_ledger` + `users.digest_opt_out`) was added -- see
     IMPL-LINE-shared.md."""
-    assert len(MIGRATIONS) == 14
+    assert len(MIGRATIONS) == 15
 
     database = Database(tmp_path / "fresh.db")
     assert database.schema_version_before == 0
-    assert database.schema_version == 14
+    assert database.schema_version == 15
     database.close()
 
 

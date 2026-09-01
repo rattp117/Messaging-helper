@@ -498,18 +498,24 @@ def test_digest_deferral_boundary_midnight_crossing_window(tmp_path):
     db.close()
 
 
-async def test_digest_immediate_path_double_fire_sends_twice_documented_risk(monkeypatch, tmp_path):
-    """Confirms the documented, Archi-accepted behavior (IMPL-LINE-
-    integration.md's own "Known limitations"): `_DIGEST_DEFERRED_DATES`
-    covers ONLY the quiet-hours deferral path. Calling the digest job
-    twice with no quiet-hours window configured (the immediate-send
-    path) sends TWICE and double-increments the ledger -- protection
-    against a real double-fire rests entirely on the single daily
-    CronTrigger + systemd's single-instance guarantee (deploy/habit-
-    assistant-line.service's own documented ruling), not on any
-    code-level guard. This test exists so a future change that silently
-    weakens either of those two structural protections (or silently
-    adds/removes an immediate-path guard) is caught here first."""
+async def test_digest_immediate_path_double_fire_now_sends_once_shared_guard(monkeypatch, tmp_path):
+    """FLIPPED (integration pass, item 5, TEST-PORTAL-quota.md Finding
+    F3): this test used to confirm a documented, Archi-accepted RISK --
+    `_DIGEST_DEFERRED_DATES` covered only the quiet-hours deferral path,
+    so calling the scheduled `daily_digest` job twice (no code-level
+    guard, protection resting entirely on the single CronTrigger +
+    systemd's single-instance guarantee) sent TWICE and double-
+    incremented the ledger.
+
+    The fix (`core/digest.py:run_daily_digest_guarded`, now what `core/
+    app.py`'s own scheduled job calls INSTEAD of `run_daily_digest`
+    directly) closes this: a same-day claim (`claim_daily_digest_run`)
+    is taken before the fan-out runs, so a second call to the SAME job
+    on the SAME calendar day is now a clean no-op, not a second send.
+    This is the SAME shared guard that also stops a manual portal
+    "Send digest now" from double-pushing against this scheduled job
+    (the primary motivation for the fix) -- this test pins the
+    SCHEDULED-vs-SCHEDULED angle specifically."""
     async with _running_line_app(monkeypatch, tmp_path) as app:
         await _post_events(app.port, [_text_event(MEMBER, "500ml", reply_token="rt-seed")])
         await _wait_until(lambda: app.api.calls_matching("/message/reply") or None)
@@ -520,13 +526,12 @@ async def test_digest_immediate_path_double_fire_sends_twice_documented_risk(mon
 
         yyyymm = datetime.now().strftime("%Y-%m")
         pushes_to_member = [b for b in app.api.calls_matching("/message/push") if b["to"] == MEMBER]
-        assert len(pushes_to_member) == 2, (
-            "documented/accepted behavior changed: the immediate-send path used to have no internal "
-            "once-per-day dedup (TEST-LINE-C.md Finding 2). If this now sends only once, core/digest.py "
-            "gained an immediate-path guard -- update IMPL-LINE-integration.md's Known Limitations and "
-            "this test to match; if it still sends twice, this just re-confirms the documented posture"
+        assert len(pushes_to_member) == 1, (
+            "the shared same-day guard (core/digest.py:run_daily_digest_guarded) must make a second "
+            "same-day call to the scheduled job a no-op -- if this now sends twice again, the guard "
+            "regressed; update this test and TEST-PORTAL-quota.md's Finding F3 disposition if that's intentional"
         )
-        assert app.db.push_count(MEMBER, yyyymm) == 2
+        assert app.db.push_count(MEMBER, yyyymm) == 1
 
 
 async def test_digest_opt_out_honored_end_to_end_through_wired_app(monkeypatch, tmp_path):
@@ -807,11 +812,11 @@ def test_version_consistent_across_files_and_release_note_posture():
     from habit_assistant.core.release_notes import RELEASE_NOTES
 
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    # dashboard-in-reply + real-time proactive mode (line/v1.2.0): version
-    # literal bumped alongside VERSION/pyproject.toml/__init__.py -- this
-    # test still pins whatever the CURRENT release actually is, so a
-    # future bump must update this literal too, same as this one did.
-    assert version_file == "1.2.0+line"
+    # admin web portal, integration pass (line/v1.3.0): version literal
+    # bumped alongside VERSION/pyproject.toml/__init__.py -- this test
+    # still pins whatever the CURRENT release actually is, so a future
+    # bump must update this literal too, same as this one did.
+    assert version_file == "1.3.0+line"
     assert __version__ == version_file, "src/habit_assistant/__init__.py:__version__ must match VERSION"
     assert re.match(r"^\d+\.\d+\.\d+\+line$", __version__), (
         "PEP 440 local-version shape X.Y.Z+line (SPEC-LINE.md §7 recommended "
@@ -821,7 +826,7 @@ def test_version_consistent_across_files_and_release_note_posture():
     )
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"1.2.0+line"' in pyproject_text or "1.2.0+line" in pyproject_text
+    assert '"1.3.0+line"' in pyproject_text or "1.3.0+line" in pyproject_text
 
     # By design (not a gap, posture unchanged by line/v1.1.0): this
     # branch's own RELEASE_NOTES catalog is never populated on LINE (no

@@ -95,7 +95,9 @@ def test_sources_matches_the_spec_vocabulary_exactly():
     # SPEC-v1.9.md integration ruling (Archi): "system" added for
     # grace_consumed, the first purely system-initiated (no actor typed/
     # tapped/matched anything) mutation in this codebase's audit history.
-    assert set(audit.SOURCES) == {"command", "nl", "button", "admin", "system"}
+    # SPEC-LINE-PORTAL.md R-USERACT-1 (branch line-version): "portal" added
+    # for the admin portal's approve/block writes (AC16/AC17/AC18).
+    assert set(audit.SOURCES) == {"command", "nl", "button", "admin", "system", "portal"}
 
 
 # ---------------------------------------------------------------------------

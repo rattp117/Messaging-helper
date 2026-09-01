@@ -783,6 +783,13 @@ CATALOG: dict[str, dict[Language, str]] = {
         "en": "🔔 {name} (chat {chat_id}) asked for access. Approve with: /approve {chat_id}",
         "th": "🔔 {name} (แชท {chat_id}) ขอสิทธิ์เข้าใช้งาน อนุมัติด้วย: /approve {chat_id}",
     },
+    # SPEC-LINE-PORTAL.md §9 OQ2, Archi ruling Q2 (adopted): appended as a
+    # second line to access_request, ONLY when the portal is enabled and
+    # its public_url is configured (core/access.py:_access_request_message).
+    "portal_access_request_hint": {
+        "en": "Or handle it in the portal: {url}",
+        "th": "หรือดำเนินการผ่านพอร์ทัลได้ที่: {url}",
+    },
     "access_granted": {
         "en": '✅ You\'re in! Just type things like "500ml" or "10 min stretch". Send /help to see everything.',
         "th": '✅ เข้าใช้งานได้แล้ว! พิมพ์แบบนี้ได้เลย เช่น "500ml" หรือ "ยืดเส้น 10 นาที" พิมพ์ /help เพื่อดูทุกอย่างที่ทำได้',
@@ -802,6 +809,15 @@ CATALOG: dict[str, dict[Language, str]] = {
     "admin_approved_ack": {
         "en": "✅ {chat_id} approved.",
         "th": "✅ อนุมัติ {chat_id} แล้ว",
+    },
+    # Integration item 4 (TEST-PORTAL-users.md Finding 1): the chat `/approve`
+    # ack's own honest variant, mirroring the portal's `portal_flash_
+    # approve_nopush` -- the approve itself always succeeds regardless
+    # (this key only changes what the OWNER is told about the welcome
+    # push's own delivery).
+    "admin_approved_ack_nopush": {
+        "en": "✅ {chat_id} approved, but the welcome message didn't send.",
+        "th": "✅ อนุมัติ {chat_id} แล้ว แต่ส่งข้อความต้อนรับไม่สำเร็จ",
     },
     "admin_blocked_ack": {
         "en": "🚫 {chat_id} blocked.",
@@ -2440,5 +2456,664 @@ CATALOG: dict[str, dict[Language, str]] = {
     "line_public_url_unconfigured": {
         "en": "🖼️ Image ready, but the server's public URL isn't configured — admin: set [line] public_base_url.",
         "th": "🖼️ รูปพร้อมแล้ว แต่ยังไม่ได้ตั้งค่า URL สาธารณะของเซิร์ฟเวอร์ — แอดมิน: ตั้งค่า [line] public_base_url",
+    },
+
+    # -----------------------------------------------------------------
+    # SPEC-LINE-PORTAL.md §4 R-I18N-1 (shared surface, admin web portal,
+    # branch line-version): the page-shell strings every portal page
+    # renders through (`core/portal/layout.py`) -- nav labels, footer,
+    # skip link, per-panel "unavailable" state, the 500 page. Every
+    # per-PAGE string (verdict/gauge/flash/microcopy for Status, Users,
+    # Quota, Audit, Activity, Config) belongs to its own module's own
+    # pass, not this shared surface, and is NOT added here -- UI.md §7's
+    # microcopy table is that module's own source of truth. The 403 page
+    # (UI.md Screen 9) is a deliberate, FLAGGED exception to R-I18N-1: a
+    # hardcoded bilingual constant in core/portal/security.py, never an
+    # i18n.t() lookup (the requester's language is unknown pre-gate, and
+    # a catalog read that raised must never turn a clean 403 into a 500
+    # that leaks a traceback).
+    # -----------------------------------------------------------------
+    "portal_skip_to_content": {
+        "en": "Skip to content",
+        "th": "ข้ามไปเนื้อหา",
+    },
+    "portal_nav_status": {
+        "en": "Status",
+        "th": "สถานะ",
+    },
+    "portal_nav_users": {
+        "en": "Users ({n})",
+        "th": "ผู้ใช้ ({n})",
+    },
+    # Not in UI.md §7's own table (which only shows the >=1 form) --
+    # UX.md §2's "plain Users when none" requires a second, count-less
+    # string for the zero-pending state; added here under the same
+    # portal_* vocabulary rather than left for a module to invent.
+    "portal_nav_users_plain": {
+        "en": "Users",
+        "th": "ผู้ใช้",
+    },
+    "portal_nav_quota": {
+        "en": "Quota",
+        "th": "โควตา",
+    },
+    "portal_nav_audit": {
+        "en": "Audit",
+        "th": "ประวัติการเปลี่ยนแปลง",
+    },
+    "portal_nav_activity": {
+        "en": "Activity",
+        "th": "กิจกรรมผู้ใช้",
+    },
+    "portal_footer_config": {
+        "en": "Config (read-only)",
+        "th": "ค่าตั้งค่า (อ่านอย่างเดียว)",
+    },
+    "portal_footer_as_of": {
+        "en": "As of {time}",
+        "th": "ข้อมูล ณ {time}",
+    },
+    "portal_footer_refresh": {
+        "en": "Refresh",
+        "th": "รีเฟรช",
+    },
+    "portal_footer_tz": {
+        "en": "All times in {tz}",
+        "th": "เวลาทั้งหมดเป็นเวลา {tz}",
+    },
+    "portal_panel_unavailable": {
+        "en": "Can't read this right now.",
+        "th": "อ่านข้อมูลส่วนนี้ไม่ได้ตอนนี้",
+    },
+    "portal_panel_unavailable_hint": {
+        "en": "Check the errors panel below.",
+        "th": "ดูรายละเอียดได้ที่บันทึกข้อผิดพลาดด้านล่าง",
+    },
+    "portal_500_body": {
+        "en": "Something went wrong on this page. The details are in the log — check the errors panel on the status page.",
+        "th": "เกิดข้อผิดพลาดในหน้านี้ รายละเอียดอยู่ในบันทึก ดูได้ที่แผงข้อผิดพลาดในหน้าสถานะ",
+    },
+    "portal_500_home_link": {
+        "en": "→ Status",
+        "th": "→ สถานะ",
+    },
+
+    # -----------------------------------------------------------------
+    # SPEC-LINE-PORTAL.md §4 R-AUDIT-1/R-AUDIT-2/R-AUDIT-3 (module AUDIT,
+    # admin web portal, branch line-version): `GET /audit` + `GET
+    # /activity`'s own page microcopy (UI.md §7's table is this module's
+    # source of truth, per the shared-surface docstring above -- these
+    # keys are NOT part of that pass). Row content itself (actor/action/
+    # detail/ts) reuses `core/audit_view.py`'s existing catalog entries
+    # (`audit_actor_you`, `audit_action_*`) verbatim -- only NEW page
+    # chrome (headings, column labels, empty states, the privacy note,
+    # the pager) gets new keys here. `source` values ("command"/"button"/
+    # "admin"/"portal"/"system"/"nl") stay verbatim/untranslated, same
+    # convention `audit_line`'s own comment documents above.
+    # -----------------------------------------------------------------
+    "portal_audit_heading": {
+        "en": "Change history",
+        "th": "ประวัติการเปลี่ยนแปลง",
+    },
+    "portal_audit_empty": {
+        "en": "No changes recorded yet.",
+        "th": "ยังไม่มีการเปลี่ยนแปลงที่บันทึกไว้",
+    },
+    "portal_audit_col_who": {
+        "en": "Who",
+        "th": "ใคร",
+    },
+    "portal_audit_col_what": {
+        "en": "What",
+        "th": "อะไร",
+    },
+    "portal_audit_col_detail": {
+        "en": "Detail",
+        "th": "รายละเอียด",
+    },
+    "portal_activity_heading": {
+        "en": "User activity",
+        "th": "กิจกรรมผู้ใช้",
+    },
+    "portal_activity_empty": {
+        "en": "No activity recorded yet.",
+        "th": "ยังไม่มีการบันทึกกิจกรรม",
+    },
+    "portal_activity_privacy_note": {
+        "en": "ℹ️ This page shows summary data only — habit, value, and time. It never shows anyone's message or diary text.",
+        "th": "ℹ️ หน้านี้แสดงเฉพาะข้อมูลสรุป — ประเภทกิจกรรม ค่าที่บันทึก และเวลา ไม่แสดงข้อความหรือไดอารี่ของผู้ใช้",
+    },
+    "portal_activity_col_user": {
+        "en": "User",
+        "th": "ผู้ใช้",
+    },
+    "portal_activity_col_habit": {
+        "en": "Habit",
+        "th": "กิจกรรม",
+    },
+    "portal_activity_col_value": {
+        "en": "Value",
+        "th": "ค่า",
+    },
+    # Shared between /audit and /activity -- both tables carry a "When"
+    # and a "Source" column with identical meaning, so this pass keeps
+    # ONE pair of keys rather than four near-duplicates.
+    "portal_col_when": {
+        "en": "When",
+        "th": "เวลา",
+    },
+    "portal_col_source": {
+        "en": "Source",
+        "th": "แหล่งที่มา",
+    },
+    "portal_pager_newer": {
+        "en": "← Newer",
+        "th": "← ใหม่กว่า",
+    },
+    "portal_pager_older": {
+        "en": "Older →",
+        "th": "เก่ากว่า →",
+    },
+    "portal_pager_page_of": {
+        "en": "Page {page} of {total}",
+        "th": "หน้า {page} จาก {total}",
+    },
+    # -----------------------------------------------------------------
+    # SPEC-LINE-PORTAL.md §4 R-USER-* (module USERS, admin web portal,
+    # branch line-version): per-page microcopy for `core/portal/users.py`
+    # -- UX.md §7's own "each module's own pass" (IMPL-PORTAL-shared.md's
+    # docstring above, repeated verbatim). Copy is UX.md §7's table where
+    # a row exists there (Approve/Block/Invite/Flash/Error strings);
+    # section headings, table columns, and the relative-time set below
+    # aren't in that table and are this pass's own additions.
+    # -----------------------------------------------------------------
+    "portal_users_page_title": {
+        "en": "Users",
+        "th": "ผู้ใช้",
+    },
+    "portal_users_pending_heading": {
+        "en": "Waiting for approval ({n})",
+        "th": "รอการอนุมัติ ({n})",
+    },
+    "portal_users_pending_heading_plain": {
+        "en": "Waiting for approval",
+        "th": "รอการอนุมัติ",
+    },
+    "portal_users_pending_empty": {
+        "en": "✅ Nobody's waiting right now.",
+        "th": "✅ ตอนนี้ไม่มีใครรอการอนุมัติ",
+    },
+    "portal_users_pending_empty_cta": {
+        "en": "Want to add someone ahead of time? Use the invite box below. ↓",
+        "th": "อยากเพิ่มใครไว้ล่วงหน้า? ใช้ช่องเชิญด้านล่างได้เลย ↓",
+    },
+    "portal_users_pending_waiting_since": {
+        "en": "Asked {ago}",
+        "th": "ขอเข้าใช้เมื่อ {ago}",
+    },
+    "portal_users_active_heading": {
+        "en": "Active ({n})",
+        "th": "ใช้งานอยู่ ({n})",
+    },
+    "portal_users_active_heading_plain": {
+        "en": "Active",
+        "th": "ใช้งานอยู่",
+    },
+    "portal_users_active_empty": {
+        "en": "No active users yet.",
+        "th": "ยังไม่มีผู้ใช้งานที่ใช้งานอยู่",
+    },
+    "portal_users_owner_row": {
+        "en": "You (owner)",
+        "th": "คุณ (เจ้าของบอท)",
+    },
+    "portal_users_never_logged": {
+        "en": "Never logged",
+        "th": "ยังไม่เคยบันทึก",
+    },
+    "portal_users_digest_on": {
+        "en": "on",
+        "th": "เปิด",
+    },
+    "portal_users_digest_off": {
+        "en": "off",
+        "th": "ปิด",
+    },
+    "portal_users_col_name": {
+        "en": "Name",
+        "th": "ชื่อ",
+    },
+    "portal_users_col_chat_id": {
+        "en": "Chat ID",
+        "th": "Chat ID",
+    },
+    "portal_users_col_last_log": {
+        "en": "Last log",
+        "th": "บันทึกล่าสุด",
+    },
+    "portal_users_col_streak": {
+        "en": "Streak",
+        "th": "ต่อเนื่อง",
+    },
+    "portal_users_col_digest": {
+        "en": "Digest",
+        "th": "สรุปรายวัน",
+    },
+    "portal_users_col_language": {
+        "en": "Language",
+        "th": "ภาษา",
+    },
+    "portal_users_col_action": {
+        "en": "Action",
+        "th": "การดำเนินการ",
+    },
+    "portal_users_approve_summary": {
+        "en": "Approve",
+        "th": "อนุมัติ",
+    },
+    "portal_users_approve_confirm_body": {
+        "en": "Approve {name} to use the bot? They'll get a message right away.",
+        "th": "อนุมัติ {name} ให้ใช้บอทได้? ระบบจะส่งข้อความแจ้งให้ทันที",
+    },
+    "portal_users_approve_confirm_button": {
+        "en": "Confirm approve",
+        "th": "ยืนยันอนุมัติ",
+    },
+    "portal_users_block_summary": {
+        "en": "Block",
+        "th": "บล็อก",
+    },
+    "portal_users_block_confirm_body": {
+        "en": "Block {name}? They won't be able to use the bot. You can approve them again later.",
+        "th": "บล็อก {name}? เขาจะใช้บอทไม่ได้ คุณอนุมัติใหม่ทีหลังได้",
+    },
+    "portal_users_block_confirm_button": {
+        "en": "Confirm block",
+        "th": "ยืนยันบล็อก",
+    },
+    "portal_users_cancel": {
+        "en": "Cancel",
+        "th": "ยกเลิก",
+    },
+    "portal_users_invite_heading": {
+        "en": "Invite someone",
+        "th": "เชิญผู้ใช้",
+    },
+    "portal_users_invite_help": {
+        "en": "Add a LINE user ID before they ever message the bot.",
+        "th": "เพิ่ม LINE user ID ไว้ล่วงหน้า ก่อนที่เขาจะทักบอทครั้งแรก",
+    },
+    "portal_users_invite_field_label": {
+        "en": "LINE user ID",
+        "th": "LINE user ID",
+    },
+    "portal_users_invite_submit": {
+        "en": "Add user",
+        "th": "เพิ่มผู้ใช้",
+    },
+    "portal_users_invite_confirm_heading": {
+        "en": "Add this user?",
+        "th": "เพิ่มผู้ใช้คนนี้?",
+    },
+    "portal_users_invite_confirm_body": {
+        "en": "Check the ID character by character. An ID that doesn't belong to anyone creates a user row for someone who will never appear.",
+        "th": "ตรวจสอบ ID ทีละตัวอักษร ถ้า ID ไม่ตรงกับใคร ระบบจะสร้างผู้ใช้ที่ไม่มีตัวตนขึ้นมา",
+    },
+    "portal_users_invite_confirm_button": {
+        "en": "Yes, add this user",
+        "th": "ยืนยัน เพิ่มผู้ใช้",
+    },
+    "portal_users_flash_approved": {
+        "en": "✅ Approved {name}. They've been messaged.",
+        "th": "✅ อนุมัติ {name} แล้ว และส่งข้อความแจ้งเรียบร้อย",
+    },
+    # UX.md §3 Flow B (explicit MUST) / §7's own exact wording (integration
+    # item 4, TEST-PORTAL-users.md Finding 1): shown instead of the key
+    # above when the welcome push was NOT confirmed sent -- the approve
+    # itself always still succeeded (DB + audit are the source of truth).
+    "portal_flash_approve_nopush": {
+        "en": "✅ Approved {name}, but the notification didn't send. They have access but don't know it yet.",
+        "th": "✅ อนุมัติ {name} แล้ว แต่ส่งข้อความแจ้งไม่สำเร็จ เขาใช้งานได้แล้วแต่ยังไม่รู้ตัว",
+    },
+    "portal_users_flash_blocked": {
+        "en": "🚫 Blocked {name}.",
+        "th": "🚫 บล็อก {name} แล้ว",
+    },
+    "portal_users_flash_invited": {
+        "en": "✅ Added {chat_id}. They'll have access the first time they message the bot.",
+        "th": "✅ เพิ่ม {chat_id} แล้ว เขาจะใช้งานได้ทันทีที่ทักบอทครั้งแรก",
+    },
+    "portal_users_error_invalid_id": {
+        "en": "That ID isn't valid. A LINE user ID starts with U followed by letters and numbers. Nothing was saved.",
+        "th": "ID นี้ไม่ถูกต้อง LINE user ID ขึ้นต้นด้วย U ตามด้วยตัวอักษรและตัวเลข ยังไม่มีการบันทึกอะไร",
+    },
+    "portal_users_error_unknown_user": {
+        "en": "No user with that ID. It may have already been handled from chat. Nothing was saved.",
+        "th": "ไม่พบผู้ใช้ ID นี้ อาจถูกจัดการไปแล้วจากแชท ยังไม่มีการบันทึกอะไร",
+    },
+    "portal_users_error_block_owner": {
+        "en": "You can't block yourself — you're the bot owner. Nothing was saved.",
+        "th": "บล็อกตัวเองไม่ได้ คุณคือเจ้าของบอท ยังไม่มีการบันทึกอะไร",
+    },
+    "portal_users_error_save_failed": {
+        "en": "Couldn't save that. Nothing was recorded.",
+        "th": "บันทึกไม่สำเร็จ ไม่มีการบันทึกข้อมูล",
+    },
+    # Relative-time set (UX.md §7's own flagged note: EN needs singular
+    # forms, TH doesn't pluralize). Built by this pass since `core/portal/
+    # users.py` is the first module needing "ago" copy ("Asked {ago}",
+    # "Last log {ago}"); STATUS/AUDIT are free to reuse these `portal_
+    # relative_*` keys rather than inventing their own if their own
+    # passes need the same wording.
+    "portal_relative_just_now": {
+        "en": "just now",
+        "th": "เมื่อสักครู่",
+    },
+    "portal_relative_minute": {
+        "en": "{n} minute ago",
+        "th": "{n} นาทีที่แล้ว",
+    },
+    "portal_relative_minutes": {
+        "en": "{n} minutes ago",
+        "th": "{n} นาทีที่แล้ว",
+    },
+    "portal_relative_hour": {
+        "en": "{n} hour ago",
+        "th": "{n} ชั่วโมงที่แล้ว",
+    },
+    "portal_relative_hours": {
+        "en": "{n} hours ago",
+        "th": "{n} ชั่วโมงที่แล้ว",
+    },
+    "portal_relative_day": {
+        "en": "{n} day ago",
+        "th": "{n} วันที่แล้ว",
+    },
+    "portal_relative_days": {
+        "en": "{n} days ago",
+        "th": "{n} วันที่แล้ว",
+    },
+
+    # -----------------------------------------------------------------
+    # SPEC-LINE-PORTAL.md §4 R-STATUS-* (module STATUS, admin web portal,
+    # branch line-version): `core/portal/status.py`'s own microcopy --
+    # AC8-AC14. Tile/panel labels and the Thai wording match UI.md §5
+    # Screen 1's own literal code sample exactly (e.g. "ตัวจับเวลา",
+    # "ที่เก็บข้อมูล", "ข้อผิดพลาดล่าสุด"); the verdict/gauge/errors-panel
+    # strings match UX.md §7's own microcopy table verbatim. "Ollama" and
+    # its on/off value are left untranslated on purpose -- Iris's own
+    # Thai-rendered Screen 1 sample (UI.md line ~595) keeps both literally
+    # unchanged even in the Thai render, so this module follows her
+    # example rather than inventing a translation she didn't give.
+    # Relative-time copy reuses the `portal_relative_*` keys module USERS
+    # added just above (its own docstring explicitly invites STATUS/AUDIT
+    # to share them rather than duplicate).
+    # -----------------------------------------------------------------
+    "portal_status_tile_version": {"en": "Version", "th": "เวอร์ชัน"},
+    "portal_status_tile_channel": {"en": "Channel", "th": "ช่องทาง"},
+    "portal_status_tile_ollama": {"en": "Ollama", "th": "Ollama"},
+    "portal_status_tile_uptime": {"en": "Uptime", "th": "ทำงานมาแล้ว"},
+    "portal_status_tile_last_event": {"en": "Last webhook event", "th": "ข้อความล่าสุด"},
+    "portal_status_no_events": {
+        "en": "No events since the service restarted",
+        "th": "ยังไม่มีข้อความเข้ามาตั้งแต่ระบบเริ่มทำงาน",
+    },
+    "portal_status_needs_you": {
+        "en": "🔔 {n} people are waiting for approval",
+        "th": "🔔 มี {n} คนรอการอนุมัติอยู่",
+    },
+    "portal_status_needs_you_link": {"en": "Review →", "th": "ดูรายการ →"},
+    # Verdict banner (UI.md §3.3, visual priority #1) -- "ok" is a
+    # complete standalone string (no dash/{what}, per UI.md's own
+    # unwrapped `<div class="verdict ok">...</div>` example); warn/stop
+    # share one "-- {what}" template where `{what}` is either a single
+    # pre-linked cause (one trigger) or the localized "{n} things to
+    # check" count (multiple triggers, with the per-cause links rendered
+    # as a `<ul>` below -- status.py builds both, never this catalog).
+    "portal_status_verdict_ok": {"en": "✅ All good", "th": "✅ ทุกอย่างปกติ"},
+    "portal_status_verdict_warn": {"en": "⚠️ Needs a look — {what}", "th": "⚠️ มีบางอย่างต้องดู — {what}"},
+    "portal_status_verdict_stop": {"en": "🛑 Needs attention — {what}", "th": "🛑 มีเรื่องต้องจัดการ — {what}"},
+    "portal_status_verdict_multi": {"en": "{n} things to check", "th": "มี {n} เรื่องต้องดู"},
+    "portal_status_cause_job_dead": {"en": "{job} isn't scheduled", "th": "{job} ไม่ได้ตั้งเวลาไว้"},
+    "portal_status_cause_quota_stopped": {
+        "en": "Push quota has reached the cap",
+        "th": "โควตาถึงเพดานแล้ว",
+    },
+    "portal_status_cause_quota_warn": {
+        "en": "Push quota is close to the cap",
+        "th": "โควตาใกล้ถึงเพดาน",
+    },
+    "portal_status_panel_scheduler": {"en": "Scheduler", "th": "ตัวจับเวลา"},
+    "portal_status_panel_storage": {"en": "Storage", "th": "ที่เก็บข้อมูล"},
+    "portal_status_panel_errors": {"en": "Recent errors", "th": "ข้อผิดพลาดล่าสุด"},
+    "portal_status_scheduler_empty": {"en": "No scheduled jobs.", "th": "ไม่มีงานที่ตั้งเวลาไว้"},
+    # UI.md §3.20's own dead-job marker text, verbatim (Thai given directly
+    # in her spec; the English is this module's own equivalent).
+    "portal_status_job_not_scheduled": {"en": "Not scheduled", "th": "ยังไม่ได้ตั้งเวลา"},
+    "portal_status_storage_db": {"en": "Database", "th": "ฐานข้อมูล"},
+    "portal_status_storage_db_sidecars": {"en": "+wal {wal} · +shm {shm}", "th": "+wal {wal} · +shm {shm}"},
+    "portal_status_storage_media": {"en": "Media", "th": "สื่อ"},
+    "portal_status_storage_last_backup": {"en": "Last backup", "th": "สำรองข้อมูลล่าสุด"},
+    "portal_status_storage_no_backups": {"en": "No backups yet", "th": "ยังไม่มีการสำรองข้อมูล"},
+    "portal_status_backups_summary": {"en": "{n} backups", "th": "สำรองข้อมูล {n} ชุด"},
+    "portal_status_backup_col_file": {"en": "File", "th": "ไฟล์"},
+    "portal_status_backup_col_size": {"en": "Size", "th": "ขนาด"},
+    "portal_status_backup_col_time": {"en": "Time", "th": "เวลา"},
+    "portal_status_quota_heading": {"en": "Push quota — {month}", "th": "โควตาการพุช — {month}"},
+    "portal_status_quota_line": {
+        "en": "{used} / {cap} ({pct}%) · {mode}",
+        "th": "ใช้ไป {used} จาก {cap} ({pct}%) · โหมด {mode}",
+    },
+    "portal_status_quota_normal": {"en": "Normal", "th": "ปกติ"},
+    "portal_status_quota_warn_msg": {
+        "en": "⚠️ Close to the cap. When it's reached, pushes to other users stop. Replies keep working.",
+        "th": "⚠️ ใกล้ถึงเพดานแล้ว เมื่อถึงเพดาน การพุชถึงผู้ใช้อื่นจะหยุด การตอบกลับยังทำงานปกติ",
+    },
+    "portal_status_quota_stop_msg": {
+        "en": "🛑 Cap reached. Proactive pushes to other users are paused until next month. Replies keep working.",
+        "th": "🛑 ถึงเพดานแล้ว การพุชเชิงรุกถึงผู้ใช้อื่นหยุดชั่วคราวจนถึงเดือนถัดไป การตอบกลับยังทำงานปกติ",
+    },
+    "portal_status_quota_more": {"en": "More →", "th": "ดูเพิ่ม →"},
+    "portal_status_errors_empty": {
+        "en": "✅ No errors since the service started.",
+        "th": "✅ ยังไม่มีข้อผิดพลาดตั้งแต่ระบบเริ่มทำงาน",
+    },
+    "portal_status_errors_empty_note": {
+        "en": "This list clears on every restart.",
+        "th": "รายการนี้จะล้างทุกครั้งที่ระบบรีสตาร์ต",
+    },
+    "portal_status_errors_at_capacity": {
+        "en": "Showing the latest {n}. Older records have been dropped.",
+        "th": "แสดง {n} รายการล่าสุด รายการที่เก่ากว่านี้ถูกทิ้งไปแล้ว",
+    },
+    "portal_status_errors_col_when": {"en": "When", "th": "เวลา"},
+    "portal_status_errors_col_level": {"en": "Level", "th": "ระดับ"},
+    "portal_status_errors_col_logger": {"en": "Logger", "th": "Logger"},
+    "portal_status_errors_col_message": {"en": "Message", "th": "ข้อความ"},
+
+    # -----------------------------------------------------------------
+    # SPEC-LINE-PORTAL.md §4 R-QUOTA-1..5/§5 (module QUOTA, admin web
+    # portal, branch `line-version`): `core/portal/quota.py`'s own page
+    # microcopy -- `GET /quota` (AC26/AC27/AC28), `GET /config` (AC29),
+    # `POST /quota/digest-run` (AC30). UX.md §7's own microcopy table is
+    # the source for the copy; a few UX rows are ONE combined string
+    # there but split into separate label/value keys here to match the
+    # actual `.dl` row shape UI.md §3.22/§5 Screen 5 draws (three
+    # definition-list rows, not one sentence). The quota gauge this page
+    # renders (UI.md §3.7, reused on both Status and Quota) intentionally
+    # reuses module STATUS's own `portal_status_quota_*` keys just above
+    # rather than duplicating them -- same component, same copy, one
+    # source of truth. Likewise `portal_users_owner_row`/`portal_users_
+    # digest_on`/`_off`/`portal_users_cancel` (module USERS, above) are
+    # reused verbatim for the "You (owner)" label, the digest roster's
+    # on/off words, and every Cancel link on this module's own pages.
+    # -----------------------------------------------------------------
+    "portal_quota_month_heading": {
+        "en": "By month",
+        "th": "รายเดือน",
+    },
+    "portal_quota_mode_note": {
+        "en": "Mode is currently {mode}. Config changes aren't in the audit log — if the total jumped, check this first.",
+        "th": "ตอนนี้ใช้โหมด {mode} · การเปลี่ยนโหมดไม่ได้ถูกบันทึกในประวัติ ถ้ายอดพุ่งขึ้นผิดปกติ ให้ดูตรงนี้ก่อน",
+    },
+    "portal_quota_month_empty": {
+        "en": "No push history yet.",
+        "th": "ยังไม่มีประวัติการพุช",
+    },
+    "portal_quota_current_month_marker": {
+        "en": "← this month",
+        "th": "← เดือนนี้",
+    },
+    "portal_quota_byuser_heading": {
+        "en": "This month, by user",
+        "th": "เดือนนี้ แยกตามผู้ใช้",
+    },
+    "portal_quota_byuser_empty": {
+        "en": "No pushes recorded this month yet.",
+        "th": "เดือนนี้ยังไม่มีการพุช",
+    },
+    "portal_quota_byuser_col_user": {
+        "en": "User",
+        "th": "ผู้ใช้",
+    },
+    "portal_quota_byuser_col_pushes": {
+        "en": "Pushes",
+        "th": "จำนวนพุช",
+    },
+    "portal_quota_byuser_col_share": {
+        "en": "Share",
+        "th": "สัดส่วน",
+    },
+    "portal_quota_byuser_activity_link": {
+        "en": "See what they logged →",
+        "th": "ดูสิ่งที่บันทึกไว้ →",
+    },
+    "portal_quota_caps_heading": {
+        "en": "Caps & thresholds",
+        "th": "เพดานและเกณฑ์แจ้งเตือน",
+    },
+    "portal_quota_caps_active_label": {
+        "en": "Active cap",
+        "th": "เพดานที่ใช้อยู่",
+    },
+    "portal_quota_caps_warn_label": {
+        "en": "Warn at 80%",
+        "th": "แจ้งเตือนที่ 80%",
+    },
+    "portal_quota_caps_stop_label": {
+        "en": "Stop at 100%",
+        "th": "หยุดที่ 100%",
+    },
+    "portal_quota_warn_fired_tag": {
+        "en": "⚠️ fired this month",
+        "th": "⚠️ แจ้งเตือนแล้วเดือนนี้",
+    },
+    "portal_quota_stop_fired_tag": {
+        "en": "🛑 fired this month",
+        "th": "🛑 หยุดแล้วเดือนนี้",
+    },
+    "portal_quota_not_fired_tag": {
+        "en": "— not fired",
+        "th": "— ยังไม่แจ้งเตือน",
+    },
+    "portal_quota_digest_heading": {
+        "en": "Daily digest",
+        "th": "สรุปรายวัน",
+    },
+    "portal_quota_digest_schedule": {
+        "en": "Scheduled {time} · mode {mode}",
+        "th": "ตั้งเวลาไว้ {time} · โหมด {mode}",
+    },
+    "portal_quota_digest_col_user": {
+        "en": "User",
+        "th": "ผู้ใช้",
+    },
+    "portal_quota_digest_col_status": {
+        "en": "Digest",
+        "th": "สรุปรายวัน",
+    },
+    "portal_digest_send_button": {
+        "en": "Send digest now",
+        "th": "ส่งสรุปรายวันตอนนี้",
+    },
+    "portal_digest_send_help": {
+        "en": "Sends to the {n} users with digest on. You'll confirm on the next page.",
+        "th": "จะส่งถึงผู้ใช้ {n} คนที่เปิดรับสรุป คุณจะได้ยืนยันอีกครั้งในหน้าถัดไป",
+    },
+    "portal_digest_confirm_heading": {
+        "en": "Send today's digest now?",
+        "th": "ส่งสรุปของวันนี้เลยไหม?",
+    },
+    "portal_digest_confirm_goes_to_label": {
+        "en": "Goes to",
+        "th": "ส่งถึง",
+    },
+    "portal_digest_confirm_goes_to_value": {
+        "en": "{n} users who have digest on",
+        "th": "{n} คนที่เปิดรับสรุป",
+    },
+    "portal_digest_confirm_uses_label": {
+        "en": "Uses about",
+        "th": "ใช้โควตาประมาณ",
+    },
+    "portal_digest_confirm_uses_value": {
+        "en": "{n} pushes",
+        "th": "{n} ครั้ง",
+    },
+    "portal_digest_confirm_month_label": {
+        "en": "This month",
+        "th": "เดือนนี้",
+    },
+    "portal_digest_confirm_month_value": {
+        "en": "{used} / {cap} used",
+        "th": "ใช้ไป {used}/{cap}",
+    },
+    "portal_digest_irreversible": {
+        "en": "🛑 This can't be undone. If today's scheduled digest already went out, people will get it twice.",
+        "th": "🛑 ส่งแล้วยกเลิกไม่ได้ ถ้าสรุปรอบปกติของวันนี้ส่งไปแล้ว ผู้ใช้จะได้รับซ้ำ",
+    },
+    "portal_digest_duration_warning": {
+        "en": "This can take a while. Don't close or refresh this page.",
+        "th": "อาจใช้เวลาสักครู่ อย่าปิดหรือรีเฟรชหน้านี้",
+    },
+    "portal_digest_confirm_button": {
+        "en": "Yes, send now",
+        "th": "ยืนยัน ส่งเลย",
+    },
+    "portal_digest_result": {
+        "en": "✅ Sent to {sent}. Skipped {skipped}.",
+        "th": "✅ ส่งสรุปแล้ว {sent} คน · ข้าม {skipped} คน",
+    },
+    # Integration item 5 (TEST-PORTAL-quota.md Finding F4): shown instead
+    # of the key above when a mid-fan-out failure means the reported
+    # counts don't cover every candidate -- an honest "unaccounted for"
+    # figure, rather than the gap silently vanishing from the arithmetic.
+    "portal_digest_result_with_failed": {
+        "en": "✅ Sent to {sent}. Skipped {skipped}. {failed} could not be sent.",
+        "th": "✅ ส่งสรุปแล้ว {sent} คน · ข้าม {skipped} คน · ส่งไม่สำเร็จ {failed} คน",
+    },
+    "portal_digest_already_run": {
+        "en": "Already sent at {time} — nothing was sent again.",
+        "th": "ส่งไปแล้วเมื่อ {time} ระบบไม่ได้ส่งซ้ำ",
+    },
+    "portal_digest_blocked_by_cap": {
+        "en": "Push cap reached — can't send a digest until next month.",
+        "th": "ถึงเพดานพุชแล้ว ส่งสรุปไม่ได้จนกว่าจะถึงเดือนถัดไป",
+    },
+    "portal_config_heading": {
+        "en": "Effective configuration — read only",
+        "th": "ค่าตั้งค่าที่ใช้งานจริง — อ่านอย่างเดียว",
+    },
+    "portal_config_secrets_note": {
+        "en": "🔒 Secrets are shown as •••••• and are never rendered in full.",
+        "th": "🔒 ข้อมูลลับแสดงเป็น •••••• และจะไม่ถูกแสดงเต็มไม่ว่ากรณีใด",
+    },
+    "portal_config_hidden": {
+        "en": "(hidden)",
+        "th": "(ซ่อนไว้)",
+    },
+    "portal_config_not_set": {
+        "en": "(not set)",
+        "th": "(ยังไม่ได้ตั้งค่า)",
     },
 }

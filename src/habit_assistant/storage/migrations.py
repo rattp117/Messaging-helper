@@ -521,6 +521,106 @@ def _migration_014_line_digest(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE users ADD COLUMN digest_opt_out INTEGER NOT NULL DEFAULT 0")
 
 
+def _migration_015_scrub_diary_undo_audit_rows(conn: sqlite3.Connection) -> None:
+    """Integration pass (line/v1.3.0, MAJOR FINDING, TEST-PORTAL-audit.md):
+    this codebase's FIRST sanctioned DATA-TOUCHING migration -- every
+    migration before this one (except migration 006's own explicitly-
+    sanctioned schema rebuild) has been additive-only, touching no
+    existing row's VALUES. This one is a deliberate, narrow exception,
+    justified below.
+
+    **What it fixes:** `core/undo_ui.py:send_undo_confirmation` used to
+    record a text-habit undo's REMOVED VALUE verbatim into `audit_log.
+    old_value` -- the actual diary content, unredacted, rendered by both
+    the chat `/audit` command and (once the admin portal shipped)
+    `/audit`'s web page too, contradicting SPEC-LINE-PORTAL.md R-AUDIT-3's
+    own stated privacy rationale. `core/undo_ui.py`'s own write-site fix
+    (`_redacted_text_marker`) closes this for every FUTURE undo; this
+    migration closes it for every undo ALREADY on disk, since a fix that
+    only applies going forward would leave every historical diary entry a
+    user ever undid sitting in the clear, one `/audit` scroll away,
+    forever.
+
+    **Why UPDATE, not a fresh additive column:** the leaked content lives
+    in an EXISTING column (`old_value`) on EXISTING rows -- there is no
+    additive way to redact data that is already there. This is additive
+    IN SPIRIT, though: it only ever REPLACES a value with a strictly
+    SHORTER, content-free marker (never lengthens, never invents new
+    rows, never touches any OTHER column), and only for rows an
+    unambiguous, narrow predicate identifies as an at-risk write.
+
+    **Scope (surgical, not "every row"):** `action = 'undo'` (the only
+    action `core/undo_ui.py:send_undo_confirmation` ever writes this
+    shape for) AND `old_value IS NOT NULL` AND NOT already scrubbed
+    (idempotent -- see below) AND the undone habit was TEXT-typed at
+    write time, determined the same way the live code determines it:
+    - `entity = 'diary'` (the one built-in text habit; `core/undo_ui.py`
+      stores `entity = row["category"]` for every undo, unconditionally),
+      OR
+    - a matching `user_habits` row (`user_id` + `id = entity`) whose
+      `type = 'text'` (a per-user custom text habit, SPEC-v1.7.md).
+
+    A numeric/duration/boolean habit's undo never reaches this predicate
+    at all (its `old_value` was always the numeric value, never text --
+    the original bug never touched those rows), so this migration cannot
+    accidentally redact a legitimate number.
+
+    **Known limitation, documented rather than silently accepted:** a
+    CUSTOM text habit that has since been HARD-deleted (no surviving
+    `user_habits` row to join against, R-C2's own "smart-delete" split)
+    cannot be identified as text-typed from `user_habits` alone anymore,
+    so its historical undo rows are NOT scrubbed by this migration. This
+    is a narrow, rare edge case (the habit must have been both text-typed
+    AND hard-deleted, i.e. never logged again after its one undone entry)
+    -- the built-in `diary` habit (the overwhelmingly common case, and the
+    one Vera's own finding reproduced) is unconditionally covered by the
+    `entity = 'diary'` branch above, which does not depend on any
+    habit-definition row surviving.
+
+    **Idempotent:** the `old_value NOT LIKE '[text entry removed]%'`
+    guard means re-running this against an already-scrubbed row is a
+    no-op (defense in depth -- the migration runner itself already
+    guarantees each migration applies at most once per DB via `PRAGMA
+    user_version`, but this keeps the SQL itself honest if ever invoked
+    directly, e.g. from a test).
+
+    **Defensive existence check:** `audit_log` is created by migration
+    007, which always runs before this one in any REAL sequential
+    upgrade (migrations apply strictly in order, never skipped) -- but
+    several existing test rehearsals in this suite hand-build a
+    partial/synthetic "vN-shaped" DB (only the tables relevant to what
+    THAT test asserts, e.g. `logs`/`users`/`routines`) and stamp
+    `PRAGMA user_version` directly rather than replaying the real
+    migration chain, to keep those fixtures small. Checking
+    `sqlite_master` first keeps this migration a harmless no-op against
+    such a synthetic fixture instead of raising `OperationalError: no
+    such table: audit_log` -- a real production DB always has the table
+    by this point, so this check changes nothing about real behavior."""
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'"
+    ).fetchone()
+    if table_exists is None:
+        return
+    conn.execute(
+        """
+        UPDATE audit_log
+        SET old_value = '[text entry removed] (' || LENGTH(old_value) || ' chars)'
+        WHERE action = 'undo'
+          AND old_value IS NOT NULL
+          AND old_value NOT LIKE '[text entry removed]%'
+          AND (
+            entity = 'diary'
+            OR EXISTS (
+              SELECT 1 FROM user_habits
+              WHERE user_habits.user_id = audit_log.user_id
+                AND user_habits.id = audit_log.entity
+                AND user_habits.type = 'text'
+            )
+          )
+        """
+    )
+
+
 # Ordered list of migrations. Index 0 -> user_version 1, index 1 ->
 # user_version 2, etc. Append-only: never reorder or remove an entry once
 # it has shipped, or a DB stamped at that version will silently skip it.
@@ -539,6 +639,7 @@ MIGRATIONS: list[Migration] = [
     _migration_012_lifecycle,
     _migration_013_unparsed_state,
     _migration_014_line_digest,
+    _migration_015_scrub_diary_undo_audit_rows,
 ]
 
 

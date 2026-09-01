@@ -125,8 +125,17 @@ ACTIONS: tuple[Action, ...] = (
     "digest_off",
 )
 
-Source = Literal["command", "nl", "button", "admin", "system"]
-SOURCES: tuple[Source, ...] = ("command", "nl", "button", "admin", "system")
+
+# SPEC-LINE-PORTAL.md §4 R-USERACT-1/§5 (module USERS, admin web portal,
+# branch line-version): "portal" added for `access.approve_user`/
+# `block_user`'s portal-sourced writes (AC16/AC17/AC18) -- the shared-
+# surface pass that extracted those functions typed `source` as this very
+# `audit.Source` but didn't extend the closed vocabulary itself; closed
+# here since AC16-18 are unsatisfiable against `test_sources_matches_the_
+# spec_vocabulary_exactly` otherwise (see tests/test_audit.py, updated
+# alongside this).
+Source = Literal["command", "nl", "button", "admin", "system", "portal"]
+SOURCES: tuple[Source, ...] = ("command", "nl", "button", "admin", "system", "portal")
 
 
 def _stringify_value(value: object) -> str | None:

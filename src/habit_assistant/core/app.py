@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import random
 import sys
@@ -60,6 +59,7 @@ from habit_assistant.core.backup import BackupError
 from habit_assistant.core.backup import backup as backup_db
 from habit_assistant.core.backup import restore as restore_db
 from habit_assistant.core.habits import HabitRegistry
+from habit_assistant.core.portal.server import build_portal, cancel_task
 from habit_assistant.core.registry_provider import RegistryProvider
 from habit_assistant.core.reminders import ReminderState, send_reminder
 from habit_assistant.llm.ollama_client import build_extraction_schema
@@ -668,7 +668,7 @@ async def async_main(
         digest_hour, digest_minute = (int(x) for x in config.digest.time.split(":"))
 
         async def _digest_job() -> None:
-            await digest.run_daily_digest(db, channel, config, provider, scheduler=scheduler)
+            await digest.run_daily_digest_guarded(db, channel, config, provider, scheduler=scheduler)
 
         scheduler.add_job(
             _digest_job,
@@ -681,6 +681,7 @@ async def async_main(
         )
 
     scheduler.start()
+    portal_mark_event, portal_task = build_portal(config, db, scheduler, channel, owner_id)
 
     # SPEC-LINE.md §4 R-A10/R-I3 (branch `line-version`): the one static
     # rich menu, registered once at startup, fail-open (`register_rich_
@@ -707,6 +708,7 @@ async def async_main(
         message_id: str | None = None,
         reply_to_message_id: str | None = None,
     ) -> None:
+        portal_mark_event()  # R-STATS-1; no-op when the portal is off (AC1).
         await routing.on_message(
             chat_id,
             text,
@@ -725,6 +727,7 @@ async def async_main(
         )
 
     async def _on_callback(chat_id: str, data: str, source_text: str, callback_id: str) -> None:
+        portal_mark_event()
         await routing.on_callback(chat_id, data, source_text, callback_id, db=db, channel=channel, config=config, provider=provider)
 
     # The health monitor (Telegram only, see its construction above) runs
@@ -733,12 +736,10 @@ async def async_main(
     try:
         await channel.run(_on_message, on_callback=_on_callback)
     finally:
-        if health_task is not None:
-            health_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await health_task
+        await cancel_task(health_task)
         if health_monitor is not None:
             await health_monitor.aclose()
+        await cancel_task(portal_task)
         scheduler.shutdown(wait=False)
         await channel.aclose()
         if llm is not None:

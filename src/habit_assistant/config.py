@@ -599,6 +599,56 @@ class ReplyToReminderConfig(BaseModel):
         return v
 
 
+class PortalConfig(BaseModel):
+    """SPEC-LINE-PORTAL.md §2.1/§4 R-SEC-1/R-SEC-2/R-SEC-3/R-STATS-2
+    (shared surface, admin web portal, branch `line-version`): the
+    portal's own master switch + listener/identity knobs. `enabled =
+    False` by default -- an absent `[portal]` section, or one that
+    doesn't set this key, leaves every existing install byte-identical to
+    pre-portal behavior (AC1): no second listener binds, no ring-buffer
+    log handler installs, `core/app.py` skips all portal construction
+    entirely. `bind_port` defaults to `8081`, distinct from `[line]
+    bind_port` (`8080`) -- `Config._portal_port_distinct_from_line_port`
+    below enforces this at load time (R-SEC-2/AC7) rather than trusting
+    every deploy template to get it right by hand.
+
+    `owner_login`/`require_identity_header` are the identity-gate's own
+    two knobs (R-SEC-3, `core/portal/security.py:identity_gate`):
+    `require_identity_header=True` (default) fails CLOSED -- a request
+    with no `Tailscale-User-Login` header (public Funnel traffic, or a
+    mis-Funneled port) is refused outright, never silently let through as
+    "no pin configured". `owner_login=""` (default) accepts ANY
+    authenticated tailnet identity -- the network boundary (`tailscale
+    serve`, never `funnel`, per the deploy docs) is the primary defense
+    for a single-user tailnet; setting `owner_login` pins a second,
+    spoof-proof factor (R-SEC-4's trust model: Serve strips any
+    client-supplied copy of this header).
+
+    `public_url` (Archi ruling, Q2 -- adopted BEYOND SPEC-LINE-PORTAL.md
+    §9 OQ2's own conservative "don't change the push in v1" default): the
+    portal's own tailnet URL, e.g. "https://host.tailnet-name.ts.net:8081"
+    -- the app cannot derive its own MagicDNS name, so this is a
+    manually-filled deploy value, mirroring `[line] public_base_url`'s
+    identical "fill this in" shape. Default `""` (unset):
+    `core/access.py:handle_gate` appends NO portal-URL line to the
+    `access_request` owner push when this is empty, so an install that
+    has `portal.enabled=true` but hasn't filled this in yet still gets
+    exactly today's push (no broken/placeholder URL ever sent).
+
+    `log_ring_size` (R-STATS-2): how many recent WARNING+ log records the
+    in-process `RingBufferHandler` keeps for the Status page's "recent
+    errors" panel -- process-local, resets on restart (deliberately, per
+    the Status page's own "clears on every restart" honesty note)."""
+
+    enabled: bool = False
+    bind_host: str = "127.0.0.1"
+    bind_port: int = 8081
+    owner_login: str = ""
+    require_identity_header: bool = True
+    log_ring_size: int = 200
+    public_url: str = ""
+
+
 class HabitLabel(BaseModel):
     """A bilingual (en/th) string, used for a habit's `label`, `unit`, and
     `reminder_text` (ROADMAP.md v0.7.0 "Multi-Habit Extensibility")."""
@@ -768,6 +818,12 @@ class Config(BaseModel):
     channel: ChannelConfig = ChannelConfig()
     line: LineConfig = LineConfig()
     digest: DigestConfig = DigestConfig()
+    # SPEC-LINE-PORTAL.md §2.1/§4/§6 (shared surface, admin web portal,
+    # branch `line-version`): one new section, defaulted -- an absent
+    # `[portal]` section in config.toml uses the class defaults above
+    # (`enabled=False`, AC1), same "no existing key changes meaning"
+    # posture as every prior config addition in this file.
+    portal: PortalConfig = PortalConfig()
     habits: list[HabitConfig] = Field(default_factory=_default_habits)
 
     @field_validator("habits")
@@ -778,6 +834,26 @@ class Config(BaseModel):
         if dupes:
             raise ValueError(f"duplicate habit id(s): {dupes}")
         return v
+
+    @model_validator(mode="after")
+    def _portal_port_distinct_from_line_port(self) -> "Config":
+        """SPEC-LINE-PORTAL.md §2.1/§4 R-SEC-2/AC7: the portal's own
+        listener and the LINE webhook/media listener MUST bind different
+        ports -- Tailscale's own hard constraint is that Serve and Funnel
+        can never share one port (see SPEC-LINE-PORTAL.md's "Security
+        boundary decision" §, finding 2), and this app additionally needs
+        two independent `aiohttp` listeners in the same process regardless.
+        Checked unconditionally (not gated on `portal.enabled`) -- a
+        config with colliding ports is a real authoring mistake worth
+        catching at load time even before the portal is turned on, and
+        the default pairing (8081 vs 8080) never collides on its own."""
+        if self.portal.bind_port == self.line.bind_port:
+            raise ValueError(
+                f"portal.bind_port ({self.portal.bind_port}) must differ from line.bind_port "
+                f"({self.line.bind_port}) -- Tailscale Serve and Funnel cannot share one port, "
+                "and the portal and LINE webhook run as two independent listeners in the same process"
+            )
+        return self
 
 
 class Secrets(BaseSettings):

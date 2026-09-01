@@ -168,5 +168,24 @@ else
     log "[line].public_base_url is already configured (not the CHANGE-ME placeholder) -- leaving config.toml untouched."
 fi
 
+# --- 11. Tailscale Serve for the admin portal: print the command, don't
+#     run it (R-D3's own "documentation, not code" posture, same as step
+#     9's Funnel line) -- ONLY when [portal] enabled = true in
+#     config.toml. NEVER print `tailscale funnel` for this port:
+#     SPEC-LINE-PORTAL.md's own Security boundary decision requires
+#     `tailscale serve` (tailnet-only) -- Funnel would put every admin
+#     function on the public internet. ---------------------------------
+PORTAL_SECTION="$(awk '/^\[portal\]/{f=1;next} /^\[/{f=0} f' "$REPO_ROOT/config.toml" 2>/dev/null || true)"
+if [ -n "$PORTAL_SECTION" ] && echo "$PORTAL_SECTION" | grep -qE '^enabled *= *true'; then
+    PORTAL_PORT="$(echo "$PORTAL_SECTION" | sed -n 's/^bind_port *= *\([0-9]*\).*/\1/p' | head -1)"
+    PORTAL_PORT="${PORTAL_PORT:-8081}"
+    log "[portal] enabled = true in config.toml. Expose the admin portal to your TAILNET ONLY (never Funnel this port):"
+    log "    sudo tailscale serve --bg $PORTAL_PORT"
+    log "This makes https://<host>.<tailnet>.ts.net:$PORTAL_PORT reachable from your OWN tailnet devices only, forwarding to 127.0.0.1:$PORTAL_PORT."
+    log "WARNING: do NOT run 'tailscale funnel $PORTAL_PORT' -- that would expose every admin function to the public internet."
+else
+    log "[portal] is not enabled in config.toml -- skipping the admin portal's 'tailscale serve' step (see docs/DEPLOY-LINE.md if you want to turn it on)."
+fi
+
 log "Full runbook (LINE console webhook registration, rich-menu image, verification checklist): docs/DEPLOY-LINE.md"
 log "setup.sh done."

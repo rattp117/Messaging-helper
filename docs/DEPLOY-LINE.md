@@ -333,7 +333,96 @@ same as the Telegram edition — nothing LINE-specific about restore).
 
 ---
 
-## 9. Troubleshooting
+## 9. Admin portal (optional)
+
+A read-first admin web portal — service health, push quota, pending
+approvals, audit log, user activity — served **only to your own tailnet**,
+never the public internet. Off by default; fully additive.
+
+**1. Turn it on** in `config.toml`:
+
+```toml
+[portal]
+enabled = true
+owner_login = "you@example.com"   # optional but recommended (docs above call this out)
+```
+
+Restart the service so the change takes effect:
+
+```bash
+sudo systemctl restart habit-assistant-line.service
+```
+
+**2. Expose it via `tailscale serve` — never `tailscale funnel`.** This is
+the load-bearing distinction: `serve` only reaches your own tailnet;
+`funnel` reaches the entire public internet, exactly like the `/callback`
+setup in §4 above. Re-running `deploy/setup.sh` prints the exact command
+once `[portal] enabled = true` is set:
+
+```bash
+bash deploy/setup.sh
+# ...
+# [setup.sh] [portal] enabled = true in config.toml. Expose the admin portal to your TAILNET ONLY (never Funnel this port):
+# [setup.sh]     sudo tailscale serve --bg 8081
+```
+
+Or run it directly:
+
+```bash
+sudo tailscale serve --bg 8081     # or your configured [portal].bind_port
+```
+
+**WARNING: do NOT run `sudo tailscale funnel 8081`** (or whatever port you
+configured). That would put every admin function — approve/block users,
+the audit log, the effective config viewer — on the public internet. The
+portal's own identity gate (`require_identity_header = true`, the
+default) fails closed if this is ever done by mistake (a public request
+carries no `Tailscale-User-Login` header and gets refused with a bare
+`403`), but the network boundary is still the primary defense — don't
+rely on the fail-closed gate as your only protection.
+
+**3. Open it**: `https://<host>.<tailnet>.ts.net:8081` (or your configured
+port), from a device on your own tailnet. No login screen — the tailnet
+identity itself is the auth.
+
+**4. Verify the security boundary actually holds** (do this once, right
+after enabling — it's the whole point of the design, so confirm it
+rather than trust it):
+
+- **From your tailnet device's browser** (step 3 above): the Status page
+  loads normally — proves `tailscale serve` is injecting the
+  `Tailscale-User-Login` header and the portal accepts it.
+- **From the SAME machine the bot runs on**, bypass `tailscale serve`
+  entirely and hit the portal's own port directly over plain localhost —
+  this simulates exactly what a public Funnel request would look like if
+  the port were ever mis-exposed (no identity header at all):
+
+  ```bash
+  curl -i http://127.0.0.1:8081/
+  ```
+
+  Expected: **`HTTP/1.1 403 Forbidden`**, a bare bilingual body ("Not
+  authorized" / "ไม่มีสิทธิ์เข้าถึง"), and critically **no page content** —
+  no version string, no nav, no stylesheet. If you instead see the
+  Status page (`200`), the identity gate isn't enforcing
+  (`require_identity_header` may have been set to `false`) — fix that
+  before relying on this deployment; the network boundary alone
+  (`tailscale serve` vs. `funnel`) is the primary defense, but the gate
+  is the fail-closed backstop if the port is ever mis-exposed.
+- **If `[portal].owner_login` is set**: confirm a login that ISN'T yours
+  is refused too — `tailscale serve` strips any client-supplied identity
+  header and injects the real one, so this can't be faked directly from
+  outside the tailnet; the check above (no header at all) is the
+  practical, reproducible verification available from the command line.
+
+**Recommended**: set `[portal].owner_login` to your own Tailscale login
+(the same identity `tailscale status` shows for your account) as a
+second, spoof-proof factor beyond the network boundary alone — see the
+comment above `[portal]` in `config.toml.line`.
+
+---
+
+## 10. Troubleshooting
 
 **Funnel is down / webhook verify fails**
 - `tailscale funnel status` — confirm it's still forwarding. A Tailscale
@@ -414,7 +503,7 @@ Numpy baseline X86_V2` / crash-loop right after enabling `[charts]`**
 
 ---
 
-## 10. Updating
+## 11. Updating
 
 ```bash
 cd /opt/habit-assistant

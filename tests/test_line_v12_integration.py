@@ -158,18 +158,18 @@ async def _running_line_app(monkeypatch, tmp_path, *, users: tuple[str, ...] = (
 def test_ac24_opening_a_db_under_v12_applies_no_new_migration(tmp_path):
     """R-I4: `push_ledger`/`users.digest_opt_out` already exist from
     migration 014 -- v1.2.0 ships no new migration at all. A DB created
-    once (schema 0 -> 14) and then reopened by this SAME v1.2.0 codebase
+    once (schema 0 -> 15) and then reopened by this SAME v1.2.0 codebase
     a second time must show NO further migration work: `schema_version_
-    before == schema_version == 14` on the reopen, not just "== 14"."""
+    before == schema_version == 15` on the reopen, not just "== 15"."""
     db_path = tmp_path / "habits.db"
     first = Database(db_path)
-    assert first.schema_version == 14
+    assert first.schema_version == 15
     first.close()
 
     second = Database(db_path)
     try:
-        assert second.schema_version_before == 14, "reopening a fully-migrated DB must start at 14, not re-run from 0"
-        assert second.schema_version == 14, "v1.2.0 must apply zero new migrations opening a 1.1.0-shaped DB (R-I4)"
+        assert second.schema_version_before == 15, "reopening a fully-migrated DB must start at 15, not re-run from 0"
+        assert second.schema_version == 15, "v1.2.0 must apply zero new migrations opening a 1.1.0-shaped DB (R-I4)"
     finally:
         second.close()
 

@@ -117,6 +117,26 @@ def _resolve_unprompted_language_for(db: "Database", config: "Config", chat_id: 
     return i18n.resolve_unprompted_language(config, user_pref=pref)
 
 
+def _access_request_message(config: "Config", lang: i18n.Language, name: str, chat_id: str) -> str:
+    """SPEC-LINE-PORTAL.md §9 OQ2, Archi ruling Q2 (adopted BEYOND OQ2's
+    own conservative "don't change the push in v1" default): when the
+    admin portal is enabled AND its `public_url` has been filled in AND
+    this is the LINE edition (`config.portal.public_url` is meaningless
+    on Telegram, and portal is LINE-only, R-SEC-1), the owner's
+    `access_request` push gains one extra line pointing at the portal --
+    Flow B's own "two taps from the notification" instead of "remember
+    your bookmark". Every existing install (`portal.enabled=False`
+    default, or `public_url` left unfilled) sends EXACTLY the pre-portal
+    `access_request` text, unchanged (AC1-consistent: byte-identical
+    unless an operator has actively turned the portal on AND configured
+    its URL)."""
+    base = i18n.t("access_request", lang, name=name, chat_id=chat_id)
+    if config.portal.enabled and config.portal.public_url and config.channel.type == "line":
+        hint = i18n.t("portal_access_request_hint", lang, url=config.portal.public_url)
+        return f"{base}\n{hint}"
+    return base
+
+
 # ---------------------------------------------------------------------------
 # R-A1/R-A2/R-A3: the gate itself.
 # ---------------------------------------------------------------------------
@@ -185,10 +205,7 @@ async def handle_gate(
             logger.exception("Failed to create pending user row for chat_id=%r", chat_id)
         await channel.send(chat_id, i18n.t("access_pending", lang))
         owner_lang = _resolve_unprompted_language_for(db, config, owner_chat_id)
-        await channel.send(
-            owner_chat_id,
-            i18n.t("access_request", owner_lang, name=display_name or chat_id, chat_id=chat_id),
-        )
+        await channel.send(owner_chat_id, _access_request_message(config, owner_lang, display_name or chat_id, chat_id))
         return False
 
     if access == "pending":
@@ -198,6 +215,138 @@ async def handle_gate(
     # blocked, or classify()'s AC-A7 fail-safe fallback.
     await channel.send(chat_id, i18n.t("access_denied", lang))
     return False
+
+
+# ---------------------------------------------------------------------------
+# SPEC-LINE-PORTAL.md §4 R-USERACT-1 (shared surface, admin web portal,
+# branch line-version): source-parameterized approve/block, extracted so
+# the chat `/approve`/`/block` path (`execute_admin`, below, source=
+# "admin") and the portal's `POST /users/approve`/`/block` (module USERS,
+# source="portal") share ONE write-plus-side-effects implementation --
+# audit provenance and the access_granted/version-catch-up side-effects
+# can never drift between the two callers.
+# ---------------------------------------------------------------------------
+
+
+async def approve_user(
+    db: "Database",
+    channel: Channel,
+    config: "Config",
+    *,
+    actor: str,
+    target_chat: str,
+    source: audit.Source,
+) -> bool:
+    """The DB write + audit record + side-effects common to every approve
+    (including `/invite`, its alias). Raises whatever `db.upsert_user`
+    raises on a write failure -- error PRESENTATION differs by caller (a
+    chat reply for `execute_admin`, an inline flash for the portal), so
+    this function doesn't own that decision; a failed write means NO
+    audit row and NO side-effects (the caller's own try/except is the
+    only thing that ran).
+
+    `previous` status is read best-effort BEFORE the write (SPEC-v1.3.md
+    R-C3's own "capture must never gate the write" posture, preserved
+    verbatim from the pre-extraction inline version) -- a failed pre-read
+    degrades `old_value` to `None`, not an error.
+
+    The `access_granted` push (to `target_chat`) and the version-catch-up
+    write are both best-effort/fail-open, INSIDE this function -- UX Flow
+    B's own explicit requirement (SPEC-LINE-PORTAL.md UX.md §3 Flow B):
+    "the approve still succeeded" even when the notification push fails
+    (LINE API down, quota stopped). A push failure here is logged and
+    swallowed, never allowed to make an already-successful approve look
+    like it failed.
+
+    Return value (TEST-PORTAL-users.md Finding 1 fix, integration item 4
+    -- ADDITIVE, backward-compatible: every pre-existing caller that
+    ignored the old implicit `None` return is unaffected): `True` iff
+    `channel.send(...)` reported the welcome push as actually confirmed
+    (its own return is not `None` -- see `channels/line.py:LineChannel.
+    send`'s own updated contract); `False` on either a raised exception
+    (caught here, exactly as before -- the approve itself still
+    succeeded) or a clean-but-unconfirmed return (e.g. LINE's realtime
+    quota gate silently dropping it, R-Q3 -- previously indistinguishable
+    from success). The caller (`execute_admin`'s chat ack, `core/portal/
+    users.py:handle_approve`'s flash) uses this to render an HONEST
+    result instead of unconditionally claiming delivery."""
+    try:
+        previous = db.get_user(target_chat)
+    except Exception:
+        previous = None
+    previous_status = previous["status"] if previous is not None else None
+
+    db.upsert_user(target_chat, status="active")
+
+    # SPEC-v1.5.md R-N5/AC-23: catch a newly-approved user up to the
+    # CURRENT running version, right after the approve write succeeds --
+    # so they never receive a release announcement for a version that
+    # shipped before they were let in. Best-effort: a failure here must
+    # not undo or block the approve itself (preserved verbatim from the
+    # pre-extraction inline version).
+    try:
+        db.set_last_announced_version(target_chat, __version__)
+    except Exception:
+        logger.exception("Failed to catch up last_announced_version for newly-approved chat_id=%r", target_chat)
+
+    audit.record(
+        db,
+        actor=actor,
+        action="user_approve",
+        source=source,
+        target_user_id=target_chat,
+        old_value=previous_status,
+        new_value="active",
+    )
+
+    target_lang = _resolve_unprompted_language_for(db, config, target_chat)
+    push_confirmed = False
+    try:
+        result = await channel.send(target_chat, i18n.t("access_granted", target_lang))
+        push_confirmed = result is not None
+    except Exception:
+        logger.exception(
+            "access_granted push failed for newly-approved chat_id=%r; the approve itself already succeeded",
+            target_chat,
+        )
+    return push_confirmed
+
+
+async def block_user(
+    db: "Database",
+    channel: Channel,
+    config: "Config",
+    *,
+    actor: str,
+    target_chat: str,
+    source: audit.Source,
+) -> None:
+    """The DB write + audit record for a block. No notification is sent
+    to `target_chat` (matches the pre-extraction behavior -- a blocked
+    user has never been pushed a "you're blocked" message); `channel`/
+    `config` are accepted only for signature parity with `approve_user`
+    (SPEC-LINE-PORTAL.md §5's own interface listing), mirroring `core/
+    audit_view.py:render_recent`'s own `del config` convention for an
+    unused parity parameter. Raises whatever `db.upsert_user` raises on a
+    write failure, same contract as `approve_user`."""
+    del channel, config
+    try:
+        previous = db.get_user(target_chat)
+    except Exception:
+        previous = None
+    previous_status = previous["status"] if previous is not None else None
+
+    db.upsert_user(target_chat, status="blocked")
+
+    audit.record(
+        db,
+        actor=actor,
+        action="user_block",
+        source=source,
+        target_user_id=target_chat,
+        old_value=previous_status,
+        new_value="blocked",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -535,69 +684,35 @@ async def execute_admin(
         await channel.send(chat_id, resolution_error)
         return
 
-    # SPEC-v1.3.md R-C3: read the prior status BEFORE the write (best-effort
-    # -- a failed pre-read degrades to old_value=None rather than blocking
-    # the approve/block action itself, same "capture must never gate the
-    # write" posture as every other capture site here).
+    # SPEC-LINE-PORTAL.md §4 R-USERACT-1: delegates to the shared
+    # approve_user/block_user (source="admin") -- behavior byte-identical
+    # to the pre-extraction inline version (DB write, version catch-up,
+    # audit row, access_granted push, then this chat's own ack), just
+    # with the write-and-notify body factored out so the portal's
+    # source="portal" callers can reuse it verbatim.
     if command.kind in ("approve", "invite"):
         try:
-            previous = db.get_user(target_chat)
-        except Exception:
-            previous = None
-        previous_status = previous["status"] if previous is not None else None
-        try:
-            db.upsert_user(target_chat, status="active")
+            push_confirmed = await approve_user(db, channel, config, actor=chat_id, target_chat=target_chat, source="admin")
         except Exception:
             logger.exception("Failed to approve chat_id=%r", target_chat)
             await channel.send(chat_id, i18n.t("admin_save_failed", lang))
             return
-        # SPEC-v1.5.md R-N5/AC-23: catch a newly-approved user up to the
-        # CURRENT running version, right after the approve write succeeds --
-        # so they never receive a release announcement for a version that
-        # shipped before they were let in (only FUTURE version bumps
-        # announce to them). Best-effort: a failure here must not undo or
-        # block the approve itself (the user is already active); a missed
-        # catch-up here just means `announce.announce_release`'s own
-        # idempotent per-user check will (harmlessly) send them the current
-        # version's note next startup instead.
-        try:
-            db.set_last_announced_version(target_chat, __version__)
-        except Exception:
-            logger.exception("Failed to catch up last_announced_version for newly-approved chat_id=%r", target_chat)
-        audit.record(
-            db,
-            actor=chat_id,
-            action="user_approve",
-            source="admin",
-            target_user_id=target_chat,
-            old_value=previous_status,
-            new_value="active",
-        )
-        await channel.send(chat_id, i18n.t("admin_approved_ack", lang, chat_id=target_chat))
-        target_lang = _resolve_unprompted_language_for(db, config, target_chat)
-        await channel.send(target_chat, i18n.t("access_granted", target_lang))
+        # TEST-PORTAL-users.md Finding 1 fix (integration item 4): the
+        # chat ack adopts the same honesty the portal flash now has --
+        # `admin_approved_ack` unconditionally claimed nothing about
+        # delivery before ("{chat_id} approved."), so this is a small,
+        # additive refinement rather than a correction of an existing
+        # falsehood, but it closes the same gap for the chat surface.
+        ack_key = "admin_approved_ack" if push_confirmed else "admin_approved_ack_nopush"
+        await channel.send(chat_id, i18n.t(ack_key, lang, chat_id=target_chat))
         return
 
     if command.kind == "block":
         try:
-            previous = db.get_user(target_chat)
-        except Exception:
-            previous = None
-        previous_status = previous["status"] if previous is not None else None
-        try:
-            db.upsert_user(target_chat, status="blocked")
+            await block_user(db, channel, config, actor=chat_id, target_chat=target_chat, source="admin")
         except Exception:
             logger.exception("Failed to block chat_id=%r", target_chat)
             await channel.send(chat_id, i18n.t("admin_save_failed", lang))
             return
-        audit.record(
-            db,
-            actor=chat_id,
-            action="user_block",
-            source="admin",
-            target_user_id=target_chat,
-            old_value=previous_status,
-            new_value="blocked",
-        )
         await channel.send(chat_id, i18n.t("admin_blocked_ack", lang, chat_id=target_chat))
         return

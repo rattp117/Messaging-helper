@@ -309,7 +309,7 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
     db = Database(db_path)
 
     assert db.schema_version_before == 3
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     after_rows = [
         tuple(r)
@@ -331,8 +331,8 @@ def test_v3_shaped_db_migrates_to_v4_with_habit_type_backfilled(tmp_path):
 
     # Re-running (reopen) migrates nothing further (idempotent).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
@@ -361,7 +361,7 @@ def test_fresh_db_reports_schema_version_9_with_habit_targets_table(tmp_path):
     # added migration 009 (dashboard_msg_id/habit_records) -- a fresh DB
     # now lands on version 9, not 6.
     db = Database(tmp_path / "fresh_v6.db")
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_targets" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(habit_targets)").fetchall()}
@@ -418,7 +418,7 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
     # (checkin_window/last_announced_version), and 009 (dashboard_msg_id/
     # habit_records), so it lands on version 9, not 5.
     assert db.schema_version_before == 4
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     after_rows = [
         tuple(r)
@@ -434,8 +434,8 @@ def test_v4_shaped_db_migrates_to_v5_habit_targets_idempotent_and_logs_untouched
 
     # Re-running (reopen) applies nothing further (idempotent, AC12).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
@@ -589,7 +589,7 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
     # migration 006's own effect (users/logs.user_id/habit_targets
     # rebuild/user_reminder_times) still holds.
     assert db.schema_version_before == 5
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     # logs values preserved, byte-for-byte; new user_id column present and NULL.
     after_logs = [
@@ -623,8 +623,8 @@ def test_v5_shaped_db_migrates_to_v6_multiuser(tmp_path):
 
     # Re-running (reopen) applies nothing further (idempotent, AC-M1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
@@ -734,7 +734,7 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
     db = Database(db_path)
 
     assert db.schema_version_before == 6
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     # Every pre-existing table/row is untouched, byte-for-byte -- the
     # additive-only guarantee AC-A1 requires (unlike 006's own sanctioned
@@ -763,14 +763,14 @@ def test_v6_shaped_db_migrates_to_v7_audit_log_touching_nothing_existing(tmp_pat
 
     # Re-running (reopen) applies nothing further (idempotent, AC-A1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
 def test_fresh_db_has_audit_log_table_with_expected_shape(tmp_path):
     db = Database(tmp_path / "fresh_v7.db")
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "audit_log" in tables
     cols = {row[1] for row in db._conn.execute("PRAGMA table_info(audit_log)").fetchall()}
@@ -912,7 +912,7 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
     db = Database(db_path)
 
     assert db.schema_version_before == 7
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
     after_users = [
@@ -933,14 +933,14 @@ def test_v7_shaped_db_migrates_to_v8_checkin_and_announce_touching_nothing_exist
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
 def test_fresh_db_has_checkin_and_announce_columns_all_null(tmp_path):
     db = Database(tmp_path / "fresh_v8.db")
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     db.upsert_user("u1", role="member", status="active")
     assert db.get_checkin_window("u1") is None
     assert db.get_last_announced_version("u1") is None
@@ -1086,7 +1086,7 @@ def test_v8_shaped_db_migrates_to_v9_dashboard_and_records_touching_nothing_exis
     db = Database(db_path)
 
     assert db.schema_version_before == 8
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     # The pre-existing row's EXISTING columns are untouched, byte-for-byte.
     after_users = [
@@ -1114,14 +1114,14 @@ def test_v8_shaped_db_migrates_to_v9_dashboard_and_records_touching_nothing_exis
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
 def test_fresh_db_has_dashboard_and_records_shape(tmp_path):
     db = Database(tmp_path / "fresh_v9.db")
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "habit_records" in tables
     user_cols = {row[1] for row in db._conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -1376,7 +1376,7 @@ def test_v9_shaped_db_migrates_to_v10_user_habits_touching_nothing_existing(tmp_
     db = Database(db_path)
 
     assert db.schema_version_before == 9
-    assert db.schema_version == 14
+    assert db.schema_version == 15
 
     # Existing rows/columns are untouched, byte-for-byte.
     after_users = [
@@ -1400,14 +1400,14 @@ def test_v9_shaped_db_migrates_to_v10_user_habits_touching_nothing_existing(tmp_
 
     # Re-running (reopen) applies nothing further (idempotent, AC-1).
     reopened = Database(db_path)
-    assert reopened.schema_version_before == 14
-    assert reopened.schema_version == 14
+    assert reopened.schema_version_before == 15
+    assert reopened.schema_version == 15
     reopened.close()
 
 
 def test_fresh_db_has_user_habits_shape(tmp_path):
     db = Database(tmp_path / "fresh_v10.db")
-    assert db.schema_version == 14
+    assert db.schema_version == 15
     tables = {r[0] for r in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "user_habits" in tables
     assert db.list_user_habits("u1") == []
@@ -1542,4 +1542,172 @@ def test_count_logs_for_includes_soft_deleted_rows(tmp_path):
     db.insert_log(LogEntry(None, "u2", "2026-08-20T09:05:00", "reading", 10.0, None, "10 min", "reply"))
     assert db.count_logs_for("u1", "reading") == 1
     assert db.count_logs_for("u2", "reading") == 1
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration 015 (integration pass, line/v1.3.0, MAJOR FINDING,
+# TEST-PORTAL-audit.md): scrubs historical text-habit-undo `audit_log.
+# old_value` rows -- this codebase's first sanctioned DATA-TOUCHING
+# migration (every other migration except 006's own sanctioned schema
+# rebuild is additive-only). See `storage/migrations.py:
+# _migration_015_scrub_diary_undo_audit_rows`'s own docstring for the
+# full justification.
+# ---------------------------------------------------------------------------
+
+
+def _seed_pre_015_diary_undo_row(db: Database, *, user_id: str = "u1", old_value: str = "had a good day") -> None:
+    """Hand-builds an `audit_log` row shaped exactly like the OLD (leaky)
+    `core/undo_ui.py` write used to produce -- `action='undo'`,
+    `entity='diary'`, `old_value` = the raw removed text -- bypassing
+    `core/audit.py:record` entirely, since this test needs to construct
+    the PRE-fix shape a real DB accumulated before this migration ever
+    ran, not what the current (already-fixed) recorder would write today."""
+    db._conn.execute(
+        "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+        "VALUES (?, ?, 'undo', 'diary', ?, NULL, 'command', NULL)",
+        ("2026-08-20T09:00:00", user_id, old_value),
+    )
+    db._conn.commit()
+
+
+def test_migration_015_scrubs_a_preexisting_diary_undo_row(tmp_path):
+    db_path = tmp_path / "scrub1.db"
+    db = Database(db_path)  # migrates to latest, including 015, on a fresh (empty) DB -- nothing to scrub yet
+    _seed_pre_015_diary_undo_row(db, old_value="had a good day")
+    db.close()
+
+    # Re-run just migration 015 by hand against the seeded row (simulating
+    # "this row existed BEFORE 015 ever ran" -- the realistic case is a DB
+    # created under an OLDER codebase version and later opened under this
+    # one, which `run_migrations` handles automatically; this direct call
+    # proves the SQL itself is correct without needing to fake an older
+    # `user_version`).
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from habit_assistant.storage.migrations import _migration_015_scrub_diary_undo_audit_rows
+
+    _migration_015_scrub_diary_undo_audit_rows(conn)
+    conn.commit()
+    row = conn.execute("SELECT old_value FROM audit_log WHERE action='undo'").fetchone()
+    assert row["old_value"] == "[text entry removed] (14 chars)"  # len("had a good day") == 14
+    assert "had a good day" not in row["old_value"]
+    conn.close()
+
+
+def test_migration_015_leaves_numeric_habit_undo_rows_untouched(tmp_path):
+    """The predicate is scoped to text-typed undos only -- a numeric
+    habit's undo (`old_value` already just a number, never text) must
+    never be touched."""
+    db_path = tmp_path / "scrub2.db"
+    db = Database(db_path)
+    db._conn.execute(
+        "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+        "VALUES ('2026-08-20T09:00:00', 'u1', 'undo', 'water', '500', NULL, 'command', NULL)"
+    )
+    db._conn.commit()
+    db.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from habit_assistant.storage.migrations import _migration_015_scrub_diary_undo_audit_rows
+
+    _migration_015_scrub_diary_undo_audit_rows(conn)
+    conn.commit()
+    row = conn.execute("SELECT old_value FROM audit_log WHERE action='undo'").fetchone()
+    assert row["old_value"] == "500"
+    conn.close()
+
+
+def test_migration_015_scrubs_a_custom_text_habit_undo_row_via_user_habits_join(tmp_path):
+    """A per-user CUSTOM text habit (SPEC-v1.7.md) is identified via the
+    `user_habits` join, not the `entity = 'diary'` special-case."""
+    db_path = tmp_path / "scrub3.db"
+    db = Database(db_path)
+    db.add_user_habit(
+        "u1",
+        {
+            "id": "journal",
+            "type": "text",
+            "label_en": "Journal",
+            "label_th": "บันทึก",
+            "unit_en": None,
+            "unit_th": None,
+            "goal": None,
+            "unit_aliases": "{}",
+        },
+    )
+    db._conn.execute(
+        "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+        "VALUES ('2026-08-20T09:00:00', 'u1', 'undo', 'journal', 'a private secret', NULL, 'command', NULL)"
+    )
+    db._conn.commit()
+    db.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from habit_assistant.storage.migrations import _migration_015_scrub_diary_undo_audit_rows
+
+    _migration_015_scrub_diary_undo_audit_rows(conn)
+    conn.commit()
+    row = conn.execute("SELECT old_value FROM audit_log WHERE action='undo'").fetchone()
+    assert row["old_value"] == "[text entry removed] (16 chars)"  # len("a private secret") == 16
+    conn.close()
+
+
+def test_migration_015_is_idempotent_a_second_run_does_not_double_scrub(tmp_path):
+    db_path = tmp_path / "scrub4.db"
+    db = Database(db_path)
+    _seed_pre_015_diary_undo_row(db, old_value="had a good day")
+    db.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from habit_assistant.storage.migrations import _migration_015_scrub_diary_undo_audit_rows
+
+    _migration_015_scrub_diary_undo_audit_rows(conn)
+    conn.commit()
+    _migration_015_scrub_diary_undo_audit_rows(conn)  # second run -- must be a no-op
+    conn.commit()
+    row = conn.execute("SELECT old_value FROM audit_log WHERE action='undo'").fetchone()
+    assert row["old_value"] == "[text entry removed] (14 chars)"
+    conn.close()
+
+
+def test_migration_015_leaves_other_actions_and_null_old_value_untouched(tmp_path):
+    """A non-undo action (`target_set`, `entity='diary'` coincidentally,
+    e.g. a per-habit goal on a text habit id is nonsensical but the SQL
+    shouldn't care) and an undo with `old_value IS NULL` (a create-only
+    transition -- never happens for undo in practice, but the WHERE
+    clause's own `old_value IS NOT NULL` guard is tested directly here)
+    must both survive unscrubbed."""
+    db_path = tmp_path / "scrub5.db"
+    db = Database(db_path)
+    db._conn.execute(
+        "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+        "VALUES ('2026-08-20T09:00:00', 'u1', 'target_set', 'diary', 'some diary text', '10', 'command', NULL)"
+    )
+    db._conn.execute(
+        "INSERT INTO audit_log (ts, user_id, action, entity, old_value, new_value, source, target_user_id) "
+        "VALUES ('2026-08-20T09:01:00', 'u1', 'undo', 'diary', NULL, NULL, 'command', NULL)"
+    )
+    db._conn.commit()
+    db.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    from habit_assistant.storage.migrations import _migration_015_scrub_diary_undo_audit_rows
+
+    _migration_015_scrub_diary_undo_audit_rows(conn)
+    conn.commit()
+    rows = conn.execute("SELECT action, old_value FROM audit_log ORDER BY id").fetchall()
+    assert rows[0]["old_value"] == "some diary text"  # not an undo action -- untouched
+    assert rows[1]["old_value"] is None  # NULL old_value -- untouched, still NULL
+    conn.close()
+
+
+def test_fresh_db_lands_on_migration_015(tmp_path):
+    db = Database(tmp_path / "fresh_015.db")
+    assert db.schema_version == 15
+    assert db.schema_version == len(MIGRATIONS)
     db.close()

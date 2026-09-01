@@ -13,6 +13,7 @@ from habit_assistant.config import (
     HabitLabel,
     HabitsConfig,
     NudgeConfig,
+    PortalConfig,
     QuietHoursConfig,
     SnoozeConfig,
     load_config,
@@ -445,3 +446,74 @@ def test_custom_habits_section_never_collides_with_the_base_habits_array(tmp_pat
     config = load_config(path)
     assert config.custom_habits.max_per_user == 7
     assert [h.id for h in config.habits] == ["sleep"]
+
+
+# ---------------------------------------------------------------------------
+# SPEC-LINE-PORTAL.md §2.1/§4 R-SEC-1/R-SEC-2 (shared surface, admin web
+# portal, branch line-version): PortalConfig + the port-collision
+# validator (AC7).
+# ---------------------------------------------------------------------------
+
+
+def test_portal_disabled_by_default():
+    assert Config().portal.enabled is False
+
+
+def test_portal_defaults_match_spec():
+    portal = PortalConfig()
+    assert portal.bind_host == "127.0.0.1"
+    assert portal.bind_port == 8081
+    assert portal.owner_login == ""
+    assert portal.require_identity_header is True
+    assert portal.log_ring_size == 200
+    assert portal.public_url == ""
+
+
+def test_portal_bind_port_defaults_distinct_from_line_bind_port():
+    config = Config()
+    assert config.portal.bind_port != config.line.bind_port
+
+
+def test_portal_enabled_with_colliding_bind_port_raises_value_error():
+    """AC7: `portal.bind_port == line.bind_port` raises at construction --
+    `load_config` wraps this into `ConfigError` (test below)."""
+    with pytest.raises(ValueError, match="must differ"):
+        Config(portal=PortalConfig(enabled=True, bind_port=8080))
+
+
+def test_portal_disabled_with_colliding_bind_port_still_raises():
+    """The validator is unconditional (not gated on `enabled`) -- a
+    colliding pair is a real authoring mistake worth catching even before
+    the portal is turned on."""
+    with pytest.raises(ValueError, match="must differ"):
+        Config(portal=PortalConfig(enabled=False, bind_port=8080))
+
+
+def test_portal_distinct_bind_port_loads_cleanly():
+    config = Config(portal=PortalConfig(enabled=True, bind_port=9001))
+    assert config.portal.bind_port == 9001
+    assert config.line.bind_port == 8080
+
+
+def test_load_config_toml_portal_bind_port_collision_raises_config_error(tmp_path):
+    """AC7's own `load_config`-level assertion: the raw ValueError from
+    the model_validator surfaces as ConfigError (this codebase's
+    established "config.toml surfaces as ConfigError, not a raw
+    pydantic exception" pattern -- mirrors
+    test_load_config_toml_with_invalid_habit_raises_config_error above)."""
+    path = tmp_path / "config.toml"
+    path.write_text('[portal]\nenabled = true\nbind_port = 8080\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_load_config_toml_with_portal_section(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[portal]\nenabled = true\nbind_port = 9001\nowner_login = "alice@example.com"\n',
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.portal.enabled is True
+    assert config.portal.bind_port == 9001
+    assert config.portal.owner_login == "alice@example.com"

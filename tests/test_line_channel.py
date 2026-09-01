@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
 from habit_assistant.channels.base import Channel
 from habit_assistant.channels.line import LineChannel, _default_rich_menu_payload
-from habit_assistant.config import Config, LineConfig
+from habit_assistant.config import Config, DigestConfig, LineConfig
 from habit_assistant.storage.db import Database
 
 
@@ -28,7 +29,16 @@ def _current_yyyymm() -> str:
     return datetime.now().strftime("%Y-%m")
 
 
-def _make_channel(tmp_path, handler, *, rich_menu_image=None, media_ttl_seconds=3600):
+def _make_channel(
+    tmp_path,
+    handler,
+    *,
+    rich_menu_image=None,
+    media_ttl_seconds=3600,
+    mode: str = "digest",
+    push_cap: int = 15000,
+    clock=None,
+):
     db = Database(tmp_path / "line.db")
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport)
@@ -36,8 +46,11 @@ def _make_channel(tmp_path, handler, *, rich_menu_image=None, media_ttl_seconds=
     kwargs["media_ttl_seconds"] = media_ttl_seconds
     if rich_menu_image is not None:
         kwargs["rich_menu_image"] = str(rich_menu_image)
-    config = Config(line=LineConfig(**kwargs))
-    channel = LineChannel("access-token", "channel-secret", "Uowner", config, db, client=client)
+    config = Config(line=LineConfig(**kwargs), digest=DigestConfig(mode=mode, push_cap=push_cap))
+    channel_kwargs = {"client": client}
+    if clock is not None:
+        channel_kwargs["clock"] = clock
+    channel = LineChannel("access-token", "channel-secret", "Uowner", config, db, **channel_kwargs)
     return channel, db
 
 
@@ -175,7 +188,13 @@ async def test_send_with_no_active_context_pushes_and_increments_ledger(tmp_path
     body = json.loads(push_calls[0].content)
     assert body == {"to": "U2", "messages": [{"type": "text", "text": "your daily digest"}]}
     assert db.push_count("U2", _current_yyyymm()) == 1
-    assert result is None  # LINE has no per-message id contract (R-A6)
+    # TEST-PORTAL-users.md Finding 1 fix (integration item 4): LINE still
+    # has no REAL per-message id contract (R-A6's own historical note),
+    # but `send()` now returns a non-None confirmation sentinel on an
+    # actual successful push, so a caller (core/access.py:approve_user)
+    # can distinguish "confirmed sent" from "silently dropped by the
+    # realtime quota gate" (both used to return None indistinguishably).
+    assert result is not None
 
 
 async def test_three_pushes_increment_ledger_three_times(tmp_path):
@@ -452,3 +471,149 @@ async def test_aclose_closes_the_http_client(tmp_path):
     channel, _db = _make_channel(tmp_path, _default_handler(captured))
     await channel.aclose()
     assert channel._client.is_closed
+
+
+# ---------------------------------------------------------------------------
+# Line-clock fix (branch line-version, TEST-LEDGER-TRIAGE.md): push-ledger
+# month attribution honors config.app.timezone via an injectable clock
+# (LineChannel._clock/_now_yyyymm), and the realtime gate's own monthly-total
+# read shares exactly ONE resolved yyyymm with _send_push's ledger increment
+# per push attempt -- no longer two independent datetime.now() calls that
+# could straddle a literal month turn against each other.
+# ---------------------------------------------------------------------------
+
+
+class _TickingClock:
+    """Returns each of `values` in order on successive calls, then keeps
+    returning the last one. Used to prove a given code path resolves "what
+    time is it" exactly once per push attempt: if it were read a second
+    time (the pre-fix bug -- `_push`'s gate read and `_send_push`'s own
+    increment were two independent `datetime.now()` calls), the second,
+    DIFFERENT value below would leak into the assertions."""
+
+    def __init__(self, *values: datetime) -> None:
+        self._values = list(values)
+        self.calls = 0
+
+    def __call__(self) -> datetime:
+        value = self._values[min(self.calls, len(self._values) - 1)]
+        self.calls += 1
+        return value
+
+
+def test_now_yyyymm_normalizes_through_config_timezone_not_a_bare_clock_read(tmp_path):
+    """Config defaults to Asia/Bangkok, UTC+7 (config.py AppConfig.timezone).
+    2026-08-31 18:00 UTC is already 2026-09-01 01:00 in Bangkok -- exactly
+    the ~7-hour divergence window TEST-LEDGER-TRIAGE.md flagged (17:00-24:00
+    UTC on a month's last day is already the 1st in Bangkok). Pre-fix, a
+    bare `datetime.now()` on a UTC-clocked host would have read this same
+    instant as still August -- no tz conversion at all."""
+    captured: list[httpx.Request] = []
+    clock = lambda: datetime(2026, 8, 31, 18, 0, tzinfo=ZoneInfo("UTC"))
+    channel, _db = _make_channel(tmp_path, _default_handler(captured), clock=clock)
+
+    assert channel._now_yyyymm() == "2026-09"
+
+
+def test_now_yyyymm_naive_clock_treated_as_already_local_per_local_now_convention(tmp_path):
+    """Mirrors `core/digest.py:_local_now` and `core/timeutil.py`'s own
+    convention exactly: a NAIVE clock result is treated as already being in
+    `config.app.timezone`, not converted from some other assumed zone."""
+    captured: list[httpx.Request] = []
+    clock = lambda: datetime(2026, 9, 1, 1, 0)  # naive -- read as Bangkok-local directly, no conversion
+    channel, _db = _make_channel(tmp_path, _default_handler(captured), clock=clock)
+
+    assert channel._now_yyyymm() == "2026-09"
+
+
+async def test_digest_mode_push_resolves_yyyymm_exactly_once(tmp_path):
+    """Digest mode is `_push`'s pure pass-through branch. A plain `send()`
+    outside any reply context must read the injected clock exactly ONCE --
+    proof `_send_push`'s own increment reuses `_push`'s single resolved
+    `yyyymm` (threaded via its `yyyymm=` kwarg) instead of independently
+    re-reading the clock, which is what let a straddle happen pre-fix."""
+    captured: list[httpx.Request] = []
+    clock = _TickingClock(
+        datetime(2026, 8, 31, 23, 0, tzinfo=ZoneInfo("UTC")),  # -> Bangkok 2026-09-01 -> "2026-09"
+        datetime(2026, 9, 30, 23, 0, tzinfo=ZoneInfo("UTC")),  # -> Bangkok 2026-10-01 -> "2026-10" (would leak if re-read)
+    )
+    channel, db = _make_channel(tmp_path, _default_handler(captured), clock=clock)
+
+    await channel.send("U1", "no reply context, straight to push")
+
+    assert clock.calls == 1
+    assert db.push_count("U1", "2026-09") == 1
+    assert db.push_count("U1", "2026-10") == 0
+
+
+async def test_realtime_gate_read_and_ledger_increment_share_one_yyyymm_across_a_month_tick(tmp_path):
+    """R-Q2/R-Q3 realtime gate: the gate's own `monthly_push_total` read
+    and `_send_push`'s eventual ledger increment must key off the SAME
+    month, even under a clock that would tick over to a new month between
+    them. Pre-fix, `_push`'s gate read (`datetime.now()`) and
+    `_send_push`'s increment (a SEPARATE `datetime.now()` call) straddled
+    the real network POST to LINE's Push API -- a push crossing a literal
+    month turn during that window could pass the cap check against one
+    month and then write its increment into the next."""
+    captured: list[httpx.Request] = []
+    clock = _TickingClock(
+        datetime(2026, 8, 31, 23, 0, tzinfo=ZoneInfo("UTC")),  # -> Bangkok 2026-09-01 -> "2026-09"
+        datetime(2026, 9, 30, 23, 0, tzinfo=ZoneInfo("UTC")),  # -> Bangkok 2026-10-01 -> "2026-10" (the straddle bug's target)
+    )
+    channel, db = _make_channel(tmp_path, _default_handler(captured), mode="realtime", push_cap=100, clock=clock)
+
+    await channel._push("Umember", [{"type": "text", "text": "realtime nudge"}])
+
+    assert clock.calls == 1, "gate read + ledger increment must share ONE resolved yyyymm, not two independent clock reads"
+    assert db.push_count("Umember", "2026-09") == 1
+    assert db.push_count("Umember", "2026-10") == 0
+
+
+async def test_realtime_gate_fail_closed_behavior_unchanged_with_injected_clock(tmp_path, caplog):
+    """R-Q7 (Archi ruling 2026-08-31, fail-closed) is untouched by the
+    line-clock fix: a `monthly_push_total` read error still drops the
+    non-owner push (no send, no increment) and logs loudly at ERROR, exactly
+    as `test_line_v12_gaps.py::test_quota_gate_fail_closed_on_monthly_push_
+    total_read_error_drops_and_logs` already pins against the real wall
+    clock -- this is the same behavior confirmed under an injected clock,
+    so the `yyyymm`-threading change above didn't quietly alter it."""
+
+    class _RaisingDB:
+        def __init__(self, real: Database) -> None:
+            self._real = real
+
+        def monthly_push_total(self, yyyymm: str) -> int:
+            raise OSError("database is locked")
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    captured: list[httpx.Request] = []
+    clock = lambda: datetime(2026, 8, 31, 23, 0, tzinfo=ZoneInfo("UTC"))  # -> Bangkok "2026-09"
+    channel, db = _make_channel(tmp_path, _default_handler(captured), mode="realtime", push_cap=5, clock=clock)
+    channel.db = _RaisingDB(db)
+
+    with caplog.at_level(logging.ERROR, logger="habit_assistant.channels.line"):
+        await channel._push("Umember", [{"type": "text", "text": "hi"}])
+
+    push_calls = [r for r in captured if r.url.path.endswith("/message/push")]
+    assert push_calls == [], "a monthly_push_total read failure must fail CLOSED (drop), never send"
+    assert db.push_count("Umember", "2026-09") == 0, "a dropped push must never increment the ledger"
+    assert any("fail" in r.message.lower() and "closed" in r.message.lower() for r in caplog.records)
+
+
+async def test_owner_pushes_bypass_gate_and_still_use_the_injected_clocks_month(tmp_path):
+    """R-Q3's owner exemption is untouched: the owner's own push always goes
+    through `_send_push` regardless of the running total, and still lands
+    in the month the injected clock resolves to."""
+    captured: list[httpx.Request] = []
+    clock = lambda: datetime(2026, 8, 31, 23, 0, tzinfo=ZoneInfo("UTC"))  # -> Bangkok "2026-09"
+    channel, db = _make_channel(tmp_path, _default_handler(captured), mode="realtime", push_cap=1, clock=clock)
+    for _ in range(10):
+        db.increment_push("Umember", "2026-09")
+
+    await channel._push("Uowner", [{"type": "text", "text": "owner push"}])
+
+    owner_calls = [r for r in captured if r.url.path.endswith("/message/push")]
+    assert len(owner_calls) == 1
+    assert db.push_count("Uowner", "2026-09") == 1

@@ -1,1 +1,1 @@
-__version__ = "1.2.0+line"
+__version__ = "1.3.0+line"

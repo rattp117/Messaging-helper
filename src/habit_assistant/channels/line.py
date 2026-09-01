@@ -42,6 +42,7 @@ from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -119,6 +120,7 @@ class LineChannel(Channel):
         db: "Database",
         *,
         client: httpx.AsyncClient | None = None,
+        clock: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._token = channel_access_token
         self._channel_secret = channel_secret
@@ -126,6 +128,12 @@ class LineChannel(Channel):
         self._config = config
         self.db = db
         self._client = client or httpx.AsyncClient(timeout=30.0)
+        # Line-clock fix (branch `line-version`, TEST-LEDGER-TRIAGE.md):
+        # injectable, mirroring `core/digest.py`'s own `clock=datetime.now`
+        # convention -- lets `_now_yyyymm` below be exercised deterministically
+        # without monkeypatching `datetime` itself. Defaults to the real wall
+        # clock, so every existing production/call site is unaffected.
+        self._clock = clock
         self._media_dir = Path(config.line.media_dir)
         self._media_dir.mkdir(parents=True, exist_ok=True)
         # Readable-approval feature (branch line-version): per-process
@@ -222,7 +230,7 @@ class LineChannel(Channel):
         finally:
             _REPLY_CONTEXT.reset(token)
 
-    async def _emit(self, chat_id: str, message_objs: list[dict[str, Any]]) -> None:
+    async def _emit(self, chat_id: str, message_objs: list[dict[str, Any]]) -> str | None:
         """Release-gate Finding 2: buffer into the active reply context
         (R-A4) only when `chat_id` matches the context's own owner --
         otherwise push immediately (R-A6), exactly as if there were no
@@ -252,14 +260,44 @@ class LineChannel(Channel):
         event's own reply -- correct (SPEC-LINE.md's own U-ISO/no-cross-
         user-leakage discipline requires the send actually reach its real
         target) and rare (only fires on a new-user approval request or an
-        admin action, not on ordinary logging traffic)."""
+        admin action, not on ordinary logging traffic).
+
+        TEST-PORTAL-users.md Finding 1 fix (integration item 4): returns a
+        confirmation SENTINEL (never a real LINE message id -- LINE's API
+        gives none, R-A6's own long-standing "send returns None on LINE"
+        note stays true in spirit) when the message was actually handed
+        off for guaranteed delivery (buffered here, or successfully
+        pushed by `_push` below); `None` when `_push`'s realtime quota
+        gate (R-Q3) silently dropped it. This is what lets `core/
+        access.py:approve_user` distinguish "the welcome push was
+        confirmed sent" from "silently dropped by the cap" -- previously
+        indistinguishable, since BOTH cases returned `None` unconditionally
+        and neither raised."""
         ctx = _REPLY_CONTEXT.get()
         if ctx is not None and (ctx["ownerChatId"] is None or ctx["ownerChatId"] == chat_id):
             ctx["buffer"].extend(message_objs)
-            return
-        await self._push(chat_id, message_objs)
+            return "buffered"
+        return await self._push(chat_id, message_objs)
 
-    async def _send_push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
+    def _now_yyyymm(self) -> str:
+        """Line-clock fix (branch `line-version`, TEST-LEDGER-TRIAGE.md):
+        the single source of truth for "what push-ledger month is it right
+        now", resolved through `config.app.timezone` -- same normalization
+        `core/digest.py:_local_now` already uses (naive `self._clock()`
+        result treated as already being in that timezone; an aware one is
+        converted to it), NOT the bare host-OS-local `datetime.now()` this
+        replaces. Closes the real production bug TEST-LEDGER-TRIAGE.md
+        found: `_send_push`/`_push` used to each call naive `datetime.now()`
+        independently, so a push made in the ~7-hour Bangkok-vs-UTC window
+        around a month turn could misattribute the ledger write to the
+        wrong month relative to what `compose_digest`'s own tz-aware `now`
+        already treated as "this month"."""
+        now = self._clock()
+        tz = ZoneInfo(self._config.app.timezone)
+        now = now.replace(tzinfo=tz) if now.tzinfo is None else now.astimezone(tz)
+        return now.strftime("%Y-%m")
+
+    async def _send_push(self, chat_id: str, messages: list[dict[str, Any]], *, yyyymm: str | None = None) -> None:
         """R-A6/R-C6/R-Q1: the raw Push API call, and the ONLY place
         `push_ledger` is incremented -- authoritative regardless of
         caller. Only counted on success; a failed push (raise_for_status)
@@ -270,14 +308,24 @@ class LineChannel(Channel):
         (R-Q2) in front of it without duplicating the raw send/increment
         logic. Also the direct send used for the owner's own quota-warn/
         quota-stop alerts (R-Q4/R-Q5) -- those must never re-enter the
-        gate they themselves are reporting on."""
+        gate they themselves are reporting on.
+
+        `yyyymm`, additive/keyword-only/defaulted `None` (line-clock fix,
+        TEST-LEDGER-TRIAGE.md): every real caller in this file now threads
+        in the ONE `_now_yyyymm()` value it already resolved for this push
+        attempt, so a gate read and its own increment can never straddle a
+        literal month turn against each other -- the `None` default (falls
+        back to a fresh `self._now_yyyymm()` read here) exists purely so
+        this method stays independently callable (e.g. a test hitting it
+        directly) without forcing every caller to pass one."""
         resp = await self._client.post(
             f"{LINE_API_ROOT}/v2/bot/message/push",
             headers=self._auth_headers(),
             json={"to": chat_id, "messages": messages},
         )
         resp.raise_for_status()
-        yyyymm = datetime.now().strftime("%Y-%m")
+        if yyyymm is None:
+            yyyymm = self._now_yyyymm()
         self.db.increment_push(chat_id, yyyymm)
 
     def _monthly_push_total_fail_closed(self, yyyymm: str) -> int | None:
@@ -333,7 +381,7 @@ class LineChannel(Channel):
         )
         pct = round(100 * total / cap) if cap else 100
         text = i18n.t("push_quota_warn", lang, total=total, cap=cap, pct=pct)
-        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}])
+        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}], yyyymm=yyyymm)
 
     async def _maybe_alert_quota_stop(self, yyyymm: str) -> None:
         """R-Q5: the FIRST time R-Q3 drops a non-owner push in `yyyymm`,
@@ -346,25 +394,46 @@ class LineChannel(Channel):
             self._config, user_pref=user_prefs.stored_language_pref(self.db, self.owner_user_id)
         )
         text = i18n.t("push_quota_stop", lang, cap=self._config.digest.push_cap)
-        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}])
+        await self._send_push(self.owner_user_id, [{"type": "text", "text": text}], yyyymm=yyyymm)
 
-    async def _push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
+    async def _push(self, chat_id: str, messages: list[dict[str, Any]]) -> str | None:
         """R-S4/R-Q2: the gated proactive-push entry point -- `_emit`
         funnels every no-reply-context send through here, so this covers
         every realtime surface uniformly regardless of caller. In digest
         mode (default) this is a pure pass-through to `_send_push`,
         byte-identical to pre-1.2.0's own `_push` body (AC20/R-I5). In
         realtime mode, R-Q3's hard monthly cap gate applies before every
-        NON-owner send; the owner always gets through."""
+        NON-owner send; the owner always gets through.
+
+        Line-clock fix (branch `line-version`, TEST-LEDGER-TRIAGE.md):
+        `yyyymm` is resolved via `_now_yyyymm()` exactly ONCE here, up
+        front, before the gate read, and threaded into every downstream
+        `_monthly_push_total_fail_closed`/`_send_push`/`_maybe_alert_*`
+        call below -- not recomputed independently at each site. This is
+        what closes the straddle TEST-LEDGER-TRIAGE.md flagged: the gate
+        read and the eventual ledger increment now share one clock read
+        per push attempt, so they can never land in different months from
+        each other even if the real wall clock ticks over mid-`await`
+        (the network POST to LINE's Push API inside `_send_push`).
+
+        TEST-PORTAL-users.md Finding 1 fix (integration item 4): returns a
+        non-`None` confirmation sentinel iff `_send_push` was actually
+        invoked (a real Push API call was made -- `_send_push` itself
+        either succeeds or raises, so a raise propagates PAST this
+        return, never masked as a `None` "drop"); `None` in the two
+        branches below where this function itself decides to drop the
+        send without ever calling `_send_push` at all (a fail-closed
+        unreadable total, or the cap already reached)."""
+        yyyymm = self._now_yyyymm()
+
         if self._config.digest.mode != "realtime":
-            await self._send_push(chat_id, messages)
-            return
+            await self._send_push(chat_id, messages, yyyymm=yyyymm)
+            return "pushed"
 
         if chat_id == self.owner_user_id:
-            await self._send_push(chat_id, messages)
-            return
+            await self._send_push(chat_id, messages, yyyymm=yyyymm)
+            return "pushed"
 
-        yyyymm = datetime.now().strftime("%Y-%m")
         cap = self._config.digest.push_cap
         total = self._monthly_push_total_fail_closed(yyyymm)
 
@@ -375,7 +444,7 @@ class LineChannel(Channel):
             # push (no send, no increment), no owner alert of its own
             # (distinct from the R-Q5 cap-reached alert below, which
             # requires an actual confirmed total).
-            return
+            return None
 
         if total >= cap:
             logger.info(
@@ -383,12 +452,13 @@ class LineChannel(Channel):
                 total, cap, chat_id,
             )
             await self._maybe_alert_quota_stop(yyyymm)
-            return
+            return None
 
-        await self._send_push(chat_id, messages)
+        await self._send_push(chat_id, messages, yyyymm=yyyymm)
 
         if total >= int(cap * 0.8):
             await self._maybe_alert_quota_warn(yyyymm, total, cap)
+        return "pushed"
 
     async def _flush_reply(self, reply_token: str, messages: list[dict[str, Any]]) -> None:
         """R-A5: the reply uses `reply_token` exactly once. A rejected
@@ -442,8 +512,11 @@ class LineChannel(Channel):
     async def send(self, chat_id: str, text: str, *, disable_notification: bool = False) -> str | None:
         # disable_notification: no LINE equivalent (§ degradation table) --
         # accepted for ABC conformance, ignored.
-        await self._emit(chat_id, [{"type": "text", "text": text}])
-        return None
+        # TEST-PORTAL-users.md Finding 1 fix (integration item 4): `_emit`'s
+        # own return (see its docstring) propagates -- a confirmation
+        # sentinel (never a real per-message id, R-A6) on an actual send,
+        # `None` when the realtime quota gate silently dropped it.
+        return await self._emit(chat_id, [{"type": "text", "text": text}])
 
     async def send_actionable(self, chat_id: str, text: str, buttons: list[Button]) -> None:
         if len(buttons) > _MAX_QUICK_REPLY_ITEMS:

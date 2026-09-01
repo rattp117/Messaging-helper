@@ -30,8 +30,13 @@ class FakeChannel(Channel):
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    async def send(self, chat_id: str, text: str) -> None:
+    async def send(self, chat_id: str, text: str) -> str | None:
         self.sent.append((chat_id, text))
+        # Integration item 4 (TEST-PORTAL-users.md Finding 1): a non-None
+        # return signals a confirmed send, mirroring `LineChannel.send`'s
+        # own updated contract -- this double always "succeeds", so it
+        # always confirms.
+        return "sent"
 
     async def run(self, on_message, on_callback=None) -> None:
         raise NotImplementedError("not exercised in these tests")
@@ -616,3 +621,156 @@ async def test_end_to_end_start_from_unknown_runs_pending_flow(db, channel, conf
     assert proceed is False
     assert channel.sent_to(STRANGER) == [i18n.t("access_pending", "en")]
     assert db.get_user(STRANGER)["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# SPEC-LINE-PORTAL.md §4 R-USERACT-1 (shared surface, admin web portal,
+# branch line-version): `execute_admin` now DELEGATES to
+# `access.approve_user`/`access.block_user` -- this section is the
+# regression guard proving the chat `/approve`/`/block` path is
+# byte-identical after the extraction (still records source="admin",
+# still sends the same acks/pushes), plus direct coverage of the two
+# extracted functions themselves (including source="portal").
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_admin_approve_still_records_source_admin_after_extraction(db, channel, config):
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat=MEMBER),
+        db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en",
+    )
+    row = db.recent_audit(1)[0]
+    assert row["action"] == "user_approve"
+    assert row["source"] == "admin"
+    assert row["user_id"] == OWNER  # actor
+    assert row["target_user_id"] == MEMBER
+    assert row["old_value"] is None
+    assert row["new_value"] == "active"
+    # The chat-specific ack (NOT part of the extracted function) still fires.
+    assert channel.sent_to(OWNER) == [i18n.t("admin_approved_ack", "en", chat_id=MEMBER)]
+
+
+async def test_execute_admin_approve_ack_is_honest_when_push_not_confirmed(db, config):
+    """Integration item 4 (TEST-PORTAL-users.md Finding 1, chat-side
+    parity): `admin_approved_ack` ("{chat_id} approved.") never actively
+    LIED about delivery, but the fix threads `approve_user`'s new `bool`
+    return into the chat ack too, so the owner gets the SAME honest
+    signal the portal flash now does -- `admin_approved_ack_nopush` when
+    the welcome push wasn't confirmed sent."""
+
+    class _NoConfirmChannel(Channel):
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, str]] = []
+
+        async def send(self, chat_id: str, text: str) -> str | None:
+            self.sent.append((chat_id, text))
+            return None  # matches LineChannel.send's own "silently dropped" contract
+
+        async def run(self, on_message, on_callback=None) -> None:
+            raise NotImplementedError("not exercised in this test")
+
+        def sent_to(self, chat_id: str) -> list[str]:
+            return [text for cid, text in self.sent if cid == chat_id]
+
+    channel = _NoConfirmChannel()
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat=MEMBER),
+        db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en",
+    )
+    assert channel.sent_to(OWNER) == [i18n.t("admin_approved_ack_nopush", "en", chat_id=MEMBER)]
+    assert db.get_user(MEMBER)["status"] == "active"  # the approve itself still succeeded
+
+
+async def test_execute_admin_block_still_records_source_admin_after_extraction(db, channel, config):
+    db.upsert_user(MEMBER, status="active")
+    await access.execute_admin(
+        commands.Command(kind="block", target_chat=MEMBER),
+        db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en",
+    )
+    row = db.recent_audit(1)[0]
+    assert row["action"] == "user_block"
+    assert row["source"] == "admin"
+    assert row["old_value"] == "active"
+    assert row["new_value"] == "blocked"
+    assert channel.sent_to(OWNER) == [i18n.t("admin_blocked_ack", "en", chat_id=MEMBER)]
+
+
+async def test_execute_admin_approve_write_failure_still_sends_save_failed(db, channel, config, monkeypatch):
+    """The try/except around the whole `approve_user(...)` call in
+    `execute_admin` still catches a DB write failure exactly like the
+    pre-extraction inline version did."""
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(db, "upsert_user", _boom)
+    await access.execute_admin(
+        commands.Command(kind="approve", target_chat=MEMBER),
+        db=db, channel=channel, config=config, owner_chat_id=OWNER, chat_id=OWNER, lang="en",
+    )
+    assert channel.sent_to(OWNER) == [i18n.t("admin_save_failed", "en")]
+    assert channel.sent_to(MEMBER) == []  # no access_granted push -- the write never happened
+
+
+async def test_approve_user_source_portal_records_portal_source_and_notifies_target(db, channel, config):
+    result = await access.approve_user(db, channel, config, actor=OWNER, target_chat=MEMBER, source="portal")
+    row = db.recent_audit(1)[0]
+    assert row["action"] == "user_approve"
+    assert row["source"] == "portal"
+    assert row["user_id"] == OWNER  # actor
+    assert db.get_user(MEMBER)["status"] == "active"
+    target_lang = i18n.resolve_unprompted_language(config, user_pref="auto")
+    assert channel.sent_to(MEMBER) == [i18n.t("access_granted", target_lang)]
+    # No chat-command-specific ack -- that's execute_admin's own, separate concern.
+    assert channel.sent_to(OWNER) == []
+    # Integration item 4 (TEST-PORTAL-users.md Finding 1): the FakeChannel
+    # fixture always confirms, so this reads True -- the "was the push
+    # actually confirmed sent" signal, additive to the pre-existing
+    # side-effect assertions above.
+    assert result is True
+
+
+async def test_block_user_source_portal_records_portal_source_no_notification(db, channel, config):
+    db.upsert_user(MEMBER, status="active")
+    await access.block_user(db, channel, config, actor=OWNER, target_chat=MEMBER, source="portal")
+    row = db.recent_audit(1)[0]
+    assert row["action"] == "user_block"
+    assert row["source"] == "portal"
+    assert db.get_user(MEMBER)["status"] == "blocked"
+    assert channel.sent_to(MEMBER) == []  # blocking never notifies the target, matches pre-extraction behavior
+
+
+async def test_approve_user_notification_push_failure_does_not_undo_the_approve(db, config):
+    """UX Flow B's own explicit requirement: 'the approve still succeeded'
+    even when the access_granted push fails."""
+
+    class _RaisingOnSendChannel(Channel):
+        async def send(self, chat_id: str, text: str) -> None:
+            raise RuntimeError("simulated LINE API failure")
+
+        async def run(self, on_message, on_callback=None) -> None:
+            raise NotImplementedError
+
+    # Should not raise -- the push failure is caught inside approve_user.
+    result = await access.approve_user(db, _RaisingOnSendChannel(), config, actor=OWNER, target_chat=MEMBER, source="portal")
+    assert db.get_user(MEMBER)["status"] == "active"
+    row = db.recent_audit(1)[0]
+    assert row["action"] == "user_approve"  # the audit row still landed
+    # Integration item 4 (TEST-PORTAL-users.md Finding 1): the caller now
+    # gets an honest "not confirmed" signal instead of the exception being
+    # swallowed with no trace at all.
+    assert result is False
+
+
+async def test_approve_user_raises_on_db_write_failure_no_audit_row(db, channel, config, monkeypatch):
+    """A DB write failure propagates (the caller decides how to present
+    it) -- and, critically, no audit row and no side-effects run."""
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(db, "upsert_user", _boom)
+    with pytest.raises(RuntimeError):
+        await access.approve_user(db, channel, config, actor=OWNER, target_chat=MEMBER, source="portal")
+    assert db.audit_total() == 0
+    assert channel.sent_to(MEMBER) == []

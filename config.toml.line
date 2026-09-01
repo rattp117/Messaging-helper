@@ -81,6 +81,27 @@ include_weekly_review_day = true
 mode = "digest"
 push_cap = 15000
 
+# SPEC-LINE-PORTAL.md §2.1/§4 (admin web portal, branch line-version):
+# a read-first admin web portal, served ONLY to your own tailnet via
+# `tailscale serve` (NEVER `tailscale funnel` -- see the Security
+# boundary decision in SPEC-LINE-PORTAL.md; deploy/setup.sh prints the
+# exact `tailscale serve --bg <bind_port>` command). Enabled as of
+# line/v1.3.0 -- flipping it on is fully additive and changes nothing
+# about the bot's own LINE behavior; `PortalConfig`'s own Python-level
+# default stays `enabled=false` (AC1: a config file with no [portal]
+# section at all, or one that predates this release, is still
+# byte-identical to no portal). Run `tailscale serve --bg 8081`
+# (deploy/setup.sh's own printed instruction) once, on the same host,
+# before this section does anything reachable off localhost.
+[portal]
+enabled = true            # Master switch. false = byte-identical to no portal at all.
+bind_host = "127.0.0.1"  # The portal's own second aiohttp listener.
+bind_port = 8081         # MUST differ from [line] bind_port above (8080) -- config load fails otherwise.
+owner_login = ""         # Optional. Pin to one Tailscale-User-Login (e.g. "you@example.com"); "" accepts any authenticated tailnet identity. Recommended: fill this in.
+require_identity_header = true  # Fail closed if this port is ever mis-exposed via Funnel. Leave true.
+log_ring_size = 200      # How many recent WARNING+ log lines the Status page's "recent errors" panel keeps (resets on restart).
+public_url = ""          # Optional. Your portal's tailnet URL (e.g. "https://<host>.<tailnet>.ts.net:8081") -- when set, the owner's "someone wants to join" LINE message also links here. Fill in after `tailscale serve` is running.
+
 # Used by the digest's optional weekly-review-day line (R-C5/[digest]
 # include_weekly_review_day) and by the on-demand /review command itself
 # -- NOT auto-pushed on this branch (R-C5: reply-only).

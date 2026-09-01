@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.triggers.date import DateTrigger
 
 from habit_assistant import __version__
-from habit_assistant.core import access, audit, grace, i18n, nudge, streaks, user_prefs
+from habit_assistant.core import access, audit, grace, i18n, nudge, streaks, timeutil, user_prefs
 from habit_assistant.core.release_notes import RELEASE_NOTES, get_release_note
 from habit_assistant.core.reminders import effective_quiet_windows
 
@@ -434,6 +434,64 @@ async def _send_one_user_digest(
 
 _DIGEST_DEFERRED_DATES: dict[str, str] = {}
 
+# ===========================================================================
+# Integration item 5 (TEST-PORTAL-quota.md Finding F3, MEDIUM): a shared,
+# cross-call-site same-day guard. Before this fix, `core/app.py`'s own
+# scheduled `daily_digest` CronTrigger job and `core/portal/quota.py`'s
+# manual "Send digest now" trigger each called `run_daily_digest` directly
+# -- two entirely independent full fan-outs with no shared state at all,
+# so an overlap (either order: manual-then-scheduled, or scheduled-then-
+# manual) double-pushed every active, digest-on user (proven live by
+# `tests/test_portal_quota_gaps.py::
+# test_manual_digest_run_concurrent_with_scheduled_digest_job_can_double_
+# push`, which asserted exactly that -- now flipped to assert the fix).
+#
+# `claim_daily_digest_run`/`release_daily_digest_claim`/`daily_digest_run_
+# claimed_at` are CONSULTED by both call sites (via `run_daily_digest_
+# guarded` below) -- deliberately NOT enforced inside `run_daily_digest`
+# itself, which stays exactly as documented ("no internal dedup, the
+# scheduler owns that", `tests/test_digest.py::
+# test_run_daily_digest_has_no_internal_dedup_the_scheduler_owns_that`,
+# unmodified by this fix). Same process-lifetime, module-level, no-
+# distributed-lock posture as `_DIGEST_DEFERRED_DATES` just above --
+# acceptable under the SAME single-instance assumption `deploy/habit-
+# assistant-line.service` already requires of the whole process.
+# ===========================================================================
+
+_DAILY_RUN_CLAIMED: dict[str, datetime] = {}  # "YYYY-MM-DD" -> when it was claimed
+
+
+def claim_daily_digest_run(today_str: str, *, clock=datetime.now) -> bool:
+    """Atomically(-enough -- a plain synchronous dict check-and-set, no
+    `await` in between, so nothing else on this single-threaded event loop
+    can interleave) claims `today_str` for a full digest run, iff nothing
+    has claimed it yet today. Returns `True` when the caller should
+    proceed (and now owns today's one claim); `False` when another call
+    site (manual or scheduled, whichever ran first) already has."""
+    if today_str in _DAILY_RUN_CLAIMED:
+        return False
+    _DAILY_RUN_CLAIMED[today_str] = clock()
+    return True
+
+
+def release_daily_digest_claim(today_str: str) -> None:
+    """Releases a claim made by `claim_daily_digest_run` -- used when the
+    caller's own attempt to actually run the digest failed ENTIRELY (an
+    exception escaped `run_daily_digest` itself, not merely one user's own
+    fail-open composition/send error, which never raises past that
+    function) so a later retry isn't permanently locked out of a day
+    nothing was actually sent for. No-op if `today_str` was never claimed
+    or was already consumed by a real (even partial) run."""
+    _DAILY_RUN_CLAIMED.pop(today_str, None)
+
+
+def daily_digest_run_claimed_at(today_str: str) -> datetime | None:
+    """Read-only lookup, for a caller (the portal's own "already sent"
+    interstitial) that wants to report WHEN today's run happened without
+    itself attempting to claim it. `None` if nothing has claimed
+    `today_str` yet."""
+    return _DAILY_RUN_CLAIMED.get(today_str)
+
 
 def _dnd_deferred_datetime(db: "Database", config: "Config", user_id: str, now: datetime) -> datetime | None:
     """`None` when `user_id` is NOT currently inside their own effective
@@ -553,6 +611,48 @@ async def run_daily_digest(
                 continue
 
         await _send_one_user_digest(db, channel, config, provider, user_id, now=now)
+
+
+async def run_daily_digest_guarded(
+    db: "Database",
+    channel: "Channel",
+    config: "Config",
+    provider: "RegistryProvider",
+    *,
+    clock=datetime.now,
+    scheduler=None,
+) -> bool:
+    """Integration item 5 (TEST-PORTAL-quota.md Finding F3): thin wrapper
+    around `run_daily_digest` that claims the shared same-day guard
+    (`claim_daily_digest_run`) BEFORE running. This is what BOTH real
+    production call sites now use INSTEAD OF calling `run_daily_digest`
+    directly -- `core/app.py`'s own scheduled `daily_digest` CronTrigger
+    job, and `core/portal/quota.py`'s manual "Send digest now" trigger --
+    so whichever one runs first on a given calendar day claims it, and
+    the other backs off with an honest, reportable "already ran" outcome
+    instead of a second, duplicate fan-out.
+
+    Returns `True` iff this call actually claimed the day and ran (even
+    if `run_daily_digest` itself then no-ops for its OWN reasons, e.g.
+    `config.digest.enabled=false` or realtime mode -- claiming happens
+    before either of those internal checks, which matches "did *I* get to
+    run" rather than "did anything get sent"); `False` means "skipped,
+    already claimed by another run today" -- the caller uses this to
+    log/report honestly rather than silently doing nothing.
+
+    The claim is released on an exception escaping `run_daily_digest`
+    itself (a whole-run failure, not one user's own fail-open error) so a
+    later retry isn't locked out of a day nothing was actually sent for."""
+    today_str = timeutil.today_in_timezone(clock, config.app.timezone).isoformat()
+    if not claim_daily_digest_run(today_str, clock=clock):
+        logger.info("Daily digest for %s skipped: already run today (manual or scheduled)", today_str)
+        return False
+    try:
+        await run_daily_digest(db, channel, config, provider, clock=clock, scheduler=scheduler)
+    except Exception:
+        release_daily_digest_claim(today_str)
+        raise
+    return True
 
 
 # ===========================================================================

@@ -790,7 +790,7 @@ def test_migration_011_preexisting_v10_data_byte_identical_after_migration(tmp_p
 
     db_ = Database(db_path)
     assert db_.schema_version_before == 10
-    assert db_.schema_version == 14
+    assert db_.schema_version == 15
     db_.close()
 
     after = {

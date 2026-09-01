@@ -47,6 +47,40 @@ _UNDO_CALLBACK_RE = re.compile(r"^undo:(\d+)$")
 _SQLITE_MAX_INTEGER = 2**63 - 1
 
 
+def _redacted_text_marker(value_text: str | None) -> str:
+    """MAJOR FINDING fix (TEST-PORTAL-audit.md, integration item 2): a
+    text-habit undo's removed value USED TO be the raw diary text itself
+    -- stored verbatim into `audit_log.old_value` (via `core/audit.py:
+    record`, R-W1's own "capture site passes plain values, `record`
+    stringifies them" contract) and rendered unredacted on BOTH the chat
+    `/audit` command and the admin portal's `/audit` page (which reuses
+    `core/audit_view.py`'s identical `_detail()` formatter, per AC23's
+    own "byte-identical to chat" requirement). SPEC-LINE-PORTAL.md
+    R-AUDIT-3's own stated rationale -- "matching the established posture
+    that the owner's `/audit` never exposes another user's message
+    content" -- was therefore false: `/activity` (backed by `db.
+    recent_logs_metadata`, which never selects `raw_message`/`value_text`
+    for a text habit) upheld it, but `/audit` (backed by `db.recent_audit`,
+    reading the ALREADY-CAPTURED `old_value`) did not.
+
+    Fixed HERE, at the write site -- the one place a text habit's removed
+    value is captured -- with a bilingual-neutral marker (never localized,
+    matching `audit_line`'s own "source is shown verbatim" convention for
+    a value column) plus a character count, so the audit trail still
+    answers "was something meaningfully long removed?" without ever
+    repeating what it said. `storage/migrations.py`'s migration 015
+    applies this same redaction retroactively to every HISTORICAL
+    text-habit-undo row already on disk.
+
+    PORT TO MAIN: `main.py`'s own text `/undo` command path (SPEC.md §8's
+    pre-v1.1 implementation, still separate from this module per R-U8's
+    own docstring) shares this exact capture pattern and the identical
+    leak -- this fix belongs there too, next time `main` picks up a
+    `core/undo_ui.py`-adjacent change."""
+    text = value_text or ""
+    return f"[text entry removed] ({len(text)} chars)"
+
+
 # ---------------------------------------------------------------------------
 # R-U1: this module's contribution to the bot command menu (`setMyCommands`).
 # `main.py`'s integration step merges this per-language list with the
@@ -152,14 +186,23 @@ async def send_undo_confirmation(
     SPEC-v1.3.md R-C2: `source` defaults to `"command"` (the text `/undo`
     path never needs to pass it explicitly); `handle_undo_callback` below
     passes `"button"`. The removed value (`row["value_num"]` if set, else
-    `row["value_text"]` for a text-valued habit like `diary`) is captured
-    BEFORE `db.soft_delete` -- not that it would change either way, since
-    soft-delete only stamps `deleted_at` and never touches the value
-    columns -- and `audit.record` is called AFTER the soft-delete
-    succeeds, fail-open (R-W2): a recorder failure never affects this
-    confirmation."""
+    a redacted marker for a text-valued habit like `diary` -- MAJOR
+    FINDING fix, TEST-PORTAL-audit.md, see `_redacted_text_marker`'s own
+    docstring -- NEVER the raw diary text) is captured BEFORE `db.
+    soft_delete` -- not that it would change either way, since soft-delete
+    only stamps `deleted_at` and never touches the value columns -- and
+    `audit.record` is called AFTER the soft-delete succeeds, fail-open
+    (R-W2): a recorder failure never affects this confirmation."""
     user_id = row["user_id"]
-    removed_value = row["value_num"] if row["value_num"] is not None else row["value_text"]
+    # `category == "diary"` is checked alongside `habit_type == "text"`
+    # (not habit_type alone) -- mirrors `describe_log`'s own explicit
+    # `if category == "diary":` special-case just below, since a row
+    # whose `habit_type` was never stamped (a legacy/edge-case write path)
+    # must still never leak diary content through this fallback.
+    if row["habit_type"] == "text" or row["category"] == "diary":
+        removed_value = _redacted_text_marker(row["value_text"])
+    else:
+        removed_value = row["value_num"] if row["value_num"] is not None else row["value_text"]
     db.soft_delete(row["id"])
     audit.record(
         db,
