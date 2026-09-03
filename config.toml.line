@@ -244,6 +244,11 @@ type = "duration"
 reminder_times = ["11:00", "16:00"]
 label = { en = "stretch", th = "ยืดเส้น" }
 unit  = { en = "min",     th = "นาที" }
+# One alias multiplier = one /log quick-reply button (SPEC-v1.8 R-Q1): "set"
+# yields the [10 min] button and lets "2 set" / "2 เซ็ต" log 20 min zero-LLM.
+[habits.unit_aliases]
+set = 10
+"เซ็ต" = 10
 
 [[habits]]
 id = "diary"
