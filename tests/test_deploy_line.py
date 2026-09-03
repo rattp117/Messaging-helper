@@ -400,9 +400,23 @@ def test_richmenu_readme_documents_the_current_design_tokens_cells_and_regenerat
     # tests/test_line_d_gaps.py uses) rather than hardcoding the six
     # command names a second time -- stays in sync automatically if the
     # button set ever changes.
+    #
+    # Rich-menu rewire (branch `line-version`, 2026-09-03 request): two
+    # cells are now POSTBACK actions (`log:<habit>:<value>`), which carry
+    # no `action["text"]` at all -- only a message action has one. This
+    # cross-check therefore only covers the message-action cells here;
+    # the README's own "six cells" table (and this test) do not yet
+    # document the two new direct-log cells at all -- that is explicitly
+    # Iris's next pass (IMPL-RICHMENU-2.md's hand-off table), not
+    # re-derived here. `tests/test_line_d_gaps.py::
+    # test_richmenu_button_commands_are_real_dispatchable_commands` is the
+    # one that pins the postback cells' own data/registry validity in the
+    # meantime.
     from habit_assistant.channels.line import _default_rich_menu_payload
 
     for area in _default_rich_menu_payload()["areas"]:
+        if area["action"]["type"] != "message":
+            continue
         cmd = area["action"]["text"]
         assert f"`{cmd}`" in readme, f"README's cell table no longer documents rich-menu button {cmd!r}"
 

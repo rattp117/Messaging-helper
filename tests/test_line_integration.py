@@ -762,3 +762,149 @@ async def test_line_mode_never_constructs_ollama_or_health_and_registers_digest_
     # core/jobs.py) -- registration itself must not be skipped on LINE.
     for job_id in ("minutely_tick", "dashboard_day_rollover", "weekly_review", "daily_summary", "grace_tick", "wrapped_auto"):
         assert scheduler.get_job(job_id) is not None, f"{job_id} must still be registered on LINE (R-I2)"
+
+
+# ===========================================================================
+# 9. Rich-menu rewire (branch `line-version`, 2026-09-03 request): the two
+#    new TOP-ROW direct-log cells send "log:water:250"/"log:stretch:10" as
+#    REAL LINE postback taps. This proves the whole chain end to end --
+#    signed webhook -> enqueue -> FIFO worker -> `core/routing.py:
+#    on_callback` -> `quicklog.handle_log_callback` -> real SQLite write ->
+#    one reply call -- for the exact payload `_default_rich_menu_payload()`
+#    now sends, not just that the payload builds the right JSON (Module
+#    A's own `tests/test_line_channel.py` already covers that in
+#    isolation).
+# ===========================================================================
+
+
+async def test_rich_menu_water_direct_log_postback_logs_and_confirms_for_a_non_owner_active_user(monkeypatch, tmp_path):
+    """MEMBER (non-owner, active) taps the new top-row water cell."""
+    async with _running_line_app(monkeypatch, tmp_path) as app:
+        resp = await _post_events(app.port, [_postback_event(MEMBER, "log:water:250", reply_token="rt-rm-water")])
+        assert resp.status_code == 200
+
+        reply_bodies = await _wait_until(lambda: app.api.calls_matching("/message/reply") or None)
+        assert len(reply_bodies) == 1, "exactly one reply call, not a push, for one postback tap (R-A4/R-A5)"
+        (reply_body,) = reply_bodies
+        assert reply_body["replyToken"] == "rt-rm-water"
+        messages = reply_body["messages"]
+        assert messages and messages[0]["text"].strip(), "expected an honest confirmation reply, not an empty one"
+
+        today = datetime.now().date().isoformat()
+        assert app.db.sum_value(MEMBER, "water", today) == 250.0
+        assert app.db.sum_value(OWNER, "water", today) == 0.0, "U-ISO: only the tapping user's own row"
+        assert app.api.calls_matching("/message/push") == [], "a reply-context send must never fall back to push"
+
+
+async def test_rich_menu_stretch_direct_log_postback_logs_and_confirms_for_the_owner(monkeypatch, tmp_path):
+    """The OWNER taps the new top-row stretch cell -- covers the second
+    new cell, and the other side of "works for a non-owner active user
+    too" (the water test above covers MEMBER)."""
+    async with _running_line_app(monkeypatch, tmp_path) as app:
+        resp = await _post_events(app.port, [_postback_event(OWNER, "log:stretch:10", reply_token="rt-rm-stretch")])
+        assert resp.status_code == 200
+
+        reply_bodies = await _wait_until(lambda: app.api.calls_matching("/message/reply") or None)
+        assert len(reply_bodies) == 1
+        (reply_body,) = reply_bodies
+        assert reply_body["replyToken"] == "rt-rm-stretch"
+        assert reply_body["messages"] and reply_body["messages"][0]["text"].strip()
+
+        today = datetime.now().date().isoformat()
+        assert app.db.count(OWNER, "stretch", today) == 1
+        assert app.db.count(MEMBER, "stretch", today) == 0
+        assert app.api.calls_matching("/message/push") == []
+
+
+async def test_rich_menu_direct_log_postback_carries_the_same_undo_quickreply_as_a_typed_log(monkeypatch, tmp_path):
+    """A direct-log tap reuses the SAME confirmation path as a typed log
+    (`core/quicklog.py:_log_and_confirm` -> `undo_ui.undo_button`) -- an
+    accidental menu tap must be exactly as recoverable as a typed one."""
+    async with _running_line_app(monkeypatch, tmp_path) as app:
+        await _post_events(app.port, [_postback_event(MEMBER, "log:water:250", reply_token="rt-rm-undo")])
+        reply_bodies = await _wait_until(lambda: app.api.calls_matching("/message/reply") or None)
+        msg = reply_bodies[0]["messages"][-1]
+        assert "quickReply" in msg
+        actions = [item["action"] for item in msg["quickReply"]["items"]]
+        assert any(a["type"] == "postback" and a["data"].startswith("undo:") for a in actions), (
+            f"expected an undo: postback quick-reply button, got {actions}"
+        )
+
+
+async def test_rich_menu_postback_from_a_pending_user_pins_the_actual_gate_behavior(monkeypatch, tmp_path):
+    """Answers the open question "what happens for a PENDING user tapping
+    the menu?" against the REAL code, not an assumption: `core/routing.py:
+    on_callback` gates on `access.classify(...) in ("owner", "active")`
+    BEFORE dispatching to `quicklog` -- its own docstring says so
+    explicitly ("A non-active chat's tap is a silent no-op (no onboarding
+    reply -- a tap isn't itself a message to onboard from)"). This is
+    PRE-EXISTING behavior, shared by every postback prefix (undo:/
+    routine:/clarify:/log:) -- unchanged by this rich-menu rewire -- but
+    it is reachable through two more cells than before: the OLD 6-cell
+    menu was ALL message actions, which DO go through `access.handle_
+    gate`'s own polite `access_pending` reply (a typed `/log` from a
+    pending user gets a reply; a tapped direct-log cell from the same
+    user does not).
+
+    This test pins the two guarantees that actually matter -- no crash,
+    and no log write for an unauthorized tap -- and explicitly does NOT
+    assert a reply was sent, because today there isn't one. See
+    IMPL-RICHMENU-2.md's "Known limitations" for this flagged as a
+    decision for Archi, not silently changed here: `on_callback`'s gate
+    is shared app-wide, so giving it a polite reply is a bigger decision
+    than this rich-menu rewire owns on its own."""
+    async with _running_line_app(monkeypatch, tmp_path) as app:
+        pending_user = "Upending000000000000000000000000"
+        app.db.upsert_user(pending_user, role="member", status="pending")
+
+        await _post_events(app.port, [_postback_event(pending_user, "log:water:250", reply_token="rt-rm-pending")])
+        # Single-worker FIFO (R-A3): queue a follow-up event for an
+        # ALREADY-active user and wait for ITS reply -- by the time it
+        # lands, the pending user's postback above (queued first) has
+        # deterministically already finished processing, without a raw
+        # sleep-and-hope.
+        await _post_events(app.port, [_text_event(MEMBER, "/help", reply_token="rt-rm-followup")])
+        await _wait_until(
+            lambda: [b for b in app.api.calls_matching("/message/reply") if b["replyToken"] == "rt-rm-followup"] or None
+        )
+
+        pending_replies = [b for b in app.api.calls_matching("/message/reply") if b["replyToken"] == "rt-rm-pending"]
+        assert pending_replies == [], (
+            "current on_callback gate: a pending user's tap gets NO reply at all -- see this test's own "
+            "docstring; if this now fails because the gate has grown a reply, update this pin to assert its "
+            "content instead of absence"
+        )
+        today = datetime.now().date().isoformat()
+        assert app.db.sum_value(pending_user, "water", today) == 0.0, "must never write a log for an unauthorized tap"
+        assert app.api.calls_matching("/message/push") == [] or all(
+            body["to"] != pending_user for body in app.api.calls_matching("/message/push")
+        ), "must never push to an unauthorized tapper either"
+
+
+async def test_rich_menu_postback_from_a_first_contact_stranger_is_also_a_silent_no_op(monkeypatch, tmp_path):
+    """Same pin as the pending-user test above, for a user id `on_callback`
+    has never seen at all (`classify()` -> "unknown", the same not-in-
+    (owner, active) bucket as "pending"). Unlike `access.handle_gate` (the
+    TEXT-message gate, which creates a pending row and alerts the owner on
+    first contact), `on_callback` does neither -- confirmed here at the DB
+    level. A brand-new user's very first-ever contact with this bot being
+    a rich-menu tap isn't realistic in production (LINE only shows a rich
+    menu once the bot has been added as a friend, and this app's menu is
+    the same for everyone from `register_rich_menu` at startup, not
+    granted per-user after approval) -- this test exists purely to pin
+    that IF it somehow happened, it's inert, not a crash."""
+    async with _running_line_app(monkeypatch, tmp_path) as app:
+        stranger = "Ustranger00000000000000000000000"
+        await _post_events(app.port, [_postback_event(stranger, "log:stretch:10", reply_token="rt-rm-stranger")])
+        await _post_events(app.port, [_text_event(MEMBER, "/help", reply_token="rt-rm-followup-2")])
+        await _wait_until(
+            lambda: [b for b in app.api.calls_matching("/message/reply") if b["replyToken"] == "rt-rm-followup-2"] or None
+        )
+
+        stranger_replies = [b for b in app.api.calls_matching("/message/reply") if b["replyToken"] == "rt-rm-stranger"]
+        assert stranger_replies == []
+        assert app.db.get_user(stranger) is None, (
+            "on_callback's gate must not even create a pending row for a first-contact tap (unlike handle_gate)"
+        )
+        today = datetime.now().date().isoformat()
+        assert app.db.count(stranger, "stretch", today) == 0

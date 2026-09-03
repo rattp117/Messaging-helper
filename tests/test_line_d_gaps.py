@@ -224,13 +224,40 @@ def test_richmenu_button_commands_are_real_dispatchable_commands():
     substring search, not a table-shape regex), so a genuine doc/code
     drift -- the README describing a button the code no longer sends --
     is still caught without depending on the table's exact markdown
-    shape."""
+    shape.
+
+    Rich-menu rewire (branch `line-version`, 2026-09-03 request): the menu
+    is no longer ALL message actions -- the two new top-row cells are
+    POSTBACK actions (`log:<habit>:<value>`), which have no `action
+    ["text"]` at all (that key is a message action's own field). This test
+    now splits its assertions by action type: every MESSAGE-action cell
+    still gets the exact same dispatchable-command + README cross-check
+    as before; every POSTBACK cell gets its own, equally real, cross-check
+    -- its `data` must actually parse against `core/quicklog.py`'s own
+    `_LOG_CALLBACK_RE` (the same regex `on_callback`'s `data.startswith
+    ("log:")` branch hands it at runtime) AND resolve against the BASE
+    habit registry (`Config()`'s own `_default_habits()` -- the one every
+    user's per-user registry is built on top of, `HabitRegistry.
+    from_config`), the same two checks `quicklog.handle_log_callback`
+    itself performs before ever writing a row -- so a typo'd habit id or
+    a malformed payload in the rich-menu cell itself would fail HERE,
+    not silently no-op for every real user at runtime."""
     from habit_assistant.channels.line import _default_rich_menu_payload
+    from habit_assistant.config import Config
+    from habit_assistant.core.habits import HabitRegistry
+    from habit_assistant.core.quicklog import _LOG_CALLBACK_RE
 
     payload = _default_rich_menu_payload()
-    button_commands = [area["action"]["text"] for area in payload["areas"]]
-    assert len(button_commands) == 6, f"expected 6 rich-menu areas, found {button_commands}"
+    areas = payload["areas"]
+    assert len(areas) == 6, f"expected 6 rich-menu areas, found {len(areas)}"
 
+    message_actions = [area["action"] for area in areas if area["action"]["type"] == "message"]
+    postback_actions = [area["action"] for area in areas if area["action"]["type"] == "postback"]
+    assert len(postback_actions) == 2, f"expected exactly 2 direct-log postback cells, found {len(postback_actions)}"
+    assert len(message_actions) == 4, f"expected exactly 4 message-action cells, found {len(message_actions)}"
+
+    # -- message-action cells: unchanged cross-check against real dispatch --
+    button_commands = [action["text"] for action in message_actions]
     routing_text = (REPO_ROOT / "src" / "habit_assistant" / "core" / "routing.py").read_text(encoding="utf-8")
     dispatched_kinds = set(re.findall(r'command\.kind\s*==\s*"(\w+)"', routing_text))
 
@@ -248,6 +275,25 @@ def test_richmenu_button_commands_are_real_dispatchable_commands():
             f"README no longer documents rich-menu button {cmd!r} anywhere -- doc/code drift "
             f"(format-tolerant substring check, not a table-shape regex)"
         )
+
+    # -- postback direct-log cells: parse against the real callback regex,
+    # then resolve against the real base registry, exactly like
+    # `quicklog.handle_log_callback` does before it ever writes a row --
+    base_registry = HabitRegistry.from_config(Config())
+    for action in postback_actions:
+        data = action["data"]
+        match = _LOG_CALLBACK_RE.match(data)
+        assert match is not None, f"rich-menu direct-log postback data {data!r} does not match _LOG_CALLBACK_RE"
+        habit_id = match.group("habit")
+        value = float(match.group("value"))
+        habit = base_registry.get(habit_id)
+        assert habit is not None, f"rich-menu direct-log postback names habit {habit_id!r}, not in the base registry"
+        assert habit.type != "text", f"rich-menu direct-log postback names a text habit {habit_id!r} (never quick-loggable)"
+        if habit.type == "boolean":
+            assert value == 1, f"rich-menu direct-log postback for boolean habit {habit_id!r} must carry value 1, got {value}"
+        else:
+            assert value > 0, f"rich-menu direct-log postback for {habit_id!r} must carry a positive value, got {value}"
+        assert action.get("displayText"), f"rich-menu direct-log postback for {habit_id!r} has no displayText"
 
 
 # --- Gap 4: is the Windows-ism regression guard actually effective? -------------

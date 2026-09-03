@@ -446,6 +446,51 @@ async def test_register_rich_menu_creates_uploads_and_sets_default(tmp_path):
     assert len(create_body["areas"]) == 6
 
 
+def test_default_rich_menu_payload_pins_the_rewired_cells_actions_and_order():
+    """Rich-menu rewire (branch `line-version`, 2026-09-03 request): the
+    equality check above (`create_body == _default_rich_menu_payload()`)
+    is self-referential -- it would pass even if this function's own
+    redesign were wrong, since both sides come from the same call. This
+    test pins the actual, real-world-meaningful shape instead: exact
+    per-cell action type/content, exact left-to-right/top-to-bottom
+    order (thumb-reach: the two direct-log cells lead the TOP row), the
+    3x2/2500x1686 grid unchanged, and that `/log` and `/guide` no longer
+    have ANY cell at all (dropped from the menu, still ordinary
+    dispatchable commands elsewhere)."""
+    payload = _default_rich_menu_payload()
+    assert payload["size"] == {"width": 2500, "height": 1686}
+    areas = payload["areas"]
+    assert len(areas) == 6
+
+    cell_w, cell_h = 2500 // 3, 1686 // 2
+
+    def _bounds(row: int, col: int) -> dict:
+        return {"x": col * cell_w, "y": row * cell_h, "width": cell_w, "height": cell_h}
+
+    expected = [
+        (_bounds(0, 0), {"type": "postback", "data": "log:water:250", "displayText": "💧 250ml"}),
+        (_bounds(0, 1), {"type": "postback", "data": "log:stretch:10", "displayText": "💪 10 นาที"}),
+        (_bounds(0, 2), {"type": "message", "text": "/habits"}),
+        (_bounds(1, 0), {"type": "message", "text": "/heatmap"}),
+        (_bounds(1, 1), {"type": "message", "text": "/wrapped"}),
+        (_bounds(1, 2), {"type": "message", "text": "/help"}),
+    ]
+    for i, (area, (bounds, action)) in enumerate(zip(areas, expected)):
+        assert area["bounds"] == bounds, f"cell {i} bounds {area['bounds']} != expected {bounds}"
+        assert area["action"] == action, f"cell {i} action {area['action']} != expected {action}"
+
+    all_texts = {area["action"].get("text") for area in areas}
+    assert "/log" not in all_texts, "/log must no longer have a rich-menu cell (moved to two direct-log postback cells)"
+    assert "/guide" not in all_texts, "/guide must no longer have a rich-menu cell"
+
+    all_data = {area["action"].get("data") for area in areas}
+    # SPEC-v1.8.md §2.1's own callback grammar, verbatim -- a menu tap and
+    # a `/log` keyboard tap must be byte-identical once they reach
+    # `core/routing.py:on_callback`'s `data.startswith("log:")` dispatch.
+    assert "log:water:250" in all_data
+    assert "log:stretch:10" in all_data
+
+
 async def test_register_rich_menu_api_failure_is_fail_open(tmp_path, caplog):
     image_path = tmp_path / "richmenu.png"
     image_path.write_bytes(b"fake")

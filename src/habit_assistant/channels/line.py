@@ -83,24 +83,77 @@ _REPLY_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("line_reply_conte
 
 
 def _default_rich_menu_payload() -> dict[str, Any]:
-    """SPEC-LINE.md §9 OQ3's own default: a plain 6-button layout
-    (`/log /habits /heatmap /wrapped /help /guide`) as message actions --
-    each arrives as an ordinary inbound text message and routes through
-    the existing dispatch unchanged (R-A10). 2500x1686, a LINE-supported
-    rich menu size; a 3x2 grid of message-action areas. The deployment PNG
-    (module D, `[line].rich_menu_image`) must match these dimensions."""
-    labels = ["/log", "/habits", "/heatmap", "/wrapped", "/help", "/guide"]
+    """Rich-menu rewire (branch `line-version`, 2026-09-03 request): 3x2
+    grid, same 2500x1686 canvas as SPEC-LINE.md §9 OQ3's original 6-button
+    default, but the TOP row now leads with two DIRECT-LOG cells (thumb-
+    reach rearrangement -- the two actions people reach for most, water/
+    stretch, sit where a one-handed phone grip lands first) instead of the
+    old `/log` button that only ever opened a keyboard one tap deeper.
+    `/log` and `/guide` are both dropped from the menu entirely (still
+    typable/dispatchable as ordinary commands -- only their own rich-menu
+    cells are gone).
+
+    The two new cells are POSTBACK actions carrying `log:<habit_id>:
+    <value>` -- the SAME verbatim quick-log callback grammar `core/
+    quicklog.py:_LOG_CALLBACK_RE`/`handle_log_callback` already parses for
+    an ordinary `/log` keyboard tap (`core/routing.py:on_callback`'s own
+    `data.startswith("log:")` dispatch), so a menu tap and a keyboard tap
+    are indistinguishable once they reach `on_callback`: same per-user
+    registry check, same write, same confirmation+undo+dashboard-refresh
+    reply, same per-user isolation (R-Q3). "water":"250" and "stretch":
+    "10" are both already-configured `unit_aliases` values (`config.toml.
+    line`'s own `[habits.unit_aliases]` for both habits -- "glass"=250,
+    and the "set"/"เซ็ต"=10 alias added for the "[10 min] quick button"
+    request) -- these two cells are shortcuts to buttons that already
+    exist one tap deeper inside `/log`, not new amounts.
+
+    `displayText` (what LINE shows in the chat in place of the tap itself
+    -- fixed once at rich-menu registration time, with no per-user-
+    language hook the way a reply's own `i18n.resolve_reply_language`
+    has) is Thai-primary, per this app's own Thai-first rich-menu
+    convention (`assets/richmenu/README.md`'s "Thai is primary and Latin
+    secondary" note): "💧 250ml" (digits read fine unlocalized) and "💪 10
+    นาที" (the unit word is localized -- a bare "10" alone would be
+    ambiguous out of context).
+
+    The four remaining cells are UNCHANGED message actions (still an
+    ordinary inbound text message through the existing command dispatch,
+    R-A10) -- just repositioned: `/habits` now shares the top row (row 0,
+    col 2) instead of its old row-0-col-1 slot; `/heatmap`, `/wrapped`,
+    `/help` fill the bottom row left-to-right, their same relative order
+    as before.
+
+    Still 2500x1686, a LINE-supported rich menu size, still a 3x2 grid --
+    the deployment PNG (module D, `[line].rich_menu_image`) must match
+    these bounds. `assets/richmenu/generate_richmenu.py`'s own
+    `verify_against_code()` asserts every area's bounds AND (for a
+    message-action cell) its command text against this function; it does
+    NOT yet understand a postback cell (`area["action"].get("text")` is
+    `None` for the two new cells) and will fail loudly if run as-is until
+    the artwork/generator itself is updated for the new layout (Iris,
+    next -- see IMPL-RICHMENU-2.md's own hand-off table for the exact
+    per-cell spec her pass needs)."""
     width, height, cols, rows = 2500, 1686, 3, 2
     cell_w, cell_h = width // cols, height // rows
-    areas = []
-    for i, label in enumerate(labels):
-        row, col = divmod(i, cols)
-        areas.append(
-            {
-                "bounds": {"x": col * cell_w, "y": row * cell_h, "width": cell_w, "height": cell_h},
-                "action": {"type": "message", "text": label},
-            }
-        )
+
+    def _bounds(index: int) -> dict[str, int]:
+        row, col = divmod(index, cols)
+        return {"x": col * cell_w, "y": row * cell_h, "width": cell_w, "height": cell_h}
+
+    areas = [
+        {
+            "bounds": _bounds(0),
+            "action": {"type": "postback", "data": "log:water:250", "displayText": "💧 250ml"},
+        },
+        {
+            "bounds": _bounds(1),
+            "action": {"type": "postback", "data": "log:stretch:10", "displayText": "💪 10 นาที"},
+        },
+        {"bounds": _bounds(2), "action": {"type": "message", "text": "/habits"}},
+        {"bounds": _bounds(3), "action": {"type": "message", "text": "/heatmap"}},
+        {"bounds": _bounds(4), "action": {"type": "message", "text": "/wrapped"}},
+        {"bounds": _bounds(5), "action": {"type": "message", "text": "/help"}},
+    ]
     return {
         "size": {"width": width, "height": height},
         "selected": False,

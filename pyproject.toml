@@ -1,6 +1,6 @@
 [project]
 name = "habit-assistant"
-version = "1.3.0+line"
+version = "1.3.1+line"
 description = "Local-first habit-tracking assistant (LINE Official Account edition, no-LLM, backed by a local Qwen model via Ollama on the Telegram edition)"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "tzdata>=2024.1",
-    # SPEC-LINE.md §4 R-S8/§7: the one new runtime dependency this branch adds
+    # SPEC-LINE.md Â§4 R-S8/Â§7: the one new runtime dependency this branch adds
     # -- LINE has no long-poll, so inbound needs a public HTTPS webhook and
     # images need an HTTPS media host, both requiring an HTTP *server* (httpx
     # is client-only). Pure-asyncio, runs its AppRunner inside the existing
@@ -21,7 +21,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    # SPEC-v1.10.md §4 R19 (module `riders`): parallel test execution.
+    # SPEC-v1.10.md Â§4 R19 (module `riders`): parallel test execution.
     # Documented, NOT forced via [tool.pytest.ini_options] addopts (a
     # single-worker debug run needs no override; CI opts in explicitly) --
     # run with: pytest -n auto
@@ -51,7 +51,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/habit_assistant"]
-# SPEC-v1.9.md §6 (font shared surface): assets/fonts/ lives at the repo
+# SPEC-v1.9.md Â§6 (font shared surface): assets/fonts/ lives at the repo
 # root (mirrors config.toml's own placement), outside src/habit_assistant/
 # -- `packages` above only picks up the package directory, so the bundled
 # Noto Sans Thai TTF + its OFL.txt license need an explicit force-include
@@ -65,7 +65,7 @@ packages = ["src/habit_assistant"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# SPEC-LINE.md §4 R-S7/§11 (shared surface): the LINE branch gate is
+# SPEC-LINE.md Â§4 R-S7/Â§11 (shared surface): the LINE branch gate is
 # `pytest -m "not telegram_only and not llm_only"` -- Telegram-transport
 # tests (real channels/telegram.py wire behavior: HTTP request shapes,
 # long-poll loop, callback_query handling -- none of it runs on LINE) and
