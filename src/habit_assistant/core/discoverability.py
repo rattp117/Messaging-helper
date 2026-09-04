@@ -242,7 +242,10 @@ def build_habits_overview(
             # the ISO week. A non-cadence habit's line (below) is unchanged
             # (AC10/AC3).
             line = cadence.cadence_status_line(db, config, habit, user_id, today, lang)
-            streak = streaks.compute_streak(db, config, habit, today, user_id)
+            # v1.3.2+line bug fix: DISPLAY-ONLY `display_streak`, not
+            # `compute_streak` -- see that function's own docstring
+            # (PORT TO MAIN).
+            streak = streaks.display_streak(db, config, habit, today, user_id)
             line += i18n.t("cadence_weekly_streak_suffix", lang, streak=streak)
         else:
             kind_label = i18n.t(_HABIT_KIND_MSG_IDS[habit.type], lang)

@@ -445,19 +445,22 @@ def test_version_consistency_across_the_three_files_and_release_notes_posture_un
     pyproject_data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     pyproject_version = pyproject_data["project"]["version"]
 
-    assert version_file == "1.3.0+line"
-    assert habit_assistant.__version__ == "1.3.0+line"
-    assert pyproject_version == "1.3.0+line"
+    assert version_file == "1.3.2+line"
+    assert habit_assistant.__version__ == "1.3.2+line"
+    assert pyproject_version == "1.3.2+line"
     assert version_file == habit_assistant.__version__ == pyproject_version
 
     # Release-notes posture: this release deliberately does NOT self-
     # announce (SPEC-LINE-PORTAL.md §9 OQ2's own default) -- verify that
-    # posture is unchanged by the integration pass.
-    assert "1.3.0" not in RELEASE_NOTES
-    assert "1.3.0+line" not in RELEASE_NOTES
+    # posture is unchanged by the integration pass, and stays unchanged
+    # for the streak display-bug PATCH release (internal fix, no
+    # user-visible behavior change -- same "patch -> no announcement"
+    # posture as v1.8.1's own precedent).
+    assert "1.3.2" not in RELEASE_NOTES
+    assert "1.3.2+line" not in RELEASE_NOTES
     assert "1.2.0" not in RELEASE_NOTES
-    assert get_release_note("1.3.0+line", "en") is None
-    assert get_release_note("1.3.0+line", "th") is None
+    assert get_release_note("1.3.2+line", "en") is None
+    assert get_release_note("1.3.2+line", "th") is None
 
 
 # ===========================================================================

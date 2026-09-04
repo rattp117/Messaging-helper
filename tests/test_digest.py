@@ -155,6 +155,20 @@ def test_compose_digest_thai_language(db, config):
     assert i18n.t("daily_summary_header", "th") in text
 
 
+def test_compose_digest_daily_summary_streak_is_living_not_zero_when_today_partial(db, config):
+    """v1.3.2+line bug fix: `compose_digest`'s daily-summary section feeds
+    through `streaks.compute_daily_summary`, now `display_streak`-backed --
+    the digest shouldn't tell a user their streak died just because today
+    (still open when the digest runs at [digest].time) hasn't reached
+    goal yet."""
+    _log(db, MEMBER, "juice", 1000, "2026-08-24T09:00:00")
+    _log(db, MEMBER, "juice", 1000, "2026-08-25T09:00:00")
+    _log(db, MEMBER, "juice", 500, "2026-08-26T09:00:00")  # today: partial, below goal
+
+    text = digest.compose_digest(db, config, REGISTRY, "en", MEMBER, now=_fixed_now())
+    assert "streak 2d" in text
+
+
 def test_compose_digest_nudge_line_included_when_close_to_goal(db, config):
     _log(db, MEMBER, "juice", 850, "2026-08-26T09:00:00")  # 85% >= default 80% threshold
     text = digest.compose_digest(db, config, REGISTRY, "en", MEMBER, now=_fixed_now())

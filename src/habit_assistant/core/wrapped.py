@@ -186,8 +186,13 @@ def _streak_text(db: "Database", config: "Config", habit: "Habit", today: date, 
     """Rule 5/AC26 "cadence-aware": a cadence habit's streak is a WEEKS-MET
     count and renders with week wording; a daily habit renders with day
     wording -- `streaks.streak_unit` is the single switch, exactly like
-    every other unit-aware renderer this release's engine rework calls for."""
-    streak = streaks.compute_streak(db, config, habit, today, user_id)
+    every other unit-aware renderer this release's engine rework calls for.
+
+    v1.3.2+line bug fix: DISPLAY-ONLY `display_streak`, not `compute_streak`
+    -- the recap card's "current streak" is a live glance, same class as
+    the dashboard row (see `streaks.display_streak`'s own docstring,
+    PORT TO MAIN)."""
+    streak = streaks.display_streak(db, config, habit, today, user_id)
     unit = streaks.streak_unit(db, habit, user_id)
     msg_id = "wrapped_streak_weeks" if unit == "week" else "wrapped_streak_days"
     return i18n.t(msg_id, lang, count=streak)

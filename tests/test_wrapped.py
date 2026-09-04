@@ -261,6 +261,20 @@ def test_streak_text_uses_week_wording_for_cadence_habit(db, config):
     assert "1" in text and "w" in text
 
 
+def test_streak_text_shows_living_streak_not_zero_when_today_partial(db, config):
+    """v1.3.2+line bug fix: `_streak_text` now reads through `streaks.
+    display_streak` -- the recap card's "current streak" is a live glance,
+    same class as the dashboard row, so a goal met the two days before
+    today shouldn't read "streak 0d" just because today is still partial."""
+    habit = _habit("juice", "numeric", goal=1000.0)
+    _seed(db, OWNER, "2026-08-24T09:00:00", "juice", 1000.0)
+    _seed(db, OWNER, "2026-08-25T09:00:00", "juice", 1000.0)
+    _seed(db, OWNER, "2026-08-26T09:00:00", "juice", 500.0)  # today: partial, below goal
+
+    text = wrapped._streak_text(db, config, habit, date(2026, 8, 26), OWNER, "en")
+    assert text == "streak 2d"
+
+
 def test_biggest_mover_picks_largest_pct_change(db, config):
     water = _habit("water", "numeric", goal=None)
     gym = _habit("gym", "boolean", unit_en=None, unit_th=None)

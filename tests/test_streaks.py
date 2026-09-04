@@ -269,6 +269,162 @@ def test_duration_multiple_sessions_same_day_counts_as_one_streak_day(db):
 
 
 # ---------------------------------------------------------------------------
+# v1.3.2+line bug fix -- `display_streak` truth table. Root cause (verified
+# on live data): `compute_streak(end=today)` is 0 all day, every day, until
+# the exact moment `today` crosses the goal (see
+# `test_goal_habit_partial_today_does_not_qualify_but_past_run_is_preserved`
+# above -- that IS `compute_streak`'s own documented, correct contract, not
+# a bug in it). `display_streak` is the DISPLAY-ONLY fix; this section
+# proves its truth table: today-met, today-pending, a real yesterday gap,
+# a grace-bridged yesterday, a paused today (with and without a real gap
+# behind it), and the cadence (weekly) variant's deliberate pass-through.
+# ---------------------------------------------------------------------------
+
+
+def test_display_streak_today_already_met_is_a_pass_through(db):
+    juice = _synthetic_habit("juice", "numeric", goal=1000)
+    config = Config()
+    today = date(2026, 8, 19)
+    for offset in (0, 1, 2):
+        d = today - timedelta(days=offset)
+        _seed(db, f"{d.isoformat()}T09:00:00", "juice", 1000.0)
+
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 3
+
+
+def test_display_streak_today_pending_falls_back_to_yesterdays_unbroken_run(db):
+    """The exact live-data scenario Archi root-caused: goal 2500, met the
+    two days before today, today logged but still below goal (1250/2500).
+    `compute_streak(today)` is 0 by its own documented contract;
+    `display_streak` must report 2, not 0 -- then 3 once a later log the
+    same day crosses the goal for real."""
+    juice = _synthetic_habit("juice", "numeric", goal=2500)
+    config = Config()
+    today = date(2026, 8, 19)
+    _seed(db, f"{(today - timedelta(days=2)).isoformat()}T09:00:00", "juice", 2500.0)
+    _seed(db, f"{(today - timedelta(days=1)).isoformat()}T09:00:00", "juice", 2500.0)
+    _seed(db, f"{today.isoformat()}T09:00:00", "juice", 1250.0)  # partial, below goal
+
+    assert streaks.compute_streak(db, config, juice, today, OWNER) == 0  # documented contract, unchanged
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 2
+
+    _seed(db, f"{today.isoformat()}T18:00:00", "juice", 1250.0)  # crosses 2500 today
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 3
+
+
+def test_display_streak_real_gap_yesterday_correctly_shows_zero(db):
+    """Not every 0 is the bug -- a genuine gap (yesterday also missed, no
+    pause/grace protecting it) must still display 0."""
+    juice = _synthetic_habit("juice", "numeric", goal=1000)
+    config = Config()
+    today = date(2026, 8, 19)
+    _seed(db, f"{(today - timedelta(days=2)).isoformat()}T09:00:00", "juice", 1000.0)
+    # yesterday: no log at all -- a real miss, nothing protects it.
+
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 0
+
+
+def test_display_streak_grace_bridged_yesterday_shows_the_held_streak(db):
+    """A grace day is NEUTRAL, not MISSED -- `compute_streak(end=yesterday)`
+    already walks through it correctly (held, not broken); `display_streak`
+    inherits that for free through its own fallback call, no special-casing
+    needed for grace inside `display_streak` itself."""
+    juice = _synthetic_habit("juice", "numeric", goal=1000)
+    config = Config()
+    today = date(2026, 8, 19)
+    yesterday = today - timedelta(days=1)
+    _seed(db, f"{(today - timedelta(days=3)).isoformat()}T09:00:00", "juice", 1000.0)
+    _seed(db, f"{(today - timedelta(days=2)).isoformat()}T09:00:00", "juice", 1000.0)
+    # yesterday: no real log, but grace-protected -- held, not a break.
+    db.record_grace(OWNER, "juice", yesterday.isoformat(), "2026-W33")
+    # today: pending, no log yet.
+
+    assert streaks.compute_streak(db, config, juice, yesterday, OWNER) == 2  # grace.py's own re-derivation
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 2
+
+
+def test_display_streak_paused_today_shows_the_held_streak_directly(db):
+    """A paused `today` (no voluntary log) is NEUTRAL too, same as a grace
+    day -- `compute_streak(today)` already holds through it without
+    breaking (unlike an ordinary MISSED today), so `display_streak` returns
+    that already-correct value directly and never reaches the fallback
+    branch at all."""
+    juice = _synthetic_habit("juice", "numeric", goal=1000)
+    config = Config()
+    today = date(2026, 8, 19)
+    _seed(db, f"{(today - timedelta(days=1)).isoformat()}T09:00:00", "juice", 1000.0)
+    _seed(db, f"{(today - timedelta(days=2)).isoformat()}T09:00:00", "juice", 1000.0)
+    db.insert_pause(OWNER, "juice", today.isoformat(), today.isoformat())
+
+    assert streaks.compute_streak(db, config, juice, today, OWNER) == 2  # already held, not 0
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 2
+
+
+def test_display_streak_paused_today_with_a_real_gap_before_still_shows_zero(db):
+    """Pause protects only itself -- it can't resurrect a streak that was
+    already broken by a real (unprotected) gap before the pause started."""
+    juice = _synthetic_habit("juice", "numeric", goal=1000)
+    config = Config()
+    today = date(2026, 8, 19)
+    # yesterday: real miss, no protection at all.
+    db.insert_pause(OWNER, "juice", today.isoformat(), today.isoformat())
+
+    assert streaks.display_streak(db, config, juice, today, OWNER) == 0
+
+
+def test_display_streak_cadence_pass_through_when_prior_weeks_still_active(db):
+    """Cadence contrast #1: an unmet CURRENT (partial) week doesn't zero
+    out an otherwise-active run of completed weeks -- Rule 4's own "never
+    over-reported mid-week" -- so `compute_streak(today)` is already the
+    living streak for a cadence habit and `display_streak` is a pure
+    pass-through, matching it exactly."""
+    gym = _synthetic_habit("gym", "boolean")
+    config = Config()
+    db.set_cadence(OWNER, "gym", 2)
+    today = date(2026, 8, 24)  # a Monday -- brand-new week, 0 days logged yet
+
+    # Two prior consecutive weeks both met the per_week=2 quota.
+    _seed(db, "2026-08-10T09:00:00", "gym", 1.0)
+    _seed(db, "2026-08-11T09:00:00", "gym", 1.0)
+    _seed(db, "2026-08-17T09:00:00", "gym", 1.0)
+    _seed(db, "2026-08-18T09:00:00", "gym", 1.0)
+
+    assert streaks.compute_streak(db, config, gym, today, OWNER) == 2
+    assert streaks.display_streak(db, config, gym, today, OWNER) == 2
+
+
+def test_display_streak_cadence_never_resurrects_a_genuinely_broken_week(db):
+    """Cadence contrast #2 -- the reason cadence gets NO yesterday-fallback
+    at all (not merely "redundant with compute_streak"): per_week=2, LAST
+    week (2026-08-17..23) genuinely missed its quota (0 qualifying days,
+    fully reachable, not paused -- a real, decided break), even though the
+    week BEFORE that (2026-08-10..16) met quota. `today` (2026-08-24, a
+    Monday) is the first day of a brand-new week, still pending.
+
+    `compute_streak(today)` already correctly returns 0 -- last week's
+    miss breaks the chain for real, same as any other completed-period
+    MISS. A NAIVE "fall back to end=today-1" formula would instead
+    re-anchor the walk so last week (whose own Sunday is 2026-08-23,
+    `today - 1 day`) becomes THIS call's "current" (break-exempt) week --
+    wrongly resurrecting the week-before-last's streak as 1.
+    `display_streak` must not do that; it must match `compute_streak`
+    exactly here."""
+    gym = _synthetic_habit("gym", "boolean")
+    config = Config()
+    db.set_cadence(OWNER, "gym", 2)
+    today = date(2026, 8, 24)  # Monday
+
+    # Week before last (2026-08-10..16): met quota.
+    _seed(db, "2026-08-10T09:00:00", "gym", 1.0)
+    _seed(db, "2026-08-11T09:00:00", "gym", 1.0)
+    # Last week (2026-08-17..23): genuinely missed -- zero qualifying days.
+    # Current week (2026-08-24 only so far): nothing logged yet.
+
+    assert streaks.compute_streak(db, config, gym, today, OWNER) == 0
+    assert streaks.display_streak(db, config, gym, today, OWNER) == 0
+
+
+# ---------------------------------------------------------------------------
 # AC10.2 -- milestone crossing via the REAL handle_inbound_message: exactly
 # one line per crossing, never repeated within the same qualifying day,
 # never emitted for a non-milestone streak length, and bilingual.

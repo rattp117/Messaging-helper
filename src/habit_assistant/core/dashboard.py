@@ -216,11 +216,14 @@ def render(db: "Database", config: "Config", registry: "HabitRegistry", lang: i1
         # "unchanged" half; AC3's byte-identical gate).
         if db.get_cadence(user_id, habit.id) is not None:
             line = cadence.cadence_status_line(db, config, habit, user_id, today, lang)
-            streak = streaks.compute_streak(db, config, habit, today, user_id)
+            # v1.3.2+line bug fix: DISPLAY-ONLY `display_streak`, not
+            # `compute_streak` -- see that function's own docstring
+            # (PORT TO MAIN).
+            streak = streaks.display_streak(db, config, habit, today, user_id)
             line += i18n.t("cadence_weekly_streak_suffix", lang, streak=streak)
         else:
             goal = targets.effective_goal(db, habit, config, user_id)
-            streak = streaks.compute_streak(db, config, habit, today, user_id)
+            streak = streaks.display_streak(db, config, habit, today, user_id)
 
             if goal is not None:
                 # Gap-pass fix #4 (finding #4): `is not None`, not

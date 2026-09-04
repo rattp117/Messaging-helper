@@ -278,6 +278,69 @@ def compute_streak(db: "Database", config: "Config", habit: Habit, end_date: dat
     return _weekly_walk(db, config, habit, end_date, user_id, per_week, goal)
 
 
+def display_streak(db: "Database", config: "Config", habit: Habit, today: date, user_id: str) -> int:
+    """DISPLAY-ONLY "living streak" (bug fix, v1.3.2+line): `compute_streak
+    (..., today, ...)` is exactly 0 whenever `today` hasn't (yet) satisfied
+    the habit -- by design (`test_goal_habit_partial_today_does_not_
+    qualify_but_past_run_is_preserved` locks this in as `compute_streak`'s
+    own contract, not a bug in that function). That's the correct answer
+    for a walk whose caller needs EXACT semantics (milestone crossing,
+    longest-streak record-keeping -- a streak that hasn't happened yet
+    can't celebrate or break a record), but it's the wrong number for a
+    plain "what's my streak right now" display: a real, unbroken run
+    through yesterday reads as "0" all day, every day, until the exact
+    moment `today` crosses the goal. This helper is the fix, for DISPLAY
+    call sites ONLY -- every exactness-sensitive caller (`crossed_
+    milestone`, `records.py`'s longest-streak tracking) keeps calling
+    `compute_streak` directly, unchanged.
+
+    PORT TO MAIN: this function and every display call site switched to
+    it (`core/dashboard.py`, `core/streaks.py:compute_daily_summary`,
+    `core/discoverability.py:build_habits_overview`, `core/wrapped.py:
+    _streak_text`, `core/portal/users.py:_current_streak`) live in shared
+    `core/` -- the Telegram edition has the identical bug and should
+    receive the identical fix when this patch is ported over.
+
+    Daily habits (no cadence row): `today`'s own count if `today` already
+    qualifies (`compute_streak(..., today, ...) > 0`); else yesterday's --
+    still-unbroken, just not-yet-extended -- count. This is safe because
+    `_daily_walk`'s only way to return exactly 0 for a NON-empty history is
+    `classify_day(today) == "missed"` breaking on the very first
+    iteration (today isn't qualified, paused, or grace-protected) --
+    re-running the identical walk one day earlier is unaffected by
+    anything that did or didn't happen on `today` and reports the streak
+    exactly as it stood at the end of yesterday. A grace-bridged yesterday
+    falls out of this for free: `_daily_walk(end_date=yesterday)` already
+    treats a NEUTRAL day as "held" (skip, don't break), so the fallback
+    call inherits that automatically, no special-casing needed here. A
+    PAUSED `today` (no voluntary log) is ALSO NEUTRAL, not MISSED -- the
+    walk already holds through it without breaking, so `compute_streak(...,
+    today, ...)` is already the correct held count and this function
+    returns it directly (`s_today > 0`), never reaching the fallback.
+
+    Cadence habits (a `habit_cadence` row exists): deliberate PASS-THROUGH,
+    no fallback -- `_weekly_walk` already treats an unmet CURRENT (partial)
+    week as a 0 CONTRIBUTION, not a break (Rule 4's own "never
+    over-reported mid-week"), so it never spuriously zeroes out an
+    otherwise-active run of completed prior weeks just because this week
+    isn't finished yet: `compute_streak(..., today, ...)` IS already the
+    living streak for a cadence habit. Applying the daily fallback here
+    would be actively WRONG, not merely redundant: re-anchoring the walk
+    to `end_date=today-1` shifts which week the walk treats as "current"
+    (exempt from the MISSED/break check) whenever `today` is a Monday --
+    exactly the case where LAST week (which may have genuinely, completely
+    missed its quota and already broken the streak for real) would be
+    re-classified as "current" and excused from that break check,
+    resurrecting a streak that correctly ended. So a cadence habit never
+    falls back, by construction."""
+    if db.get_cadence(user_id, habit.id) is not None:
+        return compute_streak(db, config, habit, today, user_id)
+    s_today = compute_streak(db, config, habit, today, user_id)
+    if s_today > 0:
+        return s_today
+    return compute_streak(db, config, habit, today - timedelta(days=1), user_id)
+
+
 def streak_unit(db: "Database", habit: Habit, user_id: str) -> Literal["day", "week"]:
     """SPEC-v1.9.md Rule 5: "week" iff `habit` has a `habit_cadence` row
     for `user_id`, else "day" -- every renderer that wants unit-aware
@@ -381,7 +444,14 @@ def compute_daily_summary(
             total = float(db.count_true(user_id, habit.id, today_str))
         else:  # duration (no goal), text
             total = float(db.count(user_id, habit.id, today_str))
-        streak = compute_streak(db, config, habit, today, user_id)
+        # v1.3.2+line bug fix: DISPLAY-ONLY -- `display_streak`, not
+        # `compute_streak`, so a habit already met through yesterday
+        # doesn't read "streak 0" all day just because today is still in
+        # progress (see `display_streak`'s own docstring). Feeds both
+        # `core/digest.py`'s LINE daily-summary section and `core/jobs.py:
+        # daily_summary_job`'s Telegram-mode standalone summary -- same
+        # fix, both surfaces, one shared call site.
+        streak = display_streak(db, config, habit, today, user_id)
         unit = streak_unit(db, habit, user_id)
         lines.append(DailySummaryLine(habit=habit, total=total, goal=goal, streak=streak, unit=unit))
     return lines

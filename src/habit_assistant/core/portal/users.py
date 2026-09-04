@@ -126,8 +126,14 @@ def _current_streak(deps: "PortalDeps", user_id: str, now: datetime) -> int:
     try:
         registry = HabitRegistry.for_user(deps.config, deps.db, user_id)
         today = timeutil.today_in_timezone(lambda: now, deps.config.app.timezone)
+        # v1.3.2+line bug fix: DISPLAY-ONLY `display_streak`, not
+        # `compute_streak` -- an owner glancing at this column shouldn't
+        # see a false 0 for a user whose streak is intact but who simply
+        # hasn't logged yet today (see `streaks.display_streak`'s own
+        # docstring; this admin-portal module has no Telegram-edition
+        # counterpart, so no PORT TO MAIN note here).
         return max(
-            (streaks.compute_streak(deps.db, deps.config, habit, today, user_id) for habit in registry),
+            (streaks.display_streak(deps.db, deps.config, habit, today, user_id) for habit in registry),
             default=0,
         )
     except Exception:

@@ -296,6 +296,19 @@ def test_ac37_every_registered_habit_appears_in_registry_order(db, fixed_clock):
 # ---------------------------------------------------------------------------
 
 
+def test_habits_overview_cadence_streak_is_living_not_zero_when_week_partial(db):
+    """v1.3.2+line bug fix: `/habits`' cadence-branch streak suffix now
+    reads through `streaks.display_streak` -- an unmet CURRENT (partial)
+    week must not erase an otherwise-active run of completed weeks."""
+    monday_clock = lambda: datetime(2026, 8, 24, 9, 0, 0)  # brand-new week, 0 days logged yet
+    db.set_cadence(OWNER, "stretch", 2)
+    for d in ("2026-08-10", "2026-08-11", "2026-08-17", "2026-08-18"):  # two prior weeks, both met
+        _seed(db, f"{d}T09:00:00", "stretch", 10.0)
+
+    overview = discoverability.build_habits_overview(db, Config(), DEFAULT_REGISTRY, monday_clock, "en", OWNER)
+    assert i18n.t("cadence_weekly_streak_suffix", "en", streak=2) in overview
+
+
 def test_ac38_override_marked_as_your_target_vs_default_vs_no_goal(db, fixed_clock):
     config = Config()  # water config default 2500, stretch has none
     db.set_target(OWNER, "water", 2000.0)

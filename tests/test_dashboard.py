@@ -304,6 +304,39 @@ def test_render_includes_streak(db, config):
     assert "2" in line  # a 2-day streak ending today
 
 
+def test_render_streak_shows_living_streak_not_zero_when_today_is_partial(db, config):
+    """v1.3.2+line bug fix -- the exact live-data scenario Archi root-caused
+    on a real user's data: goal-bearing habit met the two days before
+    today, today logged but still below goal. Before the fix this line
+    read "streak 0d" (`compute_streak(end=today)` breaks on today's own
+    not-yet-met day, discarding the real, unbroken run through yesterday).
+
+    This IS "the log-confirmation streak surface" from the user's report:
+    `dashboard.refresh` sends exactly this render right after every log
+    (`core/routing.py`/`core/quicklog.py` both call it immediately after
+    `confirmation.suffix`), so it's the reply a user actually reads to
+    answer "did my streak register?" -- `core/confirmation.py` itself
+    carries no bare streak number of its own (only a milestone/record
+    celebration suffix, which only ever fires once `today` already
+    qualifies, so it was never exposed to this bug in the first place --
+    see IMPL-STREAK-DISPLAY.md's caller-by-caller table)."""
+    registry = HabitRegistry([_habit("juice", "numeric", goal=2500.0, label_en="juice", unit_en="ml")])
+    db.insert_log(LogEntry(None, OWNER, "2026-08-22T08:00:00", "juice", 2500.0, None, "2500ml", "reply"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-23T08:00:00", "juice", 2500.0, None, "2500ml", "reply"))
+    db.insert_log(LogEntry(None, OWNER, "2026-08-24T08:00:00", "juice", 1250.0, None, "1250ml", "reply"))  # partial
+
+    text = dashboard.render(db, config, registry, "en", OWNER, clock=_fixed_clock())
+    line = next(line for line in text.splitlines() if "juice" in line)
+    assert "streak 2d" in line
+
+    # A later log the same day crosses the goal -- the streak really did
+    # extend today, so it should now read 3, not just fall back to 2.
+    db.insert_log(LogEntry(None, OWNER, "2026-08-24T18:00:00", "juice", 1250.0, None, "1250ml", "reply"))
+    text = dashboard.render(db, config, registry, "en", OWNER, clock=_fixed_clock())
+    line = next(line for line in text.splitlines() if "juice" in line)
+    assert "streak 3d" in line
+
+
 def test_render_registry_generic_extra_habit_appears_automatically(db, config):
     """AC-X1/AC-D6: an extra configured habit with no special-casing
     anywhere in `dashboard.py` renders correctly -- no hardcoded habit

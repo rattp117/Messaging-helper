@@ -16,6 +16,7 @@ mocks for anything that doesn't involve a paid/external API.
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,7 @@ from habit_assistant.config import Config
 from habit_assistant.core.portal import users
 from habit_assistant.core.portal.server import PortalDeps, PortalServer
 from habit_assistant.storage.db import Database
+from habit_assistant.storage.models import LogEntry
 
 OWNER = "Uowner00000000000000000000000000"
 MEMBER = "Umember0000000000000000000000001"
@@ -143,6 +145,25 @@ def _audit_rows(db, *, target: str | None = None, action: str | None = None):
 # handlers (e.g. a handler reading deps before the gate runs) would show up
 # here even if the isolated middleware unit tests stayed green.
 # ===========================================================================
+
+
+def test_current_streak_is_living_not_zero_when_today_partial(db):
+    """v1.3.2+line bug fix: `_current_streak` now reads through `streaks.
+    display_streak` -- an owner glancing at this admin column shouldn't
+    see a false 0 for a user whose streak is intact but who simply hasn't
+    logged today yet (config default: water goal 2500ml)."""
+    db.upsert_user(MEMBER, status="active", display_name="Nok")
+    db.insert_log(LogEntry(None, MEMBER, "2026-08-24T09:00:00", "water", 2500.0, None, "2500ml"))
+    db.insert_log(LogEntry(None, MEMBER, "2026-08-25T09:00:00", "water", 2500.0, None, "2500ml"))
+    db.insert_log(LogEntry(None, MEMBER, "2026-08-26T09:00:00", "water", 500.0, None, "500ml"))  # today: partial
+
+    deps = PortalDeps(
+        db=db, config=_config(), scheduler=SimpleNamespace(get_jobs=lambda: []), channel=FakeChannel(),
+        stats=SimpleNamespace(started_at=None, last_event_at=None), ring=SimpleNamespace(records=lambda: []),
+        owner_id=OWNER,
+    )
+    streak = users._current_streak(deps, MEMBER, datetime(2026, 8, 26, 20, 0, 0))
+    assert streak == 2
 
 
 @pytest.mark.parametrize("path,form", [

@@ -812,11 +812,11 @@ def test_version_consistent_across_files_and_release_note_posture():
     from habit_assistant.core.release_notes import RELEASE_NOTES
 
     version_file = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    # admin web portal, integration pass (line/v1.3.0): version literal
-    # bumped alongside VERSION/pyproject.toml/__init__.py -- this test
-    # still pins whatever the CURRENT release actually is, so a future
-    # bump must update this literal too, same as this one did.
-    assert version_file == "1.3.0+line"
+    # streak display-bug patch (line/v1.3.2): version literal bumped
+    # alongside VERSION/pyproject.toml/__init__.py -- this test still pins
+    # whatever the CURRENT release actually is, so a future bump must
+    # update this literal too, same as this one did.
+    assert version_file == "1.3.2+line"
     assert __version__ == version_file, "src/habit_assistant/__init__.py:__version__ must match VERSION"
     assert re.match(r"^\d+\.\d+\.\d+\+line$", __version__), (
         "PEP 440 local-version shape X.Y.Z+line (SPEC-LINE.md §7 recommended "
@@ -826,7 +826,7 @@ def test_version_consistent_across_files_and_release_note_posture():
     )
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"1.3.0+line"' in pyproject_text or "1.3.0+line" in pyproject_text
+    assert '"1.3.2+line"' in pyproject_text or "1.3.2+line" in pyproject_text
 
     # By design (not a gap, posture unchanged by line/v1.1.0): this
     # branch's own RELEASE_NOTES catalog is never populated on LINE (no
